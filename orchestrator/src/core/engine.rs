@@ -1,14 +1,22 @@
-use crate::core::models::{TaskStatus, TaskStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport};
+use crate::core::models::{
+    TaskStatus, TaskStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus,
+    WorkflowStatusReport,
+};
+use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::StoragePort;
 use std::sync::Arc;
 
 pub struct WorkflowEngine {
     storage: Arc<dyn StoragePort + Send + Sync>,
+    executor: Arc<dyn ExecutorPort + Send + Sync>,
 }
 
 impl WorkflowEngine {
-    pub fn new(storage: Arc<dyn StoragePort + Send + Sync>) -> Self {
-        Self { storage }
+    pub fn new(
+        storage: Arc<dyn StoragePort + Send + Sync>,
+        executor: Arc<dyn ExecutorPort + Send + Sync>,
+    ) -> Self {
+        Self { storage, executor }
     }
 
     /// Returns a lightweight status snapshot of a workflow instance.
@@ -66,7 +74,7 @@ impl WorkflowEngine {
                     crate::core::models::TaskInstance {
                         task_def_id: task_def.id.clone(),
                         status: TaskStatus::Pending,
-                        input_data: None, // Starts with None, meaning pending dependencies
+                        input_data: vec![], // Empty until upstream dependencies propagate data
                         output_data: None,
                         recorded_side_effects: vec![],
                     },
@@ -101,29 +109,49 @@ impl WorkflowEngine {
                 }
                 progress_made = true;
 
-                // Simulate execution (Placeholder for actual Agent/API invocation)
-                // In a real system this would happen asynchronously
-                let execution_result = self.simulate_task_execution(&task_id);
-
                 let task_def = def.tasks.iter().find(|t| t.id == task_id).unwrap();
 
-                if let Some(output) = execution_result {
-                    // Strict Validation
-                    let is_valid = match jsonschema::validator_for(&task_def.output_schema) {
-                        Ok(validator) => validator.is_valid(&output),
-                        Err(_) => false,
-                    };
+                // Collect already-propagated inputs for this task (empty slice if none yet).
+                let inputs: Vec<serde_json::Value> = instance
+                    .tasks
+                    .get(&task_id)
+                    .map(|t| t.input_data.clone())
+                    .unwrap_or_default();
 
-                    if is_valid {
-                        if let Some(task) = instance.tasks.get_mut(&task_id) {
-                            task.status = TaskStatus::Completed;
-                            task.output_data = Some(output.clone());
+                let execution_result = self.executor.execute(task_def, &inputs).await;
+
+                match execution_result {
+                    Ok(output) => {
+                        // Validate against output_schema if one is defined; skip for side-effect-only tasks.
+                        let schema_ok = match &task_def.output_schema {
+                            Some(schema) => match jsonschema::validator_for(schema) {
+                                Ok(validator) => validator.is_valid(&output),
+                                Err(_) => false,
+                            },
+                            None => true,
+                        };
+
+                        if schema_ok {
+                            if let Some(task) = instance.tasks.get_mut(&task_id) {
+                                task.status = TaskStatus::Completed;
+                                // Only record output when a schema is declared.
+                                if task_def.output_schema.is_some() {
+                                    task.output_data = Some(output.clone());
+                                }
+                            }
+                            self.propagate_data(&mut instance, &def, &task_id, &output);
+                        } else {
+                            if let Some(task) = instance.tasks.get_mut(&task_id) {
+                                task.status = TaskStatus::Failed;
+                            }
+                            instance.status = WorkflowStatus::Failed;
+                            self.storage
+                                .save_workflow_instance(instance.clone())
+                                .await?;
+                            anyhow::bail!("Task output failed schema validation");
                         }
-
-                        // Propagate Data
-                        self.propagate_data(&mut instance, &def, &task_id, &output);
-                    } else {
-                        // Validation failed
+                    }
+                    Err(e) => {
                         if let Some(task) = instance.tasks.get_mut(&task_id) {
                             task.status = TaskStatus::Failed;
                         }
@@ -131,17 +159,8 @@ impl WorkflowEngine {
                         self.storage
                             .save_workflow_instance(instance.clone())
                             .await?;
-                        anyhow::bail!("Task output failed schema validation");
+                        return Err(e.context("Task execution failed"));
                     }
-                } else {
-                    if let Some(task) = instance.tasks.get_mut(&task_id) {
-                        task.status = TaskStatus::Failed;
-                    }
-                    instance.status = WorkflowStatus::Failed;
-                    self.storage
-                        .save_workflow_instance(instance.clone())
-                        .await?;
-                    anyhow::bail!("Task execution failed");
                 }
             }
 
@@ -193,26 +212,14 @@ impl WorkflowEngine {
             if binding.source_task_id == source_id {
                 let target_id = &binding.target_task_id;
                 if let Some(target_task) = instance.tasks.get_mut(target_id) {
-                    // Initialize input array if it doesn't exist
-                    if target_task.input_data.is_none() {
-                        target_task.input_data = Some(serde_json::Value::Array(Vec::new()));
+                    // Expand vec to fit the target index
+                    while target_task.input_data.len() <= binding.target_input_index {
+                        target_task.input_data.push(serde_json::Value::Null);
                     }
-
-                    if let Some(serde_json::Value::Array(ref mut inputs)) = target_task.input_data {
-                        // Expand array to fit the target index
-                        while inputs.len() <= binding.target_input_index {
-                            inputs.push(serde_json::Value::Null);
-                        }
-                        inputs[binding.target_input_index] = output.clone();
-                    }
+                    target_task.input_data[binding.target_input_index] = output.clone();
                 }
             }
         }
-    }
-
-    fn simulate_task_execution(&self, _task_id: &str) -> Option<serde_json::Value> {
-        // Placeholder for actual execution
-        Some(serde_json::json!({ "result": "success" }))
     }
 
     fn detect_cycles(&self, def: &WorkflowDef) -> bool {
@@ -262,6 +269,7 @@ impl WorkflowEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::fake_executor::FakeExecutor;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::core::models::*;
     use serde_json::json;
@@ -269,7 +277,10 @@ mod tests {
     use std::sync::Arc;
 
     fn make_engine() -> WorkflowEngine {
-        WorkflowEngine::new(Arc::new(MemoryStorage::new()))
+        WorkflowEngine::new(
+            Arc::new(MemoryStorage::new()),
+            Arc::new(FakeExecutor::new()),
+        )
     }
 
     fn task_def(id: &str, output_schema: serde_json::Value) -> TaskDef {
@@ -280,8 +291,9 @@ mod tests {
                 method: "GET".to_string(),
             },
             input_schemas: vec![],
-            output_schema,
+            output_schema: Some(output_schema),
             expected_side_effects: vec![],
+            required_credentials: vec![],
         }
     }
 
@@ -294,7 +306,11 @@ mod tests {
             tasks: HashMap::new(),
         };
         engine.storage.save_workflow_def(def).await.unwrap();
-        engine.storage.save_workflow_instance(instance).await.unwrap();
+        engine
+            .storage
+            .save_workflow_instance(instance)
+            .await
+            .unwrap();
         instance_id
     }
 
@@ -310,9 +326,17 @@ mod tests {
         };
 
         let instance_id = setup(&engine, def).await;
-        engine.run_workflow_instance(instance_id.clone()).await.unwrap();
+        engine
+            .run_workflow_instance(instance_id.clone())
+            .await
+            .unwrap();
 
-        let result = engine.storage.get_workflow_instance(&instance_id).await.unwrap().unwrap();
+        let result = engine
+            .storage
+            .get_workflow_instance(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.status, WorkflowStatus::Completed);
         assert_eq!(result.tasks["task-a"].status, TaskStatus::Completed);
     }
@@ -338,8 +362,9 @@ mod tests {
                         json!({ "type": "object" }), // from task-a
                         json!({ "type": "object" }), // from task-b
                     ],
-                    output_schema: json!({ "type": "object" }),
+                    output_schema: Some(json!({ "type": "object" })),
                     expected_side_effects: vec![],
+                    required_credentials: vec![],
                 },
             ],
             data_bindings: vec![
@@ -357,9 +382,17 @@ mod tests {
         };
 
         let instance_id = setup(&engine, def).await;
-        engine.run_workflow_instance(instance_id.clone()).await.unwrap();
+        engine
+            .run_workflow_instance(instance_id.clone())
+            .await
+            .unwrap();
 
-        let result = engine.storage.get_workflow_instance(&instance_id).await.unwrap().unwrap();
+        let result = engine
+            .storage
+            .get_workflow_instance(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.status, WorkflowStatus::Completed);
         assert_eq!(result.tasks["task-a"].status, TaskStatus::Completed);
         assert_eq!(result.tasks["task-b"].status, TaskStatus::Completed);
@@ -367,9 +400,7 @@ mod tests {
 
         // task-c should have received propagated inputs at both index slots
         let task_c = &result.tasks["task-c"];
-        let inputs = task_c.input_data.as_ref().unwrap();
-        assert!(inputs.is_array());
-        assert_eq!(inputs.as_array().unwrap().len(), 2);
+        assert_eq!(task_c.input_data.len(), 2);
     }
 
     /// A task whose output fails schema validation should mark the workflow as Failed.
@@ -377,13 +408,10 @@ mod tests {
     async fn test_schema_validation_failure_marks_workflow_failed() {
         let engine = make_engine();
 
-        // simulate_task_execution returns {"result": "success"}.
-        // This strict schema requires a field that doesn't exist, so validation will fail.
+        // FakeExecutor cannot satisfy an `enum` schema — it returns `{}` for unknown constructs,
+        // which will always fail a single-value enum constraint.
         let strict_schema = json!({
-            "type": "object",
-            "required": ["does_not_exist"],
-            "properties": { "does_not_exist": { "type": "string" } },
-            "additionalProperties": false
+            "enum": ["only-this-value"]
         });
 
         let def = WorkflowDef {
@@ -396,7 +424,12 @@ mod tests {
         let run_result = engine.run_workflow_instance(instance_id.clone()).await;
         assert!(run_result.is_err());
 
-        let instance = engine.storage.get_workflow_instance(&instance_id).await.unwrap().unwrap();
+        let instance = engine
+            .storage
+            .get_workflow_instance(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(instance.status, WorkflowStatus::Failed);
         assert_eq!(instance.tasks["task-strict"].status, TaskStatus::Failed);
     }
@@ -417,7 +450,10 @@ mod tests {
         };
 
         let instance_id = setup(&engine, def).await;
-        engine.run_workflow_instance(instance_id.clone()).await.unwrap();
+        engine
+            .run_workflow_instance(instance_id.clone())
+            .await
+            .unwrap();
 
         let report = engine
             .get_workflow_status(&instance_id)

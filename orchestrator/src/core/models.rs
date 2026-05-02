@@ -1,12 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Workflow {
-    pub id: String,
-    pub status: WorkflowStatus,
-    // Add other fields: tasks, inputs, etc.
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkflowStatus {
     Pending,
@@ -20,8 +13,30 @@ pub type JsonSchema = serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskTypeDef {
-    ApiCall { url: String, method: String },
-    Agent { agent_id: String, prompt: String },
+    ApiCall {
+        url: String,
+        method: String,
+    },
+    LLM {
+        model_id: String,
+        provider_url: String,
+        prompt: String,
+    },
+    Agent {
+        model_id: String,
+        provider_url: String,
+        prompt: String,
+    },
+    Function {
+        dependencies: Vec<FunctionDependency>,
+        code: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDependency {
+    name: String,
+    version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,8 +44,10 @@ pub struct TaskDef {
     pub id: String,
     pub kind: TaskTypeDef,
     pub input_schemas: Vec<JsonSchema>,
-    pub output_schema: JsonSchema,
+    pub output_schema: Option<JsonSchema>,
     pub expected_side_effects: Vec<String>,
+    #[serde(default)]
+    pub required_credentials: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +81,7 @@ pub struct SideEffectInstance {
 pub struct TaskInstance {
     pub task_def_id: String,
     pub status: TaskStatus,
-    pub input_data: Option<serde_json::Value>,
+    pub input_data: Vec<serde_json::Value>,
     pub output_data: Option<serde_json::Value>,
     pub recorded_side_effects: Vec<SideEffectInstance>,
 }
