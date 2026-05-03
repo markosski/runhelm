@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Number;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkflowStatus {
     Pending,
     Running,
     Paused,
+    InputNeeded,
     Completed,
     Failed,
 }
@@ -17,17 +19,21 @@ pub enum TaskTypeDef {
         url: String,
         method: String,
     },
-    LLM {
-        model_id: String,
-        provider_url: String,
-        prompt: String,
-    },
     Agent {
+        // Model name, e.g. sonnet, oput, gpt-5.5, gemini-2.5-flash, etc.
         model_id: String,
         provider_url: String,
+        // Agent prompt
         prompt: String,
+        // Allowed tools, [] - none, ["_all_"] - all available tools
+        tools: Vec<String>,
+        // Gives agent allowance to pause task to get additional information if needed
+        ask: bool,
+        // How many times agent should re-try when output does not match expected output_schema
+        schema_failure_retry_times: Number,
     },
     Function {
+        // Task will attempt to download these dependencies
         dependencies: Vec<FunctionDependency>,
         code: String,
     },
@@ -46,7 +52,6 @@ pub struct TaskDef {
     pub input_schemas: Vec<JsonSchema>,
     pub output_schema: Option<JsonSchema>,
     pub expected_side_effects: Vec<String>,
-    #[serde(default)]
     pub required_credentials: Vec<String>,
 }
 
@@ -68,6 +73,7 @@ pub struct WorkflowDef {
 pub enum TaskStatus {
     Pending,
     Running,
+    InputNeeded,
     Completed,
     Failed,
 }

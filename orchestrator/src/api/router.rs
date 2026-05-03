@@ -2,16 +2,17 @@ use axum::{routing::get, routing::post, Router};
 use std::sync::Arc;
 
 use super::handlers;
-use crate::ports::storage::StoragePort;
+
+use crate::core::orchestrator::Orchestrator;
 
 // AppState holds the injected dependencies
 #[derive(Clone)]
 pub struct AppState {
-    pub storage: Arc<dyn StoragePort + Send + Sync>,
+    pub orchestrator: Arc<Orchestrator>,
 }
 
-pub fn create_router(storage: Arc<dyn StoragePort + Send + Sync>) -> Router {
-    let state = AppState { storage };
+pub fn create_router(orchestrator: Arc<Orchestrator>) -> Router {
+    let state = AppState { orchestrator };
 
     Router::new()
         .route("/health", get(handlers::health_check))
