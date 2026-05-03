@@ -43,20 +43,26 @@ async function main() {
             const result = await executor.execute(payload, credentialsAdapter);
             logger.info({ payload }, "Task execution finished");
 
-            // Validate the result against the output_schema if provided
-            const outputSchema = taskData.task?.output_schema;
-            if (outputSchema) {
-                const validate = ajv.compile(outputSchema);
-                const isValid = validate(result);
-                if (!isValid) {
-                    throw new Error(`Output schema validation failed: ${ajv.errorsText(validate.errors)}`);
+            if (result.status === 'ok' || result.status === 'input_needed') {
+                if (result.status === 'ok') {
+                    // Validate the result against the output_schema if provided
+                    const outputSchema = taskData.task?.output_schema;
+                    if (outputSchema) {
+                        const validate = ajv.compile(outputSchema);
+                        const isValid = validate(result.output);
+                        if (!isValid) {
+                            const errorMsg = `Output schema validation failed: ${ajv.errorsText(validate.errors)}`;
+                            logger.error(JSON.stringify({ status: "error", message: errorMsg, code: null }));
+                            continue;
+                        }
+                    }
                 }
+                console.log(JSON.stringify(result));
+            } else {
+                console.log(JSON.stringify(result));
             }
-
-            // Output the result
-            logger.info({ status: "ok", output: result }, "Task completed successfully");
         } catch (error) {
-            logger.error({ status: "error", message: String(error), code: null }, "Task execution failed");
+            console.log(JSON.stringify({ status: "error", message: String(error), code: null }));
         }
     }
 

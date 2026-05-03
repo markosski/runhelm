@@ -15,4 +15,5 @@ export interface TaskDef {
 export interface TaskExecutionPayload {
     task: TaskDef;
     inputs: any[];
+    input_provided?: string;
 }

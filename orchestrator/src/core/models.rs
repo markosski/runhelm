@@ -73,7 +73,7 @@ pub struct WorkflowDef {
 pub enum TaskStatus {
     Pending,
     Running,
-    InputNeeded,
+    InputNeeded { description: String },
     Completed,
     Failed,
 }

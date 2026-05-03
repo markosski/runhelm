@@ -1,8 +1,8 @@
 use crate::core::models::TaskDef;
-use crate::ports::executor::ExecutorPort;
+use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
 use bollard::Docker;
-use bollard::container::{AttachContainerResults, LogOutput};
+use bollard::container::LogOutput;
 use bollard::models::ContainerCreateBody;
 use bollard::query_parameters::{
     AttachContainerOptions, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions,
@@ -52,11 +52,13 @@ pub enum TaskExecutionResult {
         message: String,
         code: Option<String>,
     },
+    #[serde(rename = "input_needed")]
+    InputNeeded { description: String },
 }
 
 #[async_trait]
 impl ExecutorPort for DockerExecutor {
-    async fn execute(&self, task: &TaskDef, inputs: &[Value]) -> anyhow::Result<Value> {
+    async fn execute(&self, task: &TaskDef, inputs: &[Value]) -> anyhow::Result<ExecutionResult> {
         let config = ContainerCreateBody {
             image: Some(self.image.clone()),
             cmd: self.cmd.clone(),
@@ -160,14 +162,11 @@ impl ExecutorPort for DockerExecutor {
 
         // 4.11 Parse result
         match serde_json::from_str::<TaskExecutionResult>(&stdout_buf) {
-            Ok(TaskExecutionResult::Ok { output }) => Ok(output),
-            Ok(TaskExecutionResult::Err { message, code }) => {
-                anyhow::bail!(
-                    "Task execution error inside container: {} (code: {:?})",
-                    message,
-                    code
-                );
+            Ok(TaskExecutionResult::Ok { output }) => Ok(ExecutionResult::Success(output)),
+            Ok(TaskExecutionResult::InputNeeded { description }) => {
+                Ok(ExecutionResult::InputNeeded(description))
             }
+            Ok(TaskExecutionResult::Err { message, .. }) => Ok(ExecutionResult::Failure(message)),
             Err(e) => {
                 anyhow::bail!(
                     "Failed to parse container output: {}\nStdout: {}\nStderr: {}",
@@ -213,6 +212,6 @@ mod tests {
         };
 
         let result = executor.execute(&task, &[]).await.unwrap();
-        assert_eq!(result, json!({"success": true}));
+        assert_eq!(result, ExecutionResult::Success(json!({"success": true})));
     }
 }

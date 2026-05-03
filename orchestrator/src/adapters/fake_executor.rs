@@ -1,5 +1,5 @@
 use crate::core::models::TaskDef;
-use crate::ports::executor::ExecutorPort;
+use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -72,15 +72,11 @@ fn schema_default(schema: &Value) -> Value {
 
 #[async_trait]
 impl ExecutorPort for FakeExecutor {
-    async fn execute(
-        &self,
-        task: &TaskDef,
-        _inputs: &[Value],
-    ) -> anyhow::Result<Value> {
-        Ok(match &task.output_schema {
+    async fn execute(&self, task: &TaskDef, _inputs: &[Value]) -> anyhow::Result<ExecutionResult> {
+        Ok(ExecutionResult::Success(match &task.output_schema {
             Some(schema) => schema_default(schema),
             None => Value::Null,
-        })
+        }))
     }
 }
 
@@ -111,7 +107,10 @@ mod tests {
     async fn test_empty_object_schema() {
         let task = task_with_schema(json!({"type": "object"}));
         let result = fake().execute(&task, &[]).await.unwrap();
-        assert_eq!(result, json!({}));
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!({})),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
@@ -125,49 +124,82 @@ mod tests {
             }
         }));
         let result = fake().execute(&task, &[]).await.unwrap();
-        assert_eq!(result, json!({"name": "", "count": 0}));
+        match result {
+            ExecutionResult::Success(val) => {
+                assert_eq!(val, json!({"name": "", "count": 0}))
+            }
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_string_schema() {
         let task = task_with_schema(json!({"type": "string"}));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), json!(""));
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!("")),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_integer_schema() {
         let task = task_with_schema(json!({"type": "integer"}));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), json!(0));
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!(0)),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_number_schema() {
         let task = task_with_schema(json!({"type": "number"}));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), json!(0));
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!(0)),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_boolean_schema() {
         let task = task_with_schema(json!({"type": "boolean"}));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), json!(false));
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!(false)),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_array_schema() {
         let task = task_with_schema(json!({"type": "array"}));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), json!([]));
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!([])),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_null_schema() {
         let task = task_with_schema(json!({"type": "null"}));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), Value::Null);
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, Value::Null),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_no_type_schema() {
         let task = task_with_schema(json!({}));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), json!({}));
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!({})),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
@@ -175,15 +207,25 @@ mod tests {
         let task = task_with_schema(json!({
             "oneOf": [{"type": "string"}, {"type": "integer"}]
         }));
-        assert_eq!(fake().execute(&task, &[]).await.unwrap(), json!({}));
+        let result = fake().execute(&task, &[]).await.unwrap();
+        match result {
+            ExecutionResult::Success(val) => assert_eq!(val, json!({})),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
     async fn test_inputs_do_not_affect_output() {
         let task = task_with_schema(json!({"type": "string"}));
-        let out1 = fake().execute(&task, &[]).await.unwrap();
-        let out2 = fake().execute(&task, &[json!("anything"), json!(42)]).await.unwrap();
-        assert_eq!(out1, out2);
+        let res1 = fake().execute(&task, &[]).await.unwrap();
+        let res2 = fake()
+            .execute(&task, &[json!("anything"), json!(42)])
+            .await
+            .unwrap();
+        match (res1, res2) {
+            (ExecutionResult::Success(v1), ExecutionResult::Success(v2)) => assert_eq!(v1, v2),
+            _ => panic!("Expected Success"),
+        }
     }
 
     #[tokio::test]
@@ -198,9 +240,16 @@ mod tests {
             "additionalProperties": false
         });
         let task = task_with_schema(schema.clone());
-        let output = fake().execute(&task, &[]).await.unwrap();
+        let result = fake().execute(&task, &[]).await.unwrap();
+        let output = match result {
+            ExecutionResult::Success(val) => val,
+            _ => panic!("Expected Success"),
+        };
 
         let validator = jsonschema::validator_for(&schema).unwrap();
-        assert!(validator.is_valid(&output), "output did not satisfy schema: {output}");
+        assert!(
+            validator.is_valid(&output),
+            "output did not satisfy schema: {output}"
+        );
     }
 }

@@ -1,7 +1,7 @@
-import type { TaskExecutor, JsonValue } from '../../core/ports/TaskExecutor.js';
+import type { TaskExecutor, JsonValue, TaskExecutionResult } from '../../core/ports/TaskExecutor.js';
 import type { TaskExecutionPayload } from '../../core/models/TaskDef.js';
 import type { CredentialsPort } from '../../core/ports/CredentialsPort.js';
-import { getModel, streamSimple } from '@mariozechner/pi-ai';
+import { getModel, streamSimple, Type } from '@mariozechner/pi-ai';
 import { Agent } from '@mariozechner/pi-agent-core';
 import { Ajv } from 'ajv';
 import { logger } from '../../utils/logger.js';
@@ -9,6 +9,8 @@ import { createBraveSearchTool } from './agent_tools/braveSearchTool.js';
 import { createFetchUrlTool } from './agent_tools/fetchUrlTool.js';
 import { createHttpRequestTool } from './agent_tools/httpRequestTool.js';
 import { createCurrentTimeTool } from './agent_tools/currentTimeTool.js';
+import { createAskUserTool, InputNeededError } from './agent_tools/askUserTool.js';
+
 
 type AvailableTool = {
     name: string;
@@ -56,9 +58,9 @@ function parseRetryTimes(value: unknown): number {
 }
 
 export class AgentExecutor implements TaskExecutor {
-    async execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort): Promise<JsonValue> {
+    async execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort): Promise<TaskExecutionResult> {
         const agentDef = (payload.task.kind as any).Agent;
-        const ask = agentDef.ask as boolean;
+        const ask = (agentDef.ask ?? (payload.task as any).ask) === true;
         const modelIdFull = agentDef.model_id as string;
         const providerUrl = agentDef.provider_url as string;
         const prompt = agentDef.prompt as string;
@@ -97,22 +99,20 @@ export class AgentExecutor implements TaskExecutor {
             }
         }
 
-        let inputDataPrompt = "";
+        let contextPrompt = "";
 
-        if (payload.task.input_schemas.length > 0) {
-            inputDataPrompt += `\n\n
-            Given following input data:\n
-            `;
-
+        if (payload.inputs.length > 0) {
+            contextPrompt += `\n\nUpstream task data:\n`;
             for (const input of payload.inputs) {
-                inputDataPrompt += `\n
-                Input:
-                ${JSON.stringify(input, null, 2)}
-                `;
+                contextPrompt += `${JSON.stringify(input, null, 2)}\n`;
             }
         }
 
-        const finalPrompt = inputDataPrompt + prompt;
+        if (payload.input_provided) {
+            contextPrompt += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${payload.input_provided}\n`;
+        }
+
+        const finalPrompt = prompt + contextPrompt;
 
         const availableTools: AvailableTool[] = [
             {
@@ -144,6 +144,19 @@ export class AgentExecutor implements TaskExecutor {
             logger.error(`Error retrieving system credentials for ${systemBraveApiKey}`);
         }
 
+        let inputNeededQuestion: string | undefined = undefined;
+
+        if (ask) {
+            availableTools.push({
+                name: "ask_user",
+                description: "ask the user for additional information or clarification when needed",
+                tool: createAskUserTool((question) => {
+                    inputNeededQuestion = question;
+                    agent.abort();
+                })
+            });
+        }
+
         const approvedToolNames = Array.isArray(agentDef.tools) ? agentDef.tools : ["_all_"];
         const approvedTools = approvedToolNames.includes("_all_")
             ? availableTools
@@ -160,17 +173,22 @@ export class AgentExecutor implements TaskExecutor {
             ? `You have access to the following approved tools:\n${approvedTools.map((approvedTool) => `- ${approvedTool.name} - ${approvedTool.description}`).join('\n')}`
             : "You do not have access to any tools for this task.";
 
-        const agent = new Agent({
+        const agentOpts: any = {
             streamFn: streamSimple,
             getApiKey: () => apiKey,
-        });
+        };
+        const agent = new Agent(agentOpts);
 
-        agent.state.model = model as any;
+        agent.state.model = model;
         agent.state.systemPrompt = `
+            ${ask ? "CRITICAL: If you cannot complete the task because you need more information or clarification from the user, you MUST call the 'ask_user' tool. DO NOT return a JSON object with a response that asks a question. Calling 'ask_user' is the ONLY way to request more information." : ""}
+
             You are an autonomous AI agent.
             ${toolAvailabilityPrompt}
+
             Use the approved tools available to you to gather the needed information.
-            DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.`;
+            DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
+            `;
 
         if (payload.task.output_schema) {
             const retryTimes = parseRetryTimes(agentDef.schema_failure_retry_times);
@@ -185,7 +203,8 @@ export class AgentExecutor implements TaskExecutor {
             - Do NOT include any preamble like "Here is the result".
             - Do NOT wrap the JSON in markdown code blocks (e.g., no \`\`\`json).
             - The entire response must be parseable by JSON.parse().
-            If output_schema validation fails, you will be asked to correct the JSON. Retry up to ${retryTimes} time${retryTimes === 1 ? '' : 's'} and only return corrected raw JSON.`;
+            If output_schema validation fails, you will be asked to correct the JSON. Retry up to ${retryTimes} time${retryTimes === 1 ? '' : 's'} and only return corrected raw JSON.
+            ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool instead of returning JSON." : ""}`;
         }
 
         agent.state.systemPrompt += `
@@ -197,7 +216,19 @@ export class AgentExecutor implements TaskExecutor {
 
         agent.state.tools = approvedTools.map((approvedTool) => approvedTool.tool);
 
-        await agent.prompt(finalPrompt);
+        try {
+            await agent.prompt(finalPrompt);
+        } catch (e) {
+            logger.error({ error: e, message: (e as any).message, stack: (e as any).stack }, "[AgentExecutor] Error during agent execution");
+            if (e instanceof InputNeededError || inputNeededQuestion) {
+                return { status: 'input_needed', description: inputNeededQuestion || (e as any).question || "Input needed" };
+            }
+            throw e;
+        }
+
+        if (inputNeededQuestion) {
+            return { status: 'input_needed', description: inputNeededQuestion };
+        }
 
         if (agent.state.errorMessage) {
             throw new Error(`Agent failed: ${agent.state.errorMessage}`);
@@ -221,7 +252,7 @@ export class AgentExecutor implements TaskExecutor {
 
                 if (parseErrorMessage === undefined) {
                     if (validate(parsed)) {
-                        return parsed;
+                        return { status: 'ok', output: parsed };
                     }
 
                     const validationMessage = ajv.errorsText(validate.errors);
@@ -257,6 +288,6 @@ export class AgentExecutor implements TaskExecutor {
         }
 
         const resultText = extractAssistantText(agent);
-        return { response: resultText };
+        return { status: 'ok', output: { response: resultText } };
     }
 }

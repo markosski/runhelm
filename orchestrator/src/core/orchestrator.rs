@@ -56,7 +56,7 @@ impl Orchestrator {
         &self,
         task: &TaskDef,
         inputs: &[serde_json::Value],
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
         self.executor.execute(task, inputs).await
     }
 }

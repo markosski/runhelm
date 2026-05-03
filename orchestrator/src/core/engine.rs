@@ -2,7 +2,7 @@ use crate::core::models::{
     TaskStatus, TaskStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus,
     WorkflowStatusReport,
 };
-use crate::ports::executor::ExecutorPort;
+use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
 use std::sync::Arc;
 
@@ -121,7 +121,7 @@ impl WorkflowEngine {
                 let execution_result = self.executor.execute(task_def, &inputs).await;
 
                 match execution_result {
-                    Ok(output) => {
+                    Ok(ExecutionResult::Success(output)) => {
                         // Validate against output_schema if one is defined; skip for side-effect-only tasks.
                         let schema_ok = match &task_def.output_schema {
                             Some(schema) => match jsonschema::validator_for(schema) {
@@ -150,6 +150,22 @@ impl WorkflowEngine {
                                 .await?;
                             anyhow::bail!("Task output failed schema validation");
                         }
+                    }
+                    Ok(ExecutionResult::InputNeeded(description)) => {
+                        if let Some(task) = instance.tasks.get_mut(&task_id) {
+                            task.status = TaskStatus::InputNeeded { description };
+                        }
+                        instance.status = WorkflowStatus::InputNeeded;
+                    }
+                    Ok(ExecutionResult::Failure(reason)) => {
+                        if let Some(task) = instance.tasks.get_mut(&task_id) {
+                            task.status = TaskStatus::Failed;
+                        }
+                        instance.status = WorkflowStatus::Failed;
+                        self.storage
+                            .save_workflow_instance(instance.clone())
+                            .await?;
+                        anyhow::bail!("Task execution failed: {}", reason);
                     }
                     Err(e) => {
                         if let Some(task) = instance.tasks.get_mut(&task_id) {

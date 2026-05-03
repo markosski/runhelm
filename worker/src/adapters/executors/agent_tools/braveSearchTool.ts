@@ -3,14 +3,14 @@ import { logger } from '../../../utils/logger.js';
 
 export function createBraveSearchTool(braveApiKey: string) {
     return {
-        name: "brave_search",
+        name: "web_search",
         description: "Search the web using Brave Search API",
         label: "Brave Search",
         parameters: Type.Object({
             query: Type.String({ description: "The search query" })
         }),
         execute: async (toolCallId: string, args: any, signal?: AbortSignal) => {
-            logger.info(`[BraveSearchTool] Executing brave_search for query: ${args.query}`);
+            logger.info(`[BraveSearchTool] Executing web_search for query: ${args.query}`);
             const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(args.query)}`, {
                 headers: {
                     "Accept": "application/json",
