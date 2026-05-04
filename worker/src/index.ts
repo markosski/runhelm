@@ -41,7 +41,6 @@ async function main() {
             // Get the appropriate executor based on task kind
             const executor = executorFactory.getExecutor(payload.task.kind);
             const result = await executor.execute(payload, credentialsAdapter);
-            logger.info({ payload }, "Task execution finished");
 
             if (result.status === 'ok' || result.status === 'input_needed') {
                 if (result.status === 'ok') {
