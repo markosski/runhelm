@@ -34,18 +34,18 @@ That definition becomes a workflow instance at runtime. The orchestrator tracks 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    User[Developer or Product System]
-    UI[Frontend UI\nReact + Vite]
-    API[Orchestrator API\nAxum]
-    App[Orchestrator Application Layer]
-    Engine[Workflow Engine]
-    Storage[Storage Port\nrun state + workflow defs]
-    Executor[Executor Port]
-    Worker[Worker Runtime\nTypeScript]
-    TaskExec[Task Executors\nAgent | LLM | API | Function]
-    Tools[Built-in Tools\nHTTP | Fetch | Search | Time]
-    Providers[LLM Providers / External APIs]
+flowchart TD
+    User["Developer or<br>Product System"]
+    UI["Frontend UI React + Vite"]
+    API["Orchestrator API Axum"]
+    App["Orchestrator Application Layer"]
+    Engine["Workflow Engine"]
+    Storage["Storage Port<br>run state + workflow defs"]
+    Executor["Executor Port"]
+    Worker["Worker Runtime<br>TypeScript"]
+    TaskExec["Task Executors Agent | LLM | API | Function"]
+    Tools["Built-in Tools HTTP | Fetch | Search | Time"]
+    Providers["LLM Providers / External APIs"]
 
     User --> UI
     User --> API
@@ -59,6 +59,7 @@ flowchart LR
     TaskExec --> Tools
     TaskExec --> Providers
     Worker --> Storage
+
 ```
 
 ## Component Roles
