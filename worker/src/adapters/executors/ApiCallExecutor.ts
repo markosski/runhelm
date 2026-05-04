@@ -1,0 +1,16 @@
+import type { TaskExecutor, TaskExecutionResult } from '../../core/ports/TaskExecutor.js';
+import type { TaskExecutionPayload } from '../../core/models/TaskDef.js';
+import type { CredentialsPort } from '../../core/ports/CredentialsPort.js';
+import { logger } from '../../utils/logger.js';
+
+export class ApiCallExecutor implements TaskExecutor {
+    async execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort): Promise<TaskExecutionResult> {
+        const apiCallDef = (payload.task.kind as any).ApiCall;
+        logger.info(`[ApiCallExecutor] Calling API: ${apiCallDef.method} ${apiCallDef.endpoint}`);
+        // Simulate API call
+        return { 
+            status: 'ok', 
+            output: { response: `API call to ${apiCallDef.endpoint} succeeded` } 
+        };
+    }
+}

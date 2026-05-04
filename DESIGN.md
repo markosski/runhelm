@@ -46,6 +46,10 @@ Integrations (e.g., Kafka, SQS, RDBMS, Mailgun) will be facilitated through the 
 - Workflows - flow defined as DAG
   - Workflow should be a DAG or something similar to it. There needs to be a concept of bounded cycles. Why? Image setup where there are several task in a sequence A (make code change) -> B(review), this cycle may repeast until review task is satisfied. This does not mean we need a Cyclic Graph, we may still represent this is Acyclic Graph just that the cycles would need to materialize into repeated task sequences with short circuit to break out to exit "cycle" early. For example A -> B -> C -> B -> C -> E, where if C is satisfies it should short circuit, skip second B -> C cycle and move on to E.
 
+## AI Agent Tasks
+- Agentic tasks have capability of memory. For example it remember what worked and what didn't work so that next time they run they remember how to do things correctly.
+- Agents come with some foundational tools that can be used to accomplish many tasks, call apis, get url contents, website screenshot 
+
 ## Decision Records
 
 **Model provider:**

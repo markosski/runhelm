@@ -15,14 +15,17 @@ pub async fn create_workflow(
     State(_state): State<AppState>,
     Json(_payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    // TODO: Parse workflow, save via state.storage, return ID
+    // TODO: Parse workflow, save via state.orchestrator, return ID
     Ok(Json(json!({ "status": "created", "id": "placeholder-id" })))
 }
 
 pub async fn get_workflow(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    // TODO: Fetch workflow from state.storage
-    Ok(Json(json!({ "id": id, "status": "pending" })))
+    match state.orchestrator.get_workflow_status(&id).await {
+        Ok(Some(report)) => Ok(Json(serde_json::to_value(report).unwrap())),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }

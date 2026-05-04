@@ -8,6 +8,8 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::adapters::memory_storage::MemoryStorage;
+use crate::adapters::fake_executor::FakeExecutor;
+use crate::core::orchestrator::Orchestrator;
 use crate::api::router;
 
 #[tokio::main]
@@ -17,9 +19,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize dependencies (Adapters)
     let storage = Arc::new(MemoryStorage::new());
+    let executor = Arc::new(FakeExecutor::new());
+
+    // Initialize Orchestrator (Application Layer)
+    let orchestrator = Arc::new(Orchestrator::new(storage, executor));
 
     // Setup router
-    let app = router::create_router(storage);
+    let app = router::create_router(orchestrator);
 
     // Start server
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
