@@ -1,0 +1,30 @@
+task:
+  id: "abc123"
+  kind:
+    Agent:
+      model_id: "google/gemini-2.5-flash"
+      provider_url: null
+      prompt: |
+        Collect information about following stocks: NVDA, TSLA, INTC, AMD.
+        Find following information:
+          - last closing price
+
+        Organize information exactly as the following output:
+
+        ```text
+        - NVDA - $10.00
+        - TSLA - $10.00
+        - INTC - $10.00
+        - AMD - $10.00
+        ```
+  ask: false
+  input_schemas: []
+  output_schema:
+    type: "object"
+    properties:
+      response:
+        type: "string"
+  expected_side_effects: []
+  required_credentials:
+    - "llm_api_key"
+inputs: []

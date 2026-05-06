@@ -33,21 +33,58 @@ function extractAssistantText(agent: Agent): string {
 
 function extractJsonString(resultText: string): string {
     let jsonString = resultText.trim();
+    
+    // Remove markdown code blocks if present
     const markdownMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    const extractedMarkdown = markdownMatch?.[1];
-    if (extractedMarkdown !== undefined) {
-        return extractedMarkdown.trim();
+    if (markdownMatch?.[1]) {
+        jsonString = markdownMatch[1].trim();
     }
 
     const firstObjectBrace = jsonString.indexOf('{');
     const firstArrayBracket = jsonString.indexOf('[');
-    const startsWithArray = firstArrayBracket !== -1 && (firstObjectBrace === -1 || firstArrayBracket < firstObjectBrace);
+    const hasObject = firstObjectBrace !== -1;
+    const hasArray = firstArrayBracket !== -1;
+
+    if (!hasObject && !hasArray) {
+        return ""; // No JSON structures found
+    }
+
+    const startsWithArray = hasArray && (!hasObject || firstArrayBracket < firstObjectBrace);
     const firstJsonChar = startsWithArray ? firstArrayBracket : firstObjectBrace;
     const lastJsonChar = startsWithArray ? jsonString.lastIndexOf(']') : jsonString.lastIndexOf('}');
+
     if (firstJsonChar !== -1 && lastJsonChar !== -1 && lastJsonChar > firstJsonChar) {
-        jsonString = jsonString.substring(firstJsonChar, lastJsonChar + 1);
+        return jsonString.substring(firstJsonChar, lastJsonChar + 1).trim();
     }
-    return jsonString.trim();
+    return "";
+}
+
+/**
+ * Attempts to repair common JSON errors like unescaped quotes or missing braces.
+ */
+function repairJson(str: string): string {
+    let repaired = str.trim();
+    if (!repaired) return "";
+
+    // If it doesn't start with { or [, it's definitely not JSON
+    if (!repaired.startsWith('{') && !repaired.startsWith('[')) return "";
+
+    try {
+        JSON.parse(repaired);
+        return repaired; // Already valid
+    } catch (e) {
+        // Try a very basic "loose" repair for unescaped quotes in string values:
+        // This regex looks for quotes that are NOT preceded by : or , or { or [
+        // and NOT followed by : or , or } or ]
+        // Note: This is a heuristic and not perfect.
+        try {
+            const partiallyRepaired = repaired.replace(/([^\s:{[,])"([^\s:}\],])/g, '$1\\"$2');
+            JSON.parse(partiallyRepaired);
+            return partiallyRepaired;
+        } catch (e2) {
+            return repaired; // Give up and return original for standard error handling
+        }
+    }
 }
 
 function parseRetryTimes(value: unknown): number {
@@ -244,8 +281,19 @@ export class AgentExecutor implements TaskExecutor {
                 let parsed: JsonValue = null;
                 let parseErrorMessage: string | undefined;
 
+                const rawExtracted = extractJsonString(resultText);
+                const repaired = repairJson(rawExtracted);
+
                 try {
-                    parsed = JSON.parse(extractJsonString(resultText));
+                    if (repaired) {
+                        parsed = JSON.parse(repaired);
+                    } else if (payload.task.output_schema?.properties?.response) {
+                        // FALLBACK: If no JSON found but we expect a 'response' string, wrap the raw text
+                        logger.info("[AgentExecutor] No JSON found, applying auto-wrap fallback");
+                        parsed = { response: resultText.trim() };
+                    } else {
+                        throw new Error("No JSON object found in response");
+                    }
                 } catch (err) {
                     parseErrorMessage = err instanceof Error ? err.message : String(err);
                 }

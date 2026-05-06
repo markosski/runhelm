@@ -1,6 +1,6 @@
 # RunHelm Worker
 
-A containerized task executor for the RunHelm workflow orchestrator. The worker receives task payloads over **stdin** (one JSON object per line), executes them, and writes results back to **stdout** as JSON.
+A containerized task executor for the RunHelm workflow orchestrator. The worker runs as a resident service listening on a **Unix Domain Socket** (`/tmp/worker.sock`), executes tasks, and returns results as JSON.
 
 ## Prerequisites
 
@@ -21,12 +21,50 @@ npm install
 npm run dev
 ```
 
-This runs the TypeScript source directly via `ts-node` without a build step.
+This runs the TypeScript source directly via `ts-node` without a build step. It will start listening on `/tmp/worker.sock` by default.
 
-You can pipe task payloads to it manually for quick testing:
+### Manual Testing (JSON)
+
+You can send JSON payloads to the socket using `socat`:
 
 ```bash
-echo '{"task": {"id": "abc123", "kind": {"Agent": {"model_id": "openai/gpt-4o-mini", "provider_url": "", "prompt": "say hi!"}}, "input_schemas": [], "output_schema": {"type": "object", "properties": {"response": {"type": "string"}}}, "expected_side_effects": [], "required_credentials": ["llm_api_key"]}, "inputs": []}' | npm run dev
+echo '{"task": {"id": "abc123", "kind": {"Agent": {"model_id": "google/gemini-2.5-flash", "prompt": "say hi!"}}, "input_schemas": [], "output_schema": {"type": "object", "properties": {"response": {"type": "string"}}}, "expected_side_effects": [], "required_credentials": ["llm_api_key"]}, "inputs": []}' | socat -t 60 - UNIX-CONNECT:/tmp/worker.sock,shut-none
+```
+
+### Manual Testing (YAML)
+
+For a better developer experience, you can write tasks in YAML and use `yq` to pipe them to the worker:
+
+1. Create a `task.yaml`:
+
+```yaml
+task:
+  id: "abc123"
+  kind:
+    Agent:
+      model_id: "google/gemini-2.5-flash"
+      prompt: |-
+        Collect information about following stocks: NVDA, TSLA, INTC, AMD.
+        Organize information exactly as the following output:
+        - NVDA - 10.00
+        - TSLA - 10.00
+        ...
+  output_schema:
+    type: "object"
+    properties:
+      response: { type: "string" }
+  required_credentials: ["llm_api_key"]
+inputs: []
+```
+
+2. Send to the worker:
+
+```bash
+# Using the Python yq wrapper (kislyuk/yq)
+yq . task.yaml | socat -t 60 - UNIX-CONNECT:/tmp/worker.sock,shut-none
+
+# Using the Go yq version (mikefarah/yq)
+yq -o=json task.yaml | socat -t 60 - UNIX-CONNECT:/tmp/worker.sock,shut-none
 ```
 
 ### Build
