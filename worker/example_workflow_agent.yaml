@@ -1,0 +1,50 @@
+id: simple-agent-workflow
+
+tasks:
+  - id: fetch_user
+    kind:
+      ApiCall:
+        url: "http://localhost:3000/health"
+        method: "GET"
+    input_schemas: []
+    output_schema:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: string
+    expected_side_effects: []
+    required_credentials: []
+
+  - id: pull_stocks
+    kind:
+      Agent:
+        model_id: "google/gemini-2.5-flash"
+        provider_url: ""
+        prompt: |
+          Find most recent closing stock price for Apple Inc. (AAPL) and Microsoft Corporation (MSFT) and summarize the trend in a sentence.
+
+          Return exactly this JSON shape:
+          {
+            "response": "summary text"
+          }
+        tools: []
+        ask: false
+        schema_failure_retry_times: 2
+    input_schemas: []
+    output_schema:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: string
+    expected_side_effects: []
+    required_credentials:
+      - llm_api_key
+
+data_bindings:
+  - source_task_id: fetch_user
+    target_task_id: summarize_user
+    target_input_index: 0

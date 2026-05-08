@@ -5,20 +5,70 @@ import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
 import { InMemoryCredentialsAdapter } from './adapters/InMemoryCredentialsAdapter.js';
 import type { TaskExecutionPayload } from './core/models/TaskDef.js';
+import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
 
 import * as net from 'net';
-import * as fs from 'fs';
+import * as os from 'os';
 import { logger } from './utils/logger.js';
 
+const DEFAULT_SOCKET_PATH = '/tmp/runhelm.sock';
+const SUPPORTED_CAPABILITIES = ['Agent', 'ApiCall', 'Function'] as const;
+
+type WorkerRegistrationMessage = {
+    type: 'register';
+    worker_id: string;
+    capabilities: typeof SUPPORTED_CAPABILITIES[number][];
+};
+
+type RegistrationAckMessage = {
+    type: 'registration_ack';
+    worker_id: string;
+};
+
+type TaskDispatchMessage = TaskExecutionPayload & {
+    type: 'task_dispatch';
+    task_id: string;
+};
+
+type OrchestratorMessage = RegistrationAckMessage | TaskDispatchMessage;
+
+type WorkerExecutionResult =
+    | { kind: 'success'; output: unknown }
+    | { kind: 'input_needed'; description: string }
+    | { kind: 'failure'; reason: string };
+
+type TaskResultMessage = {
+    type: 'task_result';
+    task_id: string;
+    result: WorkerExecutionResult;
+};
+
+function createWorkerId(): string {
+    return process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
+}
+
+function serializeNdjson(message: unknown): string {
+    return `${JSON.stringify(message)}\n`;
+}
+
+function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult {
+    switch (result.status) {
+        case 'ok':
+            return { kind: 'success', output: result.output };
+        case 'input_needed':
+            return { kind: 'input_needed', description: result.description };
+        case 'error':
+            return { kind: 'failure', reason: result.message };
+    }
+}
+
 async function processTask(
-    line: string,
+    payload: TaskExecutionPayload,
     executorFactory: ExecutorFactory,
     credentialsAdapter: InMemoryCredentialsAdapter,
     ajv: Ajv
-): Promise<string> {
+): Promise<WorkerExecutionResult> {
     try {
-        const taskData = JSON.parse(line);
-        const payload = taskData as TaskExecutionPayload;
         logger.info(`Received task: ${payload.task?.id || 'unknown'}`);
 
         // Get the appropriate executor based on task kind
@@ -27,19 +77,19 @@ async function processTask(
 
         if (result.status === 'ok') {
             // Validate the result against the output_schema if provided
-            const outputSchema = taskData.task?.output_schema;
+            const outputSchema = payload.task?.output_schema;
             if (outputSchema) {
                 const validate = ajv.compile(outputSchema);
                 const isValid = validate(result.output);
                 if (!isValid) {
                     const errorMsg = `Output schema validation failed: ${ajv.errorsText(validate.errors)}`;
-                    return JSON.stringify({ status: "error", message: errorMsg, code: null });
+                    return { kind: 'failure', reason: errorMsg };
                 }
             }
         }
-        return JSON.stringify(result);
+        return mapExecutionResult(result);
     } catch (error) {
-        return JSON.stringify({ status: "error", message: String(error), code: null });
+        return { kind: 'failure', reason: String(error) };
     }
 }
 
@@ -53,85 +103,83 @@ async function main() {
     });
 
     const ajv = new Ajv();
-    const socketPath = process.env.WORKER_SOCKET || '/tmp/worker.sock';
+    const socketPath = process.env.RUNHELM_SOCKET_PATH || DEFAULT_SOCKET_PATH;
+    const workerId = createWorkerId();
+    const socket = net.createConnection(socketPath);
 
-    // --- SOCKET MODE (Resident) ---
-    if (fs.existsSync(socketPath)) {
-        fs.rmSync(socketPath, { recursive: true, force: true });
-    }
+    let buffer = '';
+    let processing = Promise.resolve();
 
-    const server = net.createServer((socket) => {
-        logger.info("Client connected via socket");
-        let buffer = '';
-        socket.on('data', async (data) => {
-            try {
-                const chunk = data.toString();
-                logger.info(`Received chunk: ${data.length} bytes`);
-                buffer += chunk;
-                
-                // Attempt to find and parse complete JSON objects in the buffer
-                // We look for a balanced string that starts with { and ends with }
-                let startIndex = buffer.indexOf('{');
-                if (startIndex === -1) {
-                    // No object start found, clear junk if any
-                    if (buffer.length > 1000) buffer = ''; 
-                    return;
-                }
-
-                // Try to see if the current buffer (from the first { onwards) is valid JSON
-                const potentialJson = buffer.substring(startIndex);
-                try {
-                    // Basic check to avoid parsing massive incomplete strings
-                    if (potentialJson.includes('}')) {
-                        const parsed = JSON.parse(potentialJson);
-                        // If we are here, potentialJson is a complete valid JSON object
-                        logger.info(`Valid task detected (${potentialJson.length} characters)`);
-                        
-                        const response = await processTask(JSON.stringify(parsed), executorFactory, credentialsAdapter, ajv);
-                        logger.info(`Sending response (${response.length} characters)`);
-                        socket.write(response + '\n');
-                        
-                        buffer = ''; // Clear buffer after successful processing
-                    }
-                } catch (e) {
-                    // Not valid JSON yet, wait for more chunks
-                    // We only log if it looks like it SHOULD have been finished
-                    if (potentialJson.length > 5000) {
-                         logger.debug("Buffer growing large without valid JSON...");
-                    }
-                }
-            } catch (err) {
-                logger.error({ err }, "Error in data listener");
-                socket.end(JSON.stringify({ status: "error", message: String(err), code: "INTERNAL_ERROR" }) + '\n');
-            }
-        });
-
-        socket.on('error', (err) => {
-            logger.error({ err }, "Socket error");
-        });
-    });
-
-    await new Promise<void>((resolve, reject) => {
-        server.on('error', (err) => {
-            logger.error({ err }, "Server failed to start");
-            reject(err);
-        });
-
-        server.listen(socketPath, () => {
-            logger.info(`🚀 Worker listening on socket: ${socketPath}`);
-            try {
-                fs.chmodSync(socketPath, 0o666);
-            } catch (err) {
-                logger.warn({ err }, "Could not set socket permissions");
-            }
-        });
-    });
-
-    // Handle cleanup on exit
-    const cleanup = () => {
-        if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
-        process.exit();
+    const send = (message: unknown) => {
+        socket.write(serializeNdjson(message));
     };
+
+    const handleMessage = async (message: OrchestratorMessage) => {
+        switch (message.type) {
+            case 'registration_ack':
+                logger.info({ workerId: message.worker_id }, "Worker registration acknowledged");
+                return;
+            case 'task_dispatch': {
+                logger.info({ taskId: message.task_id }, "Received task dispatch");
+                const result = await processTask(message, executorFactory, credentialsAdapter, ajv);
+                const response: TaskResultMessage = {
+                    type: 'task_result',
+                    task_id: message.task_id,
+                    result,
+                };
+                send(response);
+                logger.info({ taskId: message.task_id, resultKind: result.kind }, "Sent task result");
+                return;
+            }
+        }
+    };
+
+    socket.on('connect', () => {
+        const registration: WorkerRegistrationMessage = {
+            type: 'register',
+            worker_id: workerId,
+            capabilities: [...SUPPORTED_CAPABILITIES],
+        };
+        logger.info({ socketPath, workerId }, "Connected to orchestrator IPC socket");
+        send(registration);
+    });
+
+    socket.on('data', (data) => {
+        buffer += data.toString('utf8');
+
+        let newlineIndex = buffer.indexOf('\n');
+        while (newlineIndex !== -1) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
+
+            if (line.length > 0) {
+                processing = processing
+                    .then(async () => {
+                        try {
+                            await handleMessage(JSON.parse(line) as OrchestratorMessage);
+                        } catch (err) {
+                            logger.error({ err, line }, "Failed to process orchestrator IPC message");
+                        }
+                    });
+            }
+
+            newlineIndex = buffer.indexOf('\n');
+        }
+    });
+
+    socket.on('error', (err) => {
+        logger.error({ err, socketPath }, "Orchestrator socket error");
+    });
+
+    socket.on('close', () => {
+        logger.info("Orchestrator socket closed");
+        process.exit(0);
+    });
+
+    const cleanup = () => {
+        socket.end();
+    };
+
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);
 }

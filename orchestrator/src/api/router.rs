@@ -1,4 +1,4 @@
-use axum::{routing::get, routing::post, Router};
+use axum::{Router, routing::get, routing::post};
 use std::sync::Arc;
 
 use super::handlers;
@@ -16,7 +16,16 @@ pub fn create_router(orchestrator: Arc<Orchestrator>) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health_check))
-        .route("/workflows", post(handlers::create_workflow))
-        .route("/workflows/:id", get(handlers::get_workflow))
+        .route("/workflow-def", post(handlers::create_workflow_def))
+        .route(
+            "/workflow-def/{def_id}",
+            post(handlers::trigger_workflow_instance),
+        )
+        .route("/workflows/{id}", get(handlers::get_workflow_instance))
+        .route(
+            "/workflows/{workflow_instance_id}/tasks/{task_id}",
+            get(handlers::get_task_result),
+        )
+        .fallback(handlers::not_found)
         .with_state(state)
 }

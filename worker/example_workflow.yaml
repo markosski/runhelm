@@ -1,0 +1,42 @@
+id: simple-two-task-workflow
+
+tasks:
+  - id: fetch_user
+    kind:
+      ApiCall:
+        url: "http://localhost:3000/health"
+        method: "GET"
+    input_schemas: []
+    output_schema:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: string
+    expected_side_effects: []
+    required_credentials: []
+
+  - id: summarize_user
+    kind:
+      Function:
+        dependencies: []
+        code: |
+          return {
+            response: `Fake response`
+          };
+    input_schemas: []
+    output_schema:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: string
+    expected_side_effects: []
+    required_credentials: []
+
+data_bindings:
+  - source_task_id: fetch_user
+    target_task_id: summarize_user
+    target_input_index: 0

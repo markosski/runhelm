@@ -1,8 +1,10 @@
-use std::sync::Arc;
 use crate::core::engine::WorkflowEngine;
-use crate::ports::storage::StoragePort;
+use crate::core::models::{
+    TaskDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport,
+};
 use crate::ports::executor::ExecutorPort;
-use crate::core::models::{TaskDef, WorkflowDef, WorkflowInstance, WorkflowStatusReport};
+use crate::ports::storage::{StoragePort, TaskResult};
+use std::sync::Arc;
 
 /// The application layer for the orchestrator.
 /// It coordinates between the workflow engine, storage, and executors.
@@ -41,13 +43,57 @@ impl Orchestrator {
     }
 
     /// Returns a status report for a workflow instance.
-    pub async fn get_workflow_status(&self, id: &str) -> anyhow::Result<Option<WorkflowStatusReport>> {
+    pub async fn get_workflow_status(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowStatusReport>> {
         self.engine.get_workflow_status(id).await
+    }
+
+    pub async fn get_task_result(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<TaskResult> {
+        self.storage
+            .get_task_result(workflow_instance_id, task_id)
+            .await
     }
 
     /// Starts or resumes execution of a workflow instance.
     pub async fn run_workflow(&self, instance_id: String) -> anyhow::Result<()> {
         self.engine.run_workflow_instance(instance_id).await
+    }
+
+    /// Reconciles in-flight workflow state after an orchestrator restart.
+    ///
+    /// Storage is the source of truth. Any task left Running from a previous
+    /// process is moved back to Pending so it can be dispatched again.
+    pub async fn synchronize_startup_tasks(&self) -> anyhow::Result<usize> {
+        let mut recovered = 0;
+
+        for mut instance in self.storage.list_active_workflow_instances().await? {
+            let mut changed = false;
+
+            for task in instance.tasks.values_mut() {
+                if task.status == TaskStatus::Running {
+                    task.status = TaskStatus::Pending;
+                    changed = true;
+                }
+            }
+
+            if instance.status == WorkflowStatus::Running {
+                instance.status = WorkflowStatus::Pending;
+                changed = true;
+            }
+
+            if changed {
+                self.storage.save_workflow_instance(instance).await?;
+                recovered += 1;
+            }
+        }
+
+        Ok(recovered)
     }
 
     /// Executes a single task in isolation, bypasses workflow orchestration.
