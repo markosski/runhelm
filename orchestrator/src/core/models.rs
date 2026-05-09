@@ -110,6 +110,23 @@ pub struct WorkflowStatusReport {
     pub tasks: Vec<TaskStatusReport>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowSummary {
+    pub id: String,
+    pub workflow_def_id: String,
+    pub status: WorkflowStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowList {
+    pub workflows: Vec<WorkflowSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowQueueStatus {
+    pub pending: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskStatusReport {
     pub task_id: String,

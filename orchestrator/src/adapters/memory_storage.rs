@@ -69,6 +69,11 @@ impl StoragePort for MemoryStorage {
         Ok(map.get(id).cloned())
     }
 
+    async fn list_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>> {
+        let map = self.workflow_instances.read().await;
+        Ok(map.values().cloned().collect())
+    }
+
     async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>> {
         let map = self.workflow_instances.read().await;
         Ok(map
@@ -160,6 +165,43 @@ mod tests {
             TaskResult::Failure {
                 error_message: "task failed".to_string()
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn list_workflow_instances_returns_completed_and_active_instances() {
+        let storage = MemoryStorage::new();
+        let completed = WorkflowInstance {
+            id: "completed-instance".to_string(),
+            workflow_def_id: "workflow-1".to_string(),
+            status: WorkflowStatus::Completed,
+            tasks: HashMap::new(),
+        };
+        let running = WorkflowInstance {
+            id: "running-instance".to_string(),
+            workflow_def_id: "workflow-1".to_string(),
+            status: WorkflowStatus::Running,
+            tasks: HashMap::new(),
+        };
+
+        storage.save_workflow_instance(completed).await.unwrap();
+        storage.save_workflow_instance(running).await.unwrap();
+
+        let mut ids: Vec<String> = storage
+            .list_workflow_instances()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|instance| instance.id)
+            .collect();
+        ids.sort();
+
+        assert_eq!(
+            ids,
+            vec![
+                "completed-instance".to_string(),
+                "running-instance".to_string()
+            ]
         );
     }
 }

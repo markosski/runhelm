@@ -1,4 +1,7 @@
-use axum::{Router, routing::get, routing::post};
+use axum::{
+    Router,
+    routing::{delete, get, post},
+};
 use std::sync::Arc;
 
 use super::handlers;
@@ -25,6 +28,12 @@ pub fn create_router(orchestrator: Arc<Orchestrator>) -> Router {
             "/workflow-def/{def_id}",
             post(handlers::trigger_workflow_instance),
         )
+        .route(
+            "/queue",
+            get(handlers::get_queue).delete(handlers::purge_queue),
+        )
+        .route("/queue/{id}", delete(handlers::delete_queue_item))
+        .route("/workflows", get(handlers::list_workflows))
         .route("/workflows/{id}", get(handlers::get_workflow_instance))
         .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",

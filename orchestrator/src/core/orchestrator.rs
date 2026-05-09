@@ -1,6 +1,7 @@
 use crate::core::engine::WorkflowEngine;
 use crate::core::models::{
-    TaskDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport,
+    TaskDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowList, WorkflowQueueStatus,
+    WorkflowStatus, WorkflowStatusReport, WorkflowSummary,
 };
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
@@ -71,12 +72,55 @@ impl Orchestrator {
         self.workflow_queue.enqueue(instance_id).await
     }
 
+    /// Returns queued and currently running workflow instance IDs.
+    pub async fn get_queue_status(&self) -> anyhow::Result<WorkflowQueueStatus> {
+        let pending = self.workflow_queue.pending_ids().await?;
+
+        Ok(WorkflowQueueStatus { pending })
+    }
+
+    /// Removes a pending workflow instance from the queue.
+    pub async fn remove_queued_workflow_instance(&self, instance_id: &str) -> anyhow::Result<bool> {
+        self.workflow_queue.remove(instance_id).await
+    }
+
+    /// Removes all pending workflow instances from the queue.
+    pub async fn purge_queued_workflow_instances(&self) -> anyhow::Result<Vec<String>> {
+        self.workflow_queue.purge().await
+    }
+
     /// Returns a status report for a workflow instance.
     pub async fn get_workflow_status(
         &self,
         id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
         self.engine.get_workflow_status(id).await
+    }
+
+    pub async fn list_workflows(
+        &self,
+        status: Option<WorkflowStatus>,
+    ) -> anyhow::Result<WorkflowList> {
+        let mut workflows: Vec<WorkflowSummary> = self
+            .storage
+            .list_workflow_instances()
+            .await?
+            .into_iter()
+            .filter(|instance| {
+                status
+                    .as_ref()
+                    .is_none_or(|status| instance.status == *status)
+            })
+            .map(|instance| WorkflowSummary {
+                id: instance.id,
+                workflow_def_id: instance.workflow_def_id,
+                status: instance.status,
+            })
+            .collect();
+
+        workflows.sort_by(|left, right| left.id.cmp(&right.id));
+
+        Ok(WorkflowList { workflows })
     }
 
     pub async fn get_task_result(
@@ -384,5 +428,95 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result, Some(ExecutionResult::Success(_))));
+    }
+
+    #[tokio::test]
+    async fn queue_status_lists_pending_workflows() {
+        let storage = Arc::new(MemoryStorage::new());
+        let queue = Arc::new(MemoryWorkflowQueue::new(10));
+        let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+
+        let mut running = workflow_instance("running-workflow", "workflow-1");
+        running.status = WorkflowStatus::Running;
+        storage.save_workflow_instance(running).await.unwrap();
+
+        orchestrator
+            .enqueue_workflow_instance("pending-workflow".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            orchestrator.get_queue_status().await.unwrap(),
+            WorkflowQueueStatus {
+                pending: vec!["pending-workflow".to_string()],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_and_purge_affect_pending_queue_only() {
+        let orchestrator = orchestrator();
+
+        orchestrator
+            .enqueue_workflow_instance("workflow-1".to_string())
+            .await
+            .unwrap();
+        orchestrator
+            .enqueue_workflow_instance("workflow-2".to_string())
+            .await
+            .unwrap();
+
+        assert!(
+            orchestrator
+                .remove_queued_workflow_instance("workflow-1")
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            orchestrator
+                .purge_queued_workflow_instances()
+                .await
+                .unwrap(),
+            vec!["workflow-2".to_string()]
+        );
+        assert!(
+            orchestrator
+                .get_queue_status()
+                .await
+                .unwrap()
+                .pending
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_workflows_filters_by_status() {
+        let storage = Arc::new(MemoryStorage::new());
+        let orchestrator = Orchestrator::new(
+            storage.clone(),
+            Arc::new(FakeExecutor::new()),
+            Arc::new(MemoryWorkflowQueue::new(10)),
+        );
+
+        let mut completed = workflow_instance("completed-workflow", "workflow-1");
+        completed.status = WorkflowStatus::Completed;
+        let mut running = workflow_instance("running-workflow", "workflow-1");
+        running.status = WorkflowStatus::Running;
+        storage.save_workflow_instance(completed).await.unwrap();
+        storage.save_workflow_instance(running).await.unwrap();
+
+        assert_eq!(
+            orchestrator
+                .list_workflows(Some(WorkflowStatus::Running))
+                .await
+                .unwrap(),
+            WorkflowList {
+                workflows: vec![WorkflowSummary {
+                    id: "running-workflow".to_string(),
+                    workflow_def_id: "workflow-1".to_string(),
+                    status: WorkflowStatus::Running,
+                }],
+            }
+        );
     }
 }
