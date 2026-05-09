@@ -676,7 +676,7 @@
       <section class="hero" aria-labelledby="title">
         <div>
           <p class="eyebrow"><span class="status-dot"></span>Agentic workflow orchestration</p>
-          <h1 id="title">RunHelm separates workflow control from task execution.</h1>
+          <h1 id="title">A workflow engine for reliable agent execution.</h1>
           <p class="hero-copy">
             The orchestrator owns definitions, scheduling, state, and HTTP visibility.
             Workers execute typed tasks through a narrow protocol, so agent calls,
@@ -724,7 +724,7 @@
               </div>
               <div class="node api">
                 <h3>Axum API</h3>
-                <p>Exposes <span class="inline-code">/health</span>, workflow registration, run trigger, isolated task invoke, and status endpoints.</p>
+                <p>Exposes <span class="inline-code">/health</span>, workflow registration, run trigger, queue management, isolated task invoke, and workflow query endpoints.</p>
               </div>
             </div>
             <div class="arrow-column" aria-hidden="true">-></div>
@@ -774,8 +774,8 @@
             <div class="band-label"><span class="band-marker" style="background: var(--rust)"></span>orchestrator/</div>
             <p>
               Rust control plane. It stores workflow definitions, creates workflow
-              instances, queues runs, exposes HTTP endpoints, and drives task
-              state transitions through the workflow engine.
+              instances, manages the pending queue, exposes HTTP endpoints, and
+              drives task state transitions through the workflow engine.
             </p>
           </article>
           <article class="band">
@@ -828,7 +828,7 @@
           </article>
           <article class="step">
             <h3>Report status</h3>
-            <p>Runs become completed, failed, or input-needed and remain queryable through HTTP.</p>
+            <p>Runs become completed, failed, or input-needed and remain queryable through workflow collection and detail endpoints.</p>
           </article>
         </div>
       </section>
@@ -926,8 +926,17 @@
             <h3>State visibility</h3>
             <ul>
               <li>Workflow status: <span class="inline-code">Pending</span>, <span class="inline-code">Running</span>, <span class="inline-code">InputNeeded</span>, <span class="inline-code">Completed</span>, <span class="inline-code">Failed</span></li>
+              <li>Workflow instances can be listed with <span class="inline-code">GET /workflows</span> and filtered with <span class="inline-code">?status=running</span> or other lifecycle states.</li>
               <li>Task status is reported separately for each task.</li>
               <li>Task outputs can be fetched after completion.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3>Queue control</h3>
+            <ul>
+              <li><span class="inline-code">GET /queue</span> returns pending workflow instance IDs.</li>
+              <li><span class="inline-code">DELETE /queue/{id}</span> removes one pending item.</li>
+              <li><span class="inline-code">DELETE /queue</span> purges the pending queue without cancelling running workflows.</li>
             </ul>
           </article>
           <article class="panel">
@@ -966,6 +975,8 @@
               <li>Start the system with <span class="inline-code">docker compose up --build</span>.</li>
               <li>Register a workflow definition with <span class="inline-code">POST /workflow-def</span>.</li>
               <li>Trigger a run with <span class="inline-code">POST /workflow-def/{def_id}</span>.</li>
+              <li>Inspect the pending queue with <span class="inline-code">GET /queue</span>.</li>
+              <li>List runs with <span class="inline-code">GET /workflows</span> or <span class="inline-code">GET /workflows?status=completed</span>.</li>
               <li>Inspect the run with <span class="inline-code">GET /workflows/{id}</span>.</li>
               <li>Fetch a task result with <span class="inline-code">GET /workflows/{workflow_instance_id}/tasks/{task_id}</span>.</li>
             </ol>
@@ -994,7 +1005,15 @@ curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow \
   -d '{}'
 
 # Check run status
-curl -sS http://localhost:3000/workflows/&lt;workflow-instance-id&gt;</code></pre>
+curl -sS http://localhost:3000/workflows/&lt;workflow-instance-id&gt;
+
+# List workflow runs
+curl -sS 'http://localhost:3000/workflows?status=running'
+
+# Inspect and manage pending queue
+curl -sS http://localhost:3000/queue
+curl -sS -X DELETE http://localhost:3000/queue/&lt;workflow-instance-id&gt;
+curl -sS -X DELETE http://localhost:3000/queue</code></pre>
         </div>
       </section>
 
