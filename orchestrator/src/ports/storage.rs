@@ -47,13 +47,12 @@ impl Serialize for TaskResult {
 pub trait StoragePort {
     async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()>;
     async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>>;
+    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()>;
+    async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>>;
+    async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
     async fn get_task_result(
         &self,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<TaskResult>;
-
-    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()>;
-    async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>>;
-    async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
 }

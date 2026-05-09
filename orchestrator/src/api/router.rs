@@ -18,6 +18,10 @@ pub fn create_router(orchestrator: Arc<Orchestrator>) -> Router {
         .route("/health", get(handlers::health_check))
         .route("/workflow-def", post(handlers::create_workflow_def))
         .route(
+            "/workflow-def/{def_id}/tasks/{task_id}",
+            post(handlers::invoke_workflow_task_isolated),
+        )
+        .route(
             "/workflow-def/{def_id}",
             post(handlers::trigger_workflow_instance),
         )

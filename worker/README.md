@@ -1,177 +1,380 @@
 # RunHelm Worker
 
-A containerized task executor for the RunHelm workflow orchestrator. The worker runs as a resident service listening on a **Unix Domain Socket** (`/tmp/worker.sock`), executes tasks, and returns results as JSON.
+The worker executes tasks for the RunHelm orchestrator. It starts as a resident Node.js process, connects to the orchestrator over a Unix domain socket, registers its capabilities, receives task dispatch messages, and sends task results back over the same socket.
 
-## Prerequisites
+The worker does not expose HTTP endpoints. HTTP requests go to the orchestrator API.
 
-- [Node.js](https://nodejs.org/) v20+
-- [Docker](https://www.docker.com/) (for building and running the container image)
+## Requirements
+
+- Node.js 20+
+- npm
+- Docker, if building the worker image
 
 ## Development
 
-### Install dependencies
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-### Run in development mode
+Build TypeScript:
 
 ```bash
-npm run dev
+npm run build
 ```
 
-This runs the TypeScript source directly via `ts-node` without a build step. It will start listening on `/tmp/worker.sock` by default.
-
-### Manual Testing (JSON)
-
-You can send JSON payloads to the socket using `socat`:
-
-```bash
-echo '{"task": {"id": "abc123", "kind": {"Agent": {"model_id": "google/gemini-2.5-flash", "prompt": "say hi!"}}, "input_schemas": [], "output_schema": {"type": "object", "properties": {"response": {"type": "string"}}}, "expected_side_effects": [], "required_credentials": ["llm_api_key"]}, "inputs": []}' | socat -t 60 - UNIX-CONNECT:/tmp/worker.sock,shut-none
-```
-
-### Manual Testing (YAML)
-
-For a better developer experience, you can write tasks in YAML and use `yq` to pipe them to the worker:
-
-1. Create a `task.yaml`:
-
-```yaml
-task:
-  id: "abc123"
-  kind:
-    Agent:
-      model_id: "google/gemini-2.5-flash"
-      prompt: |-
-        Collect information about following stocks: NVDA, TSLA, INTC, AMD.
-        Organize information exactly as the following output:
-        - NVDA - 10.00
-        - TSLA - 10.00
-        ...
-  output_schema:
-    type: "object"
-    properties:
-      response: { type: "string" }
-  required_credentials: ["llm_api_key"]
-inputs: []
-```
-
-2. Send to the worker:
-
-```bash
-# Using the Python yq wrapper (kislyuk/yq)
-yq . task.yaml | socat -t 60 - UNIX-CONNECT:/tmp/worker.sock,shut-none
-
-# Using the Go yq version (mikefarah/yq)
-yq -o=json task.yaml | socat -t 60 - UNIX-CONNECT:/tmp/worker.sock,shut-none
-```
-
-### Build
-
-Compile TypeScript to JavaScript in `dist/`:
-
-```bash
-npm build
-```
-
-### Run the compiled output
+Run the worker from compiled output:
 
 ```bash
 npm start
 ```
 
-## Testing
+Run the worker from TypeScript source:
 
 ```bash
-npm test
+npm run dev
 ```
 
-> **Note:** No test suite is configured yet. Add your test framework (e.g. [Vitest](https://vitest.dev/)) and update the `test` script in `package.json`.
+The worker connects to the socket at `RUNHELM_SOCKET_PATH`, or `/tmp/runhelm.sock` when the environment variable is not set. The orchestrator owns that socket and must be running before a worker can connect.
 
-## stdin/stdout Protocol
+## Orchestrator HTTP Endpoints
 
-The worker communicates via line-delimited JSON on **stdin/stdout**. Each line is one message.
+The orchestrator listens on port `3000` by default.
 
-**Input** (one JSON object per line on stdin):
+### `GET /health`
+
+Health check.
+
+Response:
+
+```text
+OK
+```
+
+### `POST /workflow-def`
+
+Registers a workflow definition.
+
+Example:
+
+```bash
+yq -o=json worker/example_workflow.yaml \
+  | curl -sS -X POST http://localhost:3000/workflow-def \
+      -H 'content-type: application/json' \
+      --data-binary @-
+```
+
+Response:
 
 ```json
 {
+  "status": "created",
+  "id": "simple-function-workflow"
+}
+```
+
+### `POST /workflow-def/{def_id}`
+
+Creates and starts a workflow instance from a registered workflow definition. The current handler accepts a JSON body but does not read fields from it.
+
+Example:
+
+```bash
+curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow \
+  -H 'content-type: application/json' \
+  -d '{}'
+```
+
+Response:
+
+```json
+{
+  "status": "created",
+  "id": "simple-function-workflow-1780000000000000000"
+}
+```
+
+### `POST /workflow-def/{def_id}/tasks/{task_id}`
+
+Executes a task from a registered workflow definition in isolation. This bypasses workflow instance creation and is intended for testing individual tasks.
+
+Example:
+
+```bash
+curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow/tasks/summarize_user \
+  -H 'content-type: application/json' \
+  -d '{ "inputs": [] }'
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "output": {
+    "response": "hello world"
+  }
+}
+```
+
+### `GET /workflows/{id}`
+
+Returns a workflow instance status report.
+
+Example:
+
+```bash
+curl -sS http://localhost:3000/workflows/simple-function-workflow-1780000000000000000
+```
+
+Response shape:
+
+```json
+{
+  "instance_id": "simple-function-workflow-1780000000000000000",
+  "workflow_def_id": "simple-function-workflow",
+  "status": "Completed",
+  "tasks": [
+    {
+      "task_id": "summarize_user",
+      "status": "Completed",
+      "has_output": true
+    }
+  ]
+}
+```
+
+### `GET /workflows/{workflow_instance_id}/tasks/{task_id}`
+
+Returns a task result for a workflow instance.
+
+Example:
+
+```bash
+curl -sS http://localhost:3000/workflows/simple-function-workflow-1780000000000000000/tasks/summarize_user
+```
+
+Example response:
+
+```json
+{
+  "response": "hello world"
+}
+```
+
+Unknown routes return `404`.
+
+## Worker IPC Protocol
+
+The worker and orchestrator exchange newline-delimited JSON over the Unix socket.
+
+### Worker Registration
+
+Sent by the worker after connecting:
+
+```json
+{
+  "type": "register",
+  "worker_id": "host-12345",
+  "capabilities": ["Agent", "ApiCall", "Function"]
+}
+```
+
+### Registration Ack
+
+Sent by the orchestrator:
+
+```json
+{
+  "type": "registration_ack",
+  "worker_id": "host-12345"
+}
+```
+
+### Task Dispatch
+
+Sent by the orchestrator:
+
+```json
+{
+  "type": "task_dispatch",
+  "task_id": "summarize_user",
   "task": {
-    "id": "abc123",
+    "id": "summarize_user",
     "kind": {
-      "Agent": {
-        "model_id": "openai/gpt-4o-mini",
-        "provider_url": "",
-        "prompt": "say hi!"
+      "Function": {
+        "dependencies": [],
+        "code": "export default async function run(ctx) { return { response: 'hello world' }; }"
       }
     },
     "input_schemas": [],
     "output_schema": {
       "type": "object",
+      "required": ["response"],
       "properties": {
-        "response": {
-          "type": "string"
-        }
+        "response": { "type": "string" }
       }
     },
     "expected_side_effects": [],
-    "required_credentials": ["llm_api_key"]
+    "required_credentials": []
   },
   "inputs": []
 }
 ```
 
-**Output** (written to stdout):
+### Task Result
+
+Sent by the worker:
 
 ```json
-{"status": "ok", "output": {"response": "Task executed successfully"}}
+{
+  "type": "task_result",
+  "task_id": "summarize_user",
+  "result": {
+    "kind": "success",
+    "output": {
+      "response": "hello world"
+    }
+  }
+}
 ```
 
-**Errors** (written to stdout as JSON, not stderr):
+Failure result:
 
 ```json
-{"status": "error", "message": "SyntaxError: Unexpected token ...", "code": null}
+{
+  "type": "task_result",
+  "task_id": "summarize_user",
+  "result": {
+    "kind": "failure",
+    "reason": "error message"
+  }
+}
 ```
 
-The worker exits cleanly when stdin is closed (EOF).
+Input-needed result:
+
+```json
+{
+  "type": "task_result",
+  "task_id": "agent_task",
+  "result": {
+    "kind": "input_needed",
+    "description": "question for the user"
+  }
+}
+```
+
+## Supported Task Types
+
+### Function
+
+Runs JavaScript ESM in a per-task temporary directory and executes it in a child Node.js process. The task must export a default async or sync function.
+
+```yaml
+kind:
+  Function:
+    dependencies:
+      - name: left-pad
+        version: 1.3.0
+    code: |
+      import leftPad from "left-pad";
+
+      export default async function run(ctx) {
+        return {
+          response: leftPad(ctx.inputs[0].value, 5, "0")
+        };
+      }
+```
+
+The Function context contains:
+
+```ts
+{
+  inputs: unknown[];
+  credentials: Record<string, string>;
+}
+```
+
+`dependencies` is required. Use `[]` when the task has no npm dependencies.
+
+### Agent
+
+Runs an LLM-backed agent task.
+
+Required task fields:
+
+```yaml
+kind:
+  Agent:
+    model_id: "google/gemini-2.5-flash"
+    provider_url: ""
+    prompt: "Return a JSON response."
+    tools: []
+    ask: false
+    schema_failure_retry_times: 0
+required_credentials:
+  - llm_api_key
+```
+
+### ApiCall
+
+Currently simulated by the worker.
+
+```yaml
+kind:
+  ApiCall:
+    url: "http://localhost:3000/health"
+    method: "GET"
+```
+
+## Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `RUNHELM_SOCKET_PATH` | `/tmp/runhelm.sock` | Unix socket path used by the worker and orchestrator IPC server. |
+| `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
+| `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
+| `LLM_API_KEY` | development fallback in code | Credential value exposed as `llm_api_key`. |
+| `BRAVE_API_KEY` | development fallback in code | Credential value exposed as `system_brave_api_key`. |
 
 ## Docker
 
-### Build the image
+Build the worker image:
 
 ```bash
-docker build -t runhelm-worker .
+docker build -t runhelm-worker worker
 ```
 
-The Dockerfile uses a two-stage build:
-1. **Builder** — installs all dependencies and compiles TypeScript.
-2. **Production** — copies only the compiled `dist/` and production dependencies, keeping the image lean.
-
-### Run the container
-
-The container reads tasks from stdin, so attach an interactive terminal or pipe input:
+Run the worker container with access to the orchestrator socket:
 
 ```bash
-# Interactive (manual testing)
-docker run -i runhelm-worker
-
-# Pipe a task
-echo '{"task": {"id": "abc123", "kind": {"Agent": {"model_id": "google/gemini-2.5-flash", "provider_url": null, "prompt": "hello?"}}, "input_schemas": [], "output_schema": {"type": "object", "properties": {"response": {"type": "string"}}}, "expected_side_effects": [], "required_credentials": ["llm_api_key"]}, "inputs": []}' | docker run -i runhelm-worker
+docker run --rm \
+  -e RUNHELM_SOCKET_PATH=/tmp/runhelm.sock \
+  -v /tmp/runhelm.sock:/tmp/runhelm.sock \
+  runhelm-worker
 ```
 
 ## Project Structure
 
-```
+```text
 worker/
 ├── src/
-│   ├── core/
-│   │   └── ports/
-│   │       └── CredentialsPort.ts    # Port interface for fetching credentials
 │   ├── adapters/
-│   │   └── EnvCredentialsAdapter.ts  # Example adapter fetching from environment
-│   └── index.ts        # Entry point — reads stdin, dispatches tasks, writes stdout
-├── Dockerfile           # Multi-stage Docker build
+│   │   ├── executors/
+│   │   │   ├── AgentExecutor.ts
+│   │   │   ├── ApiCallExecutor.ts
+│   │   │   └── FunctionExecutor.ts
+│   │   └── InMemoryCredentialsAdapter.ts
+│   ├── core/
+│   │   ├── models/
+│   │   │   └── TaskDef.ts
+│   │   └── ports/
+│   └── index.ts
+├── Dockerfile
+├── example_workflow.yaml
+├── example_workflow_agent.yaml
 ├── package.json
 └── tsconfig.json
 ```

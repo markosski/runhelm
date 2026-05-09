@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
 use crate::core::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
+use crate::ports::executor::ExecutionResult;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::router::AppState;
@@ -90,6 +92,30 @@ pub async fn trigger_workflow_instance(
     })))
 }
 
+#[derive(Deserialize)]
+pub struct InvokeTaskRequest {
+    inputs: Vec<Value>,
+}
+
+pub async fn invoke_workflow_task_isolated(
+    State(state): State<AppState>,
+    Path((workflow_def_id, task_id)): Path<(String, String)>,
+    Json(payload): Json<InvokeTaskRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    match state
+        .orchestrator
+        .execute_workflow_task_isolated(&workflow_def_id, &task_id, &payload.inputs)
+        .await
+    {
+        Ok(Some(result)) => Ok(Json(execution_result_to_value(result))),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%workflow_def_id, %task_id, %error, "isolated task execution failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 pub async fn get_workflow_instance(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -113,6 +139,23 @@ pub async fn get_task_result(
         Ok(result) => Ok(Json(serde_json::to_value(result).unwrap())),
         Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+fn execution_result_to_value(result: ExecutionResult) -> Value {
+    match result {
+        ExecutionResult::Success(output) => json!({
+            "status": "success",
+            "output": output
+        }),
+        ExecutionResult::InputNeeded(description) => json!({
+            "status": "input_needed",
+            "description": description
+        }),
+        ExecutionResult::Failure(error_message) => json!({
+            "status": "failure",
+            "error_message": error_message
+        }),
     }
 }
 
