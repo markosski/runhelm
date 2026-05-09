@@ -11,6 +11,7 @@ use tracing_subscriber::EnvFilter;
 use crate::adapters::docker_executor::DockerExecutor;
 use crate::adapters::ipc::{WorkerPool, run_ipc_server, socket_path_from_env};
 use crate::adapters::memory_storage::MemoryStorage;
+use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::api::router;
 use crate::core::orchestrator::Orchestrator;
 
@@ -25,12 +26,21 @@ async fn main() -> anyhow::Result<()> {
     let storage = Arc::new(MemoryStorage::new());
     let worker_pool = WorkerPool::new();
     let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
+    let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
 
     // Initialize Orchestrator (Application Layer)
-    let orchestrator = Arc::new(Orchestrator::new(storage, executor));
+    let orchestrator = Arc::new(Orchestrator::new(storage, executor, workflow_queue));
     let recovered = orchestrator.synchronize_startup_tasks().await?;
     info!(recovered, "Startup task synchronization complete");
+    let requeued = orchestrator.enqueue_active_workflow_instances().await?;
+    info!(requeued, "Active workflow requeue complete");
+    tokio::spawn(
+        orchestrator
+            .clone()
+            .run_scheduler(max_concurrent_workflows()),
+    );
 
+    // Setup API (Interface Layer)
     // Setup router
     let app = router::create_router(orchestrator);
 
@@ -47,4 +57,20 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn max_concurrent_workflows() -> usize {
+    std::env::var("RUNHELM_MAX_CONCURRENT_WORKFLOWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
+}
+
+fn workflow_queue_capacity() -> usize {
+    std::env::var("RUNHELM_WORKFLOW_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1024)
 }

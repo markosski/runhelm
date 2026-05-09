@@ -66,6 +66,11 @@ impl WorkflowEngine {
             None => anyhow::bail!("Workflow definition not found"),
         };
 
+        instance.status = WorkflowStatus::Running;
+        self.storage
+            .save_workflow_instance(instance.clone())
+            .await?;
+
         // Initialize tasks if not already done
         if instance.tasks.is_empty() {
             for task_def in &def.tasks {

@@ -38,6 +38,15 @@ npm run dev
 
 The worker connects to the socket at `RUNHELM_SOCKET_PATH`, or `/tmp/runhelm.sock` when the environment variable is not set. The orchestrator owns that socket and must be running before a worker can connect.
 
+The worker reads credentials from `~/.runhelm/file_credentials.json` during startup. The file must contain a flat JSON object whose keys are credential names and whose values are strings:
+
+```json
+{
+  "llm_api_key": "example-llm-key",
+  "system_brave_api_key": "example-brave-key"
+}
+```
+
 ## Orchestrator HTTP Endpoints
 
 The orchestrator listens on port `3000` by default.
@@ -336,8 +345,8 @@ kind:
 | `RUNHELM_SOCKET_PATH` | `/tmp/runhelm.sock` | Unix socket path used by the worker and orchestrator IPC server. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
-| `LLM_API_KEY` | development fallback in code | Credential value exposed as `llm_api_key`. |
-| `BRAVE_API_KEY` | development fallback in code | Credential value exposed as `system_brave_api_key`. |
+
+Credential values are not read from environment variables. Put credential values in `~/.runhelm/file_credentials.json`.
 
 ## Docker
 
@@ -353,8 +362,11 @@ Run the worker container with access to the orchestrator socket:
 docker run --rm \
   -e RUNHELM_SOCKET_PATH=/tmp/runhelm.sock \
   -v /tmp/runhelm.sock:/tmp/runhelm.sock \
+  -v ~/.runhelm:/home/runhelm/.runhelm:ro \
   runhelm-worker
 ```
+
+Mount `~/.runhelm` read-only in containers. It must contain `file_credentials.json`. Keep runtime files such as `runhelm.sock` outside this directory; the default socket path remains `/tmp/runhelm.sock`.
 
 ## Project Structure
 
@@ -362,6 +374,7 @@ docker run --rm \
 worker/
 ├── src/
 │   ├── adapters/
+│   │   ├── FileCredentialsAdapter.ts
 │   │   ├── executors/
 │   │   │   ├── AgentExecutor.ts
 │   │   │   ├── ApiCallExecutor.ts

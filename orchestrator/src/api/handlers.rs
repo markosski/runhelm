@@ -72,22 +72,16 @@ pub async fn trigger_workflow_instance(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let orchestrator = state.orchestrator.clone();
-    let run_instance_id = instance_id.clone();
-    tokio::spawn(async move {
-        if let Err(error) = orchestrator.run_workflow(run_instance_id.clone()).await {
-            tracing::error!(
-                workflow_instance_id = %run_instance_id,
-                %error,
-                "workflow execution failed"
-            );
-        }
-    });
+    state
+        .orchestrator
+        .enqueue_workflow_instance(instance_id.clone())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    info!("Created workflow instance with ID: {}", instance_id);
+    info!("Created queued workflow instance with ID: {}", instance_id);
 
     Ok(Json(json!({
-        "status": "created",
+        "status": "queued",
         "id": instance_id
     })))
 }

@@ -43,6 +43,7 @@ services:
       RUNHELM_SOCKET_PATH: /run/runhelm/runhelm.sock
     volumes:
       - runhelm-ipc:/run/runhelm:ro
+      - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro
     read_only: true
     tmpfs:
       - /tmp

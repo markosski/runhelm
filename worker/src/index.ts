@@ -3,8 +3,9 @@
 
 import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
-import { InMemoryCredentialsAdapter } from './adapters/InMemoryCredentialsAdapter.js';
+import { FileCredentialsAdapter, defaultCredentialsFilePath } from './adapters/FileCredentialsAdapter.js';
 import type { TaskExecutionPayload } from './core/models/TaskDef.js';
+import type { CredentialsPort } from './core/ports/CredentialsPort.js';
 import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
 
 import * as net from 'net';
@@ -65,7 +66,7 @@ function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult 
 async function processTask(
     payload: TaskExecutionPayload,
     executorFactory: ExecutorFactory,
-    credentialsAdapter: InMemoryCredentialsAdapter,
+    credentialsAdapter: CredentialsPort,
     ajv: Ajv
 ): Promise<WorkerExecutionResult> {
     try {
@@ -97,10 +98,8 @@ async function main() {
     logger.info("Worker starting up...");
 
     const executorFactory = new ExecutorFactory();
-    const credentialsAdapter = new InMemoryCredentialsAdapter({
-        "llm_api_key": process.env.LLM_API_KEY || "AIzaSyDAdxRMQO6y-UwcrcvuYv-FMXm8fvh5X8I",
-        "system_brave_api_key": process.env.BRAVE_API_KEY || "BSAop3Ar-a6z2LOpEQBeCBI4gBs599S"
-    });
+    const credentialsFilePath = defaultCredentialsFilePath();
+    const credentialsAdapter = await FileCredentialsAdapter.fromFile(credentialsFilePath);
 
     const ajv = new Ajv();
     const socketPath = process.env.RUNHELM_SOCKET_PATH || DEFAULT_SOCKET_PATH;

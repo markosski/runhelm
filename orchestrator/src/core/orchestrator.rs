@@ -4,7 +4,10 @@ use crate::core::models::{
 };
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
+use crate::ports::workflow_queue::WorkflowQueuePort;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tracing::{error, info};
 
 /// The application layer for the orchestrator.
 /// It coordinates between the workflow engine, storage, and executors.
@@ -12,18 +15,21 @@ pub struct Orchestrator {
     engine: WorkflowEngine,
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
+    workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
 }
 
 impl Orchestrator {
     pub fn new(
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
+        workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
     ) -> Self {
         let engine = WorkflowEngine::new(storage.clone(), executor.clone());
         Self {
             engine,
             storage,
             executor,
+            workflow_queue,
         }
     }
 
@@ -60,6 +66,11 @@ impl Orchestrator {
         self.storage.save_workflow_instance(instance).await
     }
 
+    /// Adds a workflow instance to the execution queue.
+    pub async fn enqueue_workflow_instance(&self, instance_id: String) -> anyhow::Result<()> {
+        self.workflow_queue.enqueue(instance_id).await
+    }
+
     /// Returns a status report for a workflow instance.
     pub async fn get_workflow_status(
         &self,
@@ -81,6 +92,45 @@ impl Orchestrator {
     /// Starts or resumes execution of a workflow instance.
     pub async fn run_workflow(&self, instance_id: String) -> anyhow::Result<()> {
         self.engine.run_workflow_instance(instance_id).await
+    }
+
+    /// Continuously consumes queued workflow instances and runs up to `max_concurrent_workflows`.
+    pub async fn run_scheduler(self: Arc<Self>, max_concurrent_workflows: usize) {
+        let max_concurrent_workflows = max_concurrent_workflows.max(1);
+        let permits = Arc::new(Semaphore::new(max_concurrent_workflows));
+        info!(max_concurrent_workflows, "workflow scheduler started");
+
+        loop {
+            let permit = match Arc::clone(&permits).acquire_owned().await {
+                Ok(permit) => permit,
+                Err(error) => {
+                    error!(%error, "workflow scheduler semaphore closed");
+                    break;
+                }
+            };
+
+            let instance_id = match self.workflow_queue.dequeue().await {
+                Ok(instance_id) => instance_id,
+                Err(error) => {
+                    error!(%error, "workflow scheduler failed to dequeue workflow instance");
+                    drop(permit);
+                    break;
+                }
+            };
+
+            let orchestrator = Arc::clone(&self);
+            tokio::spawn(async move {
+                let workflow_instance_id = instance_id.clone();
+                if let Err(error) = orchestrator.run_workflow(instance_id).await {
+                    error!(
+                        %workflow_instance_id,
+                        %error,
+                        "workflow execution failed"
+                    );
+                }
+                drop(permit);
+            });
+        }
     }
 
     /// Reconciles in-flight workflow state after an orchestrator restart.
@@ -114,6 +164,18 @@ impl Orchestrator {
         Ok(recovered)
     }
 
+    /// Requeues all active workflow instances found in storage.
+    pub async fn enqueue_active_workflow_instances(&self) -> anyhow::Result<usize> {
+        let instances = self.storage.list_active_workflow_instances().await?;
+        let count = instances.len();
+
+        for instance in instances {
+            self.enqueue_workflow_instance(instance.id).await?;
+        }
+
+        Ok(count)
+    }
+
     /// Executes a single task in isolation, bypasses workflow orchestration.
     /// Useful for testing individual task types or executors.
     pub async fn execute_task_isolated(
@@ -130,15 +192,56 @@ mod tests {
     use super::*;
     use crate::adapters::fake_executor::FakeExecutor;
     use crate::adapters::memory_storage::MemoryStorage;
+    use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
     use crate::core::models::TaskTypeDef;
     use crate::ports::executor::ExecutionResult;
+    use async_trait::async_trait;
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{Duration, sleep};
 
     fn orchestrator() -> Orchestrator {
         Orchestrator::new(
             Arc::new(MemoryStorage::new()),
             Arc::new(FakeExecutor::new()),
+            Arc::new(MemoryWorkflowQueue::new(10)),
         )
+    }
+
+    struct CountingExecutor {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        delay: Duration,
+    }
+
+    impl CountingExecutor {
+        fn new(delay: Duration) -> Self {
+            Self {
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+                delay,
+            }
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ExecutorPort for CountingExecutor {
+        async fn execute(
+            &self,
+            _task: &TaskDef,
+            _inputs: &[serde_json::Value],
+        ) -> anyhow::Result<ExecutionResult> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            sleep(self.delay).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(ExecutionResult::Success(json!({})))
+        }
     }
 
     fn task(id: &str) -> TaskDef {
@@ -166,6 +269,15 @@ mod tests {
             id: id.to_string(),
             tasks,
             data_bindings: vec![],
+        }
+    }
+
+    fn workflow_instance(id: &str, workflow_def_id: &str) -> WorkflowInstance {
+        WorkflowInstance {
+            id: id.to_string(),
+            workflow_def_id: workflow_def_id.to_string(),
+            status: WorkflowStatus::Pending,
+            tasks: HashMap::new(),
         }
     }
 
@@ -209,5 +321,68 @@ mod tests {
             result,
             Some(ExecutionResult::Success(json!({ "ok": false })))
         );
+    }
+
+    #[tokio::test]
+    async fn scheduler_limits_concurrent_workflow_execution() {
+        let storage = Arc::new(MemoryStorage::new());
+        let executor = Arc::new(CountingExecutor::new(Duration::from_millis(50)));
+        let queue = Arc::new(MemoryWorkflowQueue::new(10));
+        let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue));
+        let scheduler = tokio::spawn(orchestrator.clone().run_scheduler(2));
+
+        for id in ["workflow-1", "workflow-2", "workflow-3"] {
+            storage
+                .save_workflow_def(workflow(
+                    id,
+                    vec![TaskDef {
+                        output_schema: None,
+                        ..task("task-a")
+                    }],
+                ))
+                .await
+                .unwrap();
+            storage
+                .save_workflow_instance(workflow_instance(id, id))
+                .await
+                .unwrap();
+            orchestrator
+                .enqueue_workflow_instance(id.to_string())
+                .await
+                .unwrap();
+        }
+
+        for _ in 0..20 {
+            let mut completed = 0;
+            for id in ["workflow-1", "workflow-2", "workflow-3"] {
+                let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
+                if instance.status == WorkflowStatus::Completed {
+                    completed += 1;
+                }
+            }
+            if completed == 3 {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(executor.max_active(), 2);
+        scheduler.abort();
+    }
+
+    #[tokio::test]
+    async fn isolated_workflow_task_execution_does_not_require_scheduler() {
+        let orchestrator = orchestrator();
+        orchestrator
+            .create_workflow_def(workflow("workflow-1", vec![task("task-a")]))
+            .await
+            .unwrap();
+
+        let result = orchestrator
+            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
+            .await
+            .unwrap();
+
+        assert!(matches!(result, Some(ExecutionResult::Success(_))));
     }
 }

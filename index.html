@@ -1,0 +1,1008 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RunHelm Architecture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #18202b;
+        --muted: #5e6b7a;
+        --line: #d8dee8;
+        --page: #f6f8fb;
+        --panel: #ffffff;
+        --rust: #d45d3b;
+        --rust-soft: #fff0e9;
+        --ts: #2878c6;
+        --ts-soft: #eaf4ff;
+        --api: #7663d9;
+        --api-soft: #f1eeff;
+        --state: #16846d;
+        --state-soft: #e8f7f2;
+        --external: #b67816;
+        --external-soft: #fff5df;
+        --danger: #b5404a;
+        --danger-soft: #fff0f2;
+        --shadow: 0 18px 50px rgba(18, 31, 47, 0.1);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, #eef3f8 0, var(--page) 360px),
+          var(--page);
+        line-height: 1.5;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .site-header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        border-bottom: 1px solid rgba(216, 222, 232, 0.8);
+        background: rgba(246, 248, 251, 0.9);
+        backdrop-filter: blur(16px);
+      }
+
+      .nav {
+        max-width: 1180px;
+        min-height: 64px;
+        margin: 0 auto;
+        padding: 0 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        color: #fff;
+        background:
+          linear-gradient(135deg, var(--rust), var(--api) 54%, var(--state)),
+          var(--api);
+        box-shadow: 0 8px 20px rgba(118, 99, 217, 0.25);
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .nav-links a {
+        padding: 8px 10px;
+        border-radius: 6px;
+        color: var(--muted);
+        font-size: 14px;
+        text-decoration: none;
+      }
+
+      .nav-links a:hover {
+        color: var(--ink);
+        background: #fff;
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 0.94fr) minmax(320px, 1.06fr);
+        gap: 34px;
+        align-items: center;
+        min-height: 560px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 14px;
+        color: var(--state);
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--state);
+        box-shadow: 0 0 0 5px rgba(22, 132, 109, 0.13);
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        line-height: 1.08;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        max-width: 660px;
+        font-size: clamp(44px, 6vw, 78px);
+      }
+
+      h2 {
+        font-size: clamp(30px, 4vw, 44px);
+      }
+
+      h3 {
+        font-size: 18px;
+      }
+
+      .hero-copy {
+        max-width: 640px;
+        margin: 20px 0 0;
+        color: var(--muted);
+        font-size: 19px;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 42px;
+        padding: 10px 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--ink);
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .button.primary {
+        border-color: #1d2835;
+        background: #1d2835;
+        color: #fff;
+      }
+
+      .mini-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 30px;
+      }
+
+      .stat {
+        min-height: 88px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .stat strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 20px;
+      }
+
+      .stat span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .system-map {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: var(--shadow);
+      }
+
+      .map-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .map-title p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        justify-content: flex-end;
+      }
+
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .chip-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+      }
+
+      .map-grid {
+        display: grid;
+        grid-template-columns: 1fr 28px 1fr 28px 1fr;
+        gap: 12px;
+        align-items: stretch;
+      }
+
+      .map-column {
+        display: grid;
+        gap: 12px;
+      }
+
+      .arrow-column {
+        display: grid;
+        place-items: center;
+        color: #8b97a8;
+        font-weight: 900;
+      }
+
+      .node {
+        position: relative;
+        min-height: 116px;
+        padding: 15px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .node::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 6px;
+        border-radius: 8px 0 0 8px;
+      }
+
+      .node p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .node.api {
+        background: var(--api-soft);
+      }
+
+      .node.api::before {
+        background: var(--api);
+      }
+
+      .node.rust {
+        background: var(--rust-soft);
+      }
+
+      .node.rust::before {
+        background: var(--rust);
+      }
+
+      .node.ts {
+        background: var(--ts-soft);
+      }
+
+      .node.ts::before {
+        background: var(--ts);
+      }
+
+      .node.state {
+        background: var(--state-soft);
+      }
+
+      .node.state::before {
+        background: var(--state);
+      }
+
+      .node.external {
+        background: var(--external-soft);
+      }
+
+      .node.external::before {
+        background: var(--external);
+      }
+
+      .section {
+        margin-top: 72px;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 22px;
+      }
+
+      .section-head p {
+        max-width: 650px;
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .bands {
+        display: grid;
+        gap: 12px;
+      }
+
+      .band {
+        display: grid;
+        grid-template-columns: 210px 1fr;
+        gap: 20px;
+        align-items: start;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .band-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 900;
+      }
+
+      .band-marker {
+        width: 12px;
+        height: 38px;
+        border-radius: 999px;
+      }
+
+      .band p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 10px;
+        counter-reset: step;
+      }
+
+      .step {
+        position: relative;
+        min-height: 170px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        counter-increment: step;
+      }
+
+      .step::before {
+        content: counter(step);
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        margin-bottom: 15px;
+        border-radius: 999px;
+        background: #1d2835;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 900;
+      }
+
+      .step p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .panels {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .panel {
+        min-height: 220px;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .panel p,
+      .panel li {
+        color: var(--muted);
+      }
+
+      .panel ul {
+        margin: 12px 0 0;
+        padding-left: 20px;
+      }
+
+      .panel li + li {
+        margin-top: 7px;
+      }
+
+      .task-kinds {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .kind {
+        min-height: 180px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .kind-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .badge {
+        padding: 5px 8px;
+        border-radius: 999px;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .kind p {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .code-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      pre {
+        overflow: auto;
+        min-height: 100%;
+        margin: 0;
+        padding: 18px;
+        border: 1px solid #243142;
+        border-radius: 8px;
+        background: #131b25;
+        color: #dce8f6;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      code {
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      }
+
+      .inline-code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: #eef2f7;
+        color: #263446;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 0.92em;
+      }
+
+      .use-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(320px, 1.15fr);
+        gap: 18px;
+        align-items: stretch;
+      }
+
+      .checklist {
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .checklist ol {
+        margin: 14px 0 0;
+        padding-left: 22px;
+      }
+
+      .checklist li {
+        margin-top: 10px;
+        color: var(--muted);
+      }
+
+      .callout {
+        margin-top: 16px;
+        padding: 16px;
+        border: 1px solid #ffd4dd;
+        border-radius: 8px;
+        background: var(--danger-soft);
+      }
+
+      .callout strong {
+        color: var(--danger);
+      }
+
+      .footer {
+        margin-top: 72px;
+        padding-top: 24px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (max-width: 980px) {
+        .hero,
+        .use-grid,
+        .code-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .flow,
+        .panels,
+        .task-kinds {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .map-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .arrow-column {
+          min-height: 22px;
+          transform: rotate(90deg);
+        }
+      }
+
+      @media (max-width: 700px) {
+        main {
+          padding: 32px 16px 54px;
+        }
+
+        .nav {
+          padding: 0 16px;
+          align-items: flex-start;
+          flex-direction: column;
+          justify-content: center;
+          gap: 8px;
+        }
+
+        .nav-links {
+          justify-content: flex-start;
+          padding-bottom: 10px;
+        }
+
+        .hero {
+          min-height: auto;
+        }
+
+        h1 {
+          font-size: 42px;
+        }
+
+        .mini-stats,
+        .flow,
+        .panels,
+        .task-kinds {
+          grid-template-columns: 1fr;
+        }
+
+        .band {
+          grid-template-columns: 1fr;
+        }
+
+        .section-head {
+          display: block;
+        }
+
+        .section-head p {
+          margin-top: 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Page sections">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">RH</div>
+          <span>RunHelm Architecture</span>
+        </div>
+        <div class="nav-links">
+          <a href="#map">Map</a>
+          <a href="#flow">Execution</a>
+          <a href="#contracts">Contracts</a>
+          <a href="#use">How to use</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="title">
+        <div>
+          <p class="eyebrow"><span class="status-dot"></span>Agentic workflow orchestration</p>
+          <h1 id="title">RunHelm separates workflow control from task execution.</h1>
+          <p class="hero-copy">
+            The orchestrator owns definitions, scheduling, state, and HTTP visibility.
+            Workers execute typed tasks through a narrow protocol, so agent calls,
+            API calls, and custom functions can evolve independently.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#use">Start using it</a>
+            <a class="button" href="#map">View architecture</a>
+          </div>
+          <div class="mini-stats" aria-label="Architecture summary">
+            <div class="stat">
+              <strong>Rust</strong>
+              <span>deterministic orchestration core</span>
+            </div>
+            <div class="stat">
+              <strong>TypeScript</strong>
+              <span>dynamic task runtime</span>
+            </div>
+            <div class="stat">
+              <strong>NDJSON</strong>
+              <span>worker IPC message contract</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="system-map" id="map" aria-labelledby="map-title">
+          <div class="map-title">
+            <div>
+              <h2 id="map-title">System Map</h2>
+              <p>Color shows responsibility, not deployment boundary.</p>
+            </div>
+            <div class="legend" aria-label="Color legend">
+              <span><i class="chip-dot" style="background: var(--api)"></i>API</span>
+              <span><i class="chip-dot" style="background: var(--rust)"></i>Rust</span>
+              <span><i class="chip-dot" style="background: var(--ts)"></i>TypeScript</span>
+              <span><i class="chip-dot" style="background: var(--state)"></i>State</span>
+            </div>
+          </div>
+
+          <div class="map-grid">
+            <div class="map-column">
+              <div class="node api">
+                <h3>Frontend or client</h3>
+                <p>Registers workflow definitions, starts runs, and reads status through HTTP.</p>
+              </div>
+              <div class="node api">
+                <h3>Axum API</h3>
+                <p>Exposes <span class="inline-code">/health</span>, workflow registration, run trigger, isolated task invoke, and status endpoints.</p>
+              </div>
+            </div>
+            <div class="arrow-column" aria-hidden="true">-></div>
+            <div class="map-column">
+              <div class="node rust">
+                <h3>Orchestrator</h3>
+                <p>Coordinates workflow definitions, instances, queueing, and injected ports.</p>
+              </div>
+              <div class="node rust">
+                <h3>Workflow engine</h3>
+                <p>Finds runnable tasks, calls the executor port, validates outputs, and propagates data bindings.</p>
+              </div>
+              <div class="node state">
+                <h3>Storage port</h3>
+                <p>Persists workflow definitions, run status, task input data, output data, and side effect records.</p>
+              </div>
+            </div>
+            <div class="arrow-column" aria-hidden="true">-></div>
+            <div class="map-column">
+              <div class="node ts">
+                <h3>Worker pool</h3>
+                <p>Workers register over a Unix socket, advertise capabilities, receive dispatches, and return task results.</p>
+              </div>
+              <div class="node ts">
+                <h3>Task executors</h3>
+                <p><span class="inline-code">Agent</span>, <span class="inline-code">ApiCall</span>, and <span class="inline-code">Function</span> task kinds run behind a common executor interface.</p>
+              </div>
+              <div class="node external">
+                <h3>Providers and tools</h3>
+                <p>LLM providers, HTTP calls, URL fetch, search, current time, and credential-backed integrations.</p>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="roles">
+        <div class="section-head">
+          <h2 id="roles">Component Roles</h2>
+          <p>
+            RunHelm uses ports and adapters so side effects stay replaceable while
+            workflow decisions stay concentrated in the core engine.
+          </p>
+        </div>
+        <div class="bands">
+          <article class="band">
+            <div class="band-label"><span class="band-marker" style="background: var(--rust)"></span>orchestrator/</div>
+            <p>
+              Rust control plane. It stores workflow definitions, creates workflow
+              instances, queues runs, exposes HTTP endpoints, and drives task
+              state transitions through the workflow engine.
+            </p>
+          </article>
+          <article class="band">
+            <div class="band-label"><span class="band-marker" style="background: var(--ts)"></span>worker/</div>
+            <p>
+              Node.js task runtime. It connects to the orchestrator socket,
+              registers capabilities, receives task dispatch messages, selects
+              an executor, validates outputs with AJV, and sends results back.
+            </p>
+          </article>
+          <article class="band">
+            <div class="band-label"><span class="band-marker" style="background: var(--api)"></span>frontend/</div>
+            <p>
+              React operator console prototype. It is intended to show workflow
+              visibility, run monitoring, and operational status as the API
+              surface matures.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="flow" aria-labelledby="flow-title">
+        <div class="section-head">
+          <h2 id="flow-title">Execution Flow</h2>
+          <p>
+            A run advances only when dependencies are satisfied and outputs match
+            the declared schema. That keeps the orchestration loop predictable.
+          </p>
+        </div>
+        <div class="flow">
+          <article class="step">
+            <h3>Register definition</h3>
+            <p>Submit a workflow with tasks, JSON schemas, and data bindings.</p>
+          </article>
+          <article class="step">
+            <h3>Create instance</h3>
+            <p>The orchestrator creates a pending instance with one task instance per task.</p>
+          </article>
+          <article class="step">
+            <h3>Find ready tasks</h3>
+            <p>The engine checks bindings and runs only tasks whose upstream inputs are complete.</p>
+          </article>
+          <article class="step">
+            <h3>Dispatch work</h3>
+            <p>The executor port sends task payloads to a fake, Docker, or IPC-backed worker executor.</p>
+          </article>
+          <article class="step">
+            <h3>Validate output</h3>
+            <p>Output schemas are enforced before data is stored or sent downstream.</p>
+          </article>
+          <article class="step">
+            <h3>Report status</h3>
+            <p>Runs become completed, failed, or input-needed and remain queryable through HTTP.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="contracts" aria-labelledby="contracts-title">
+        <div class="section-head">
+          <h2 id="contracts-title">Contracts</h2>
+          <p>
+            The important boundary is the task contract: inputs, output schema,
+            required credentials, and the selected task kind.
+          </p>
+        </div>
+
+        <div class="task-kinds">
+          <article class="kind">
+            <div class="kind-top">
+              <h3>Agent</h3>
+              <span class="badge" style="background: var(--ts)">LLM</span>
+            </div>
+            <p>
+              Uses a provider URL, model id, prompt, optional tools, and optional
+              ask behavior. Credentials are looked up through the credentials port.
+            </p>
+          </article>
+          <article class="kind">
+            <div class="kind-top">
+              <h3>ApiCall</h3>
+              <span class="badge" style="background: var(--external)">HTTP</span>
+            </div>
+            <p>
+              Encodes network calls as workflow nodes so external API work has
+              the same state and validation treatment as other tasks.
+            </p>
+          </article>
+          <article class="kind">
+            <div class="kind-top">
+              <h3>Function</h3>
+              <span class="badge" style="background: var(--rust)">Code</span>
+            </div>
+            <p>
+              Runs task-provided JavaScript with declared dependencies and returns
+              structured output to be schema-checked.
+            </p>
+          </article>
+        </div>
+
+        <div class="section code-grid" style="margin-top: 16px">
+          <pre><code>{
+  "id": "summarize_user",
+  "kind": {
+    "Function": {
+      "dependencies": [],
+      "code": "export default async function run(ctx) { ... }"
+    }
+  },
+  "input_schemas": [],
+  "output_schema": {
+    "type": "object",
+    "required": ["response"],
+    "properties": {
+      "response": { "type": "string" }
+    }
+  },
+  "expected_side_effects": [],
+  "required_credentials": []
+}</code></pre>
+          <pre><code>{
+  "type": "task_dispatch",
+  "task_id": "summarize_user",
+  "task": { "...": "TaskDef" },
+  "inputs": []
+}
+
+{
+  "type": "task_result",
+  "task_id": "summarize_user",
+  "result": {
+    "kind": "success",
+    "output": { "response": "hello world" }
+  }
+}</code></pre>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="operability">
+        <div class="section-head">
+          <h2 id="operability">Operational Model</h2>
+          <p>
+            Docker Compose runs the API and multiple workers with a shared Unix
+            socket volume. Credentials are mounted read-only into the worker.
+          </p>
+        </div>
+        <div class="panels">
+          <article class="panel">
+            <h3>State visibility</h3>
+            <ul>
+              <li>Workflow status: <span class="inline-code">Pending</span>, <span class="inline-code">Running</span>, <span class="inline-code">InputNeeded</span>, <span class="inline-code">Completed</span>, <span class="inline-code">Failed</span></li>
+              <li>Task status is reported separately for each task.</li>
+              <li>Task outputs can be fetched after completion.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3>Isolation</h3>
+            <ul>
+              <li>HTTP traffic enters through the orchestrator only.</li>
+              <li>Workers communicate over the RunHelm socket.</li>
+              <li>Compose services run with read-only filesystems and no-new-privileges.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3>Credentials</h3>
+            <ul>
+              <li>The worker reads <span class="inline-code">~/.runhelm/file_credentials.json</span>.</li>
+              <li>Credential names are declared per task.</li>
+              <li>Adapters keep secret lookup behind a testable interface.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="use" aria-labelledby="use-title">
+        <div class="section-head">
+          <h2 id="use-title">How To Use It</h2>
+          <p>
+            Use Docker Compose for the integrated path, or run the orchestrator
+            and worker separately while developing.
+          </p>
+        </div>
+
+        <div class="use-grid">
+          <div class="checklist">
+            <h3>Local workflow</h3>
+            <ol>
+              <li>Create credentials at <span class="inline-code">~/.runhelm/file_credentials.json</span> if your tasks require provider keys.</li>
+              <li>Start the system with <span class="inline-code">docker compose up --build</span>.</li>
+              <li>Register a workflow definition with <span class="inline-code">POST /workflow-def</span>.</li>
+              <li>Trigger a run with <span class="inline-code">POST /workflow-def/{def_id}</span>.</li>
+              <li>Inspect the run with <span class="inline-code">GET /workflows/{id}</span>.</li>
+              <li>Fetch a task result with <span class="inline-code">GET /workflows/{workflow_instance_id}/tasks/{task_id}</span>.</li>
+            </ol>
+            <div class="callout">
+              <strong>Current shape:</strong> RunHelm is early-stage. Some adapters
+              and the frontend are scaffolds, but the core contracts and worker
+              IPC path are already present in the codebase.
+            </div>
+          </div>
+
+          <pre><code># Start integrated services
+docker compose up --build
+
+# Health check
+curl -sS http://localhost:3000/health
+
+# Register the sample workflow
+yq -o=json worker/example_workflow.yaml \
+  | curl -sS -X POST http://localhost:3000/workflow-def \
+      -H 'content-type: application/json' \
+      --data-binary @-
+
+# Trigger a workflow run
+curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow \
+  -H 'content-type: application/json' \
+  -d '{}'
+
+# Check run status
+curl -sS http://localhost:3000/workflows/&lt;workflow-instance-id&gt;</code></pre>
+        </div>
+      </section>
+
+      <footer class="footer">
+        Built from the current RunHelm repository structure: Rust orchestrator,
+        TypeScript worker, React frontend shell, JSON task contracts, and IPC
+        worker dispatch.
+      </footer>
+    </main>
+  </body>
+</html>
