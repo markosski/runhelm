@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
+    "invoke": "node -e \"const net = require('net'); const client = net.createConnection('/tmp/worker.sock', () => { client.write(process.argv[1] + '\\n'); }); const rl = require('readline').createInterface({ input: client }); rl.on('line', (line) => { console.log(line); process.exit(0); }); client.on('error', (e) => { console.error('Connection Error:', e.message); process.exit(1); });\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

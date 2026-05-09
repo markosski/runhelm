@@ -1,0 +1,56 @@
+services:
+  ipc-permissions:
+    image: busybox:1.36
+    command: ["sh", "-c", "chown 10001:10001 /run/runhelm && chmod 0750 /run/runhelm"]
+    volumes:
+      - runhelm-ipc:/run/runhelm
+    restart: "no"
+
+  orchestrator:
+    build:
+      context: ./orchestrator
+    depends_on:
+      ipc-permissions:
+        condition: service_completed_successfully
+    environment:
+      RUST_LOG: info
+      RUNHELM_SOCKET_PATH: /run/runhelm/runhelm.sock
+      RUNHELM_TASK_TIMEOUT_SECS: "300"
+    ports:
+      - "3000:3000"
+    volumes:
+      - runhelm-ipc:/run/runhelm
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  worker:
+    build:
+      context: ./worker
+    depends_on:
+      ipc-permissions:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_healthy
+    environment:
+      RUNHELM_SOCKET_PATH: /run/runhelm/runhelm.sock
+    volumes:
+      - runhelm-ipc:/run/runhelm:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: on-failure
+    deploy:
+      replicas: 2
+
+volumes:
+  runhelm-ipc:

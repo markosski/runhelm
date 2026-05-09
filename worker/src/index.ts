@@ -1,72 +1,187 @@
 // This is the skeleton worker for executing agentic tasks
 // It uses pi-mono as a dependency for execution
 
-import * as readline from 'readline';
 import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
 import { InMemoryCredentialsAdapter } from './adapters/InMemoryCredentialsAdapter.js';
 import type { TaskExecutionPayload } from './core/models/TaskDef.js';
+import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
 
+import * as net from 'net';
+import * as os from 'os';
 import { logger } from './utils/logger.js';
+
+const DEFAULT_SOCKET_PATH = '/tmp/runhelm.sock';
+const SUPPORTED_CAPABILITIES = ['Agent', 'ApiCall', 'Function'] as const;
+
+type WorkerRegistrationMessage = {
+    type: 'register';
+    worker_id: string;
+    capabilities: typeof SUPPORTED_CAPABILITIES[number][];
+};
+
+type RegistrationAckMessage = {
+    type: 'registration_ack';
+    worker_id: string;
+};
+
+type TaskDispatchMessage = TaskExecutionPayload & {
+    type: 'task_dispatch';
+    task_id: string;
+};
+
+type OrchestratorMessage = RegistrationAckMessage | TaskDispatchMessage;
+
+type WorkerExecutionResult =
+    | { kind: 'success'; output: unknown }
+    | { kind: 'input_needed'; description: string }
+    | { kind: 'failure'; reason: string };
+
+type TaskResultMessage = {
+    type: 'task_result';
+    task_id: string;
+    result: WorkerExecutionResult;
+};
+
+function createWorkerId(): string {
+    return process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
+}
+
+function serializeNdjson(message: unknown): string {
+    return `${JSON.stringify(message)}\n`;
+}
+
+function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult {
+    switch (result.status) {
+        case 'ok':
+            return { kind: 'success', output: result.output };
+        case 'input_needed':
+            return { kind: 'input_needed', description: result.description };
+        case 'error':
+            return { kind: 'failure', reason: result.message };
+    }
+}
+
+async function processTask(
+    payload: TaskExecutionPayload,
+    executorFactory: ExecutorFactory,
+    credentialsAdapter: InMemoryCredentialsAdapter,
+    ajv: Ajv
+): Promise<WorkerExecutionResult> {
+    try {
+        logger.info(`Received task: ${payload.task?.id || 'unknown'}`);
+
+        // Get the appropriate executor based on task kind
+        const executor = executorFactory.getExecutor(payload.task.kind);
+        const result = await executor.execute(payload, credentialsAdapter);
+
+        if (result.status === 'ok') {
+            // Validate the result against the output_schema if provided
+            const outputSchema = payload.task?.output_schema;
+            if (outputSchema) {
+                const validate = ajv.compile(outputSchema);
+                const isValid = validate(result.output);
+                if (!isValid) {
+                    const errorMsg = `Output schema validation failed: ${ajv.errorsText(validate.errors)}`;
+                    return { kind: 'failure', reason: errorMsg };
+                }
+            }
+        }
+        return mapExecutionResult(result);
+    } catch (error) {
+        return { kind: 'failure', reason: String(error) };
+    }
+}
 
 async function main() {
     logger.info("Worker starting up...");
 
     const executorFactory = new ExecutorFactory();
-    // TODO: Initialize properly with actual credentials if needed
     const credentialsAdapter = new InMemoryCredentialsAdapter({
-        "llm_api_key": "AIzaSyDAdxRMQO6y-UwcrcvuYv-FMXm8fvh5X8I",
-        "system_brave_api_key": "BSAop3Ar-a6z2LOpEQBeCBI4gBs599S"
+        "llm_api_key": process.env.LLM_API_KEY || "AIzaSyDAdxRMQO6y-UwcrcvuYv-FMXm8fvh5X8I",
+        "system_brave_api_key": process.env.BRAVE_API_KEY || "BSAop3Ar-a6z2LOpEQBeCBI4gBs599S"
     });
 
     const ajv = new Ajv();
+    const socketPath = process.env.RUNHELM_SOCKET_PATH || DEFAULT_SOCKET_PATH;
+    const workerId = createWorkerId();
+    const socket = net.createConnection(socketPath);
 
-    // In a real environment, the task might come from an environment variable,
-    // a file, or stdin. We will set up a basic structure to read tasks.
+    let buffer = '';
+    let processing = Promise.resolve();
 
-    logger.info("Worker is ready to receive tasks.");
+    const send = (message: unknown) => {
+        socket.write(serializeNdjson(message));
+    };
 
-    // Simple loop to simulate processing
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
+    const handleMessage = async (message: OrchestratorMessage) => {
+        switch (message.type) {
+            case 'registration_ack':
+                logger.info({ workerId: message.worker_id }, "Worker registration acknowledged");
+                return;
+            case 'task_dispatch': {
+                logger.info({ taskId: message.task_id }, "Received task dispatch");
+                const result = await processTask(message, executorFactory, credentialsAdapter, ajv);
+                const response: TaskResultMessage = {
+                    type: 'task_result',
+                    task_id: message.task_id,
+                    result,
+                };
+                send(response);
+                logger.info({ taskId: message.task_id, resultKind: result.kind }, "Sent task result");
+                return;
+            }
+        }
+    };
+
+    socket.on('connect', () => {
+        const registration: WorkerRegistrationMessage = {
+            type: 'register',
+            worker_id: workerId,
+            capabilities: [...SUPPORTED_CAPABILITIES],
+        };
+        logger.info({ socketPath, workerId }, "Connected to orchestrator IPC socket");
+        send(registration);
     });
 
-    for await (const line of rl) {
-        try {
-            const taskData = JSON.parse(line);
-            const payload = taskData as TaskExecutionPayload;
-            logger.info(`Received task: ${payload.task?.id || 'unknown'}`);
+    socket.on('data', (data) => {
+        buffer += data.toString('utf8');
 
-            // Get the appropriate executor based on task kind
-            const executor = executorFactory.getExecutor(payload.task.kind);
-            const result = await executor.execute(payload, credentialsAdapter);
+        let newlineIndex = buffer.indexOf('\n');
+        while (newlineIndex !== -1) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
 
-            if (result.status === 'ok' || result.status === 'input_needed') {
-                if (result.status === 'ok') {
-                    // Validate the result against the output_schema if provided
-                    const outputSchema = taskData.task?.output_schema;
-                    if (outputSchema) {
-                        const validate = ajv.compile(outputSchema);
-                        const isValid = validate(result.output);
-                        if (!isValid) {
-                            const errorMsg = `Output schema validation failed: ${ajv.errorsText(validate.errors)}`;
-                            logger.error(JSON.stringify({ status: "error", message: errorMsg, code: null }));
-                            continue;
+            if (line.length > 0) {
+                processing = processing
+                    .then(async () => {
+                        try {
+                            await handleMessage(JSON.parse(line) as OrchestratorMessage);
+                        } catch (err) {
+                            logger.error({ err, line }, "Failed to process orchestrator IPC message");
                         }
-                    }
-                }
-                console.log(JSON.stringify(result));
-            } else {
-                console.log(JSON.stringify(result));
+                    });
             }
-        } catch (error) {
-            console.log(JSON.stringify({ status: "error", message: String(error), code: null }));
-        }
-    }
 
-    logger.info("Worker shutting down.");
-    process.exit(0);
+            newlineIndex = buffer.indexOf('\n');
+        }
+    });
+
+    socket.on('error', (err) => {
+        logger.error({ err, socketPath }, "Orchestrator socket error");
+    });
+
+    socket.on('close', () => {
+        logger.info("Orchestrator socket closed");
+        process.exit(0);
+    });
+
+    const cleanup = () => {
+        socket.end();
+    };
+
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
 }
 
 main().catch((err) => {

@@ -1,0 +1,25 @@
+id: simple-function-workflow
+
+tasks:
+  - id: summarize_user
+    kind:
+      Function:
+        dependencies: []
+        code: |
+          export default async function run(ctx) {
+            return {
+              response: "hello world"
+            };
+          }
+    input_schemas: []
+    output_schema:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: string
+    expected_side_effects: []
+    required_credentials: []
+
+data_bindings: []

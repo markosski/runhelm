@@ -1,7 +1,12 @@
 export type TaskKind =
     | { Agent: { model_id: string; provider_url: string; prompt: string; tools?: string[]; ask?: boolean; schema_failure_retry_times?: number } }
-    | { ApiCall: { endpoint: string; method: string } }
-    | { Function: { function_name: string; code?: string } };
+    | { ApiCall: { url: string; method: string } }
+    | { Function: { code: string; dependencies: FunctionDependency[] } };
+
+export interface FunctionDependency {
+    name: string;
+    version: string;
+}
 
 export interface TaskDef {
     id: string;
