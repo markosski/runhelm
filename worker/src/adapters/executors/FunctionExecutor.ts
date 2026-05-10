@@ -1,13 +1,19 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { JsonValue, TaskExecutor, TaskExecutionResult } from '../../core/ports/TaskExecutor.js';
 import type { FunctionDependency, TaskExecutionPayload } from '../../core/models/TaskDef.js';
 import type { CredentialsPort } from '../../core/ports/CredentialsPort.js';
 import { logger } from '../../utils/logger.js';
 
 const DEFAULT_FUNCTION_TIMEOUT_MS = 300_000;
+const DEFAULT_NPM_CACHE_ROOT = '/tmp/runhelm/npm';
+const DEFAULT_RUNTIME_ROOT = '/tmp/runhelm/runtime';
+
+// indicates a successful install of dependencies for a given set of Function dependencies, used to avoid re-installing on every execution
+const CACHE_SUCCESS_FILE = '.success';
+const LOCK_RETRY_DELAY_MS = 100;
 const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
 const PACKAGE_VERSION_PATTERN = /^[a-zA-Z0-9._~^*<>=| -]+$/;
 
@@ -32,7 +38,7 @@ export class FunctionExecutor implements TaskExecutor {
         const functionDef = payload.task.kind.Function;
         const dependencies = functionDef.dependencies;
         const timeoutMs = functionTimeoutMs();
-        const workDir = await mkdtemp(join(tmpdir(), 'runhelm-function-'));
+        const workDir = await createRuntimeWorkDir(payload);
 
         logger.info(
             { taskId: payload.task.id, dependencyCount: dependencies.length, workDir },
@@ -44,20 +50,13 @@ export class FunctionExecutor implements TaskExecutor {
             await writeRuntimeFiles(workDir, functionDef.code);
 
             if (dependencies.length > 0) {
-                const installResult = await installDependencies(workDir, dependencies, timeoutMs);
-                if (installResult.timedOut) {
-                    return { status: 'error', message: `Function dependency install timed out after ${timeoutMs}ms` };
-                }
-                if (installResult.exitCode !== 0) {
-                    return {
-                        status: 'error',
-                        message: `Function dependency install failed: ${formatChildFailure(installResult)}`,
-                    };
-                }
+                const nodeModulesPath = await ensureInstalledDependencies(dependencies, timeoutMs);
+                await symlink(nodeModulesPath, join(workDir, 'node_modules'), 'dir');
             }
 
             const credentials = await readRequiredCredentials(payload, credentialsPort);
             const context = {
+                workflow_def_id: payload.workflow_def_id,
                 inputs: payload.inputs,
                 credentials,
             };
@@ -105,18 +104,75 @@ async function writeRuntimeFiles(workDir: string, code: string): Promise<void> {
     await writeFile(join(workDir, 'runner.mjs'), runnerSource(), 'utf8');
 }
 
-async function installDependencies(
-    workDir: string,
+async function createRuntimeWorkDir(payload: TaskExecutionPayload): Promise<string> {
+    const workflowDefId = sanitizePathPart(payload.workflow_def_id);
+    const taskId = sanitizePathPart(payload.task.id);
+    const taskRuntimeDir = join(functionRuntimeRoot(), `${workflowDefId}-${taskId}`);
+
+    await mkdir(taskRuntimeDir, { recursive: true });
+    return mkdtemp(join(taskRuntimeDir, 'run-'));
+}
+
+async function ensureInstalledDependencies(
     dependencies: FunctionDependency[],
     timeoutMs: number
-): Promise<ChildResult> {
-    const packages = dependencies.map((dependency) => `${dependency.name}@${dependency.version}`);
+): Promise<string> {
+    const cacheDir = functionInstalledCacheDir(dependencies);
+    const nodeModulesPath = join(cacheDir, 'node_modules');
+    const successPath = join(cacheDir, CACHE_SUCCESS_FILE);
+
+    if ((await pathExists(successPath)) && (await pathExists(nodeModulesPath))) {
+        return nodeModulesPath;
+    }
+
+    await withInstallLock(cacheDir, timeoutMs, async () => {
+        if ((await pathExists(successPath)) && (await pathExists(nodeModulesPath))) {
+            return;
+        }
+
+        await rm(cacheDir, { recursive: true, force: true });
+        await mkdir(cacheDir, { recursive: true });
+        await writeFile(
+            join(cacheDir, 'package.json'),
+            JSON.stringify({ type: 'module', private: true, dependencies: dependencyMap(dependencies) }, null, 2),
+            'utf8'
+        );
+
+        const installResult = await installDependencies(cacheDir, timeoutMs);
+        if (installResult.timedOut) {
+            throw new Error(`Function dependency install timed out after ${timeoutMs}ms`);
+        }
+        if (installResult.exitCode !== 0) {
+            throw new Error(`Function dependency install failed: ${formatChildFailure(installResult)}`);
+        }
+
+        await writeFile(successPath, new Date().toISOString(), 'utf8');
+    });
+
+    return nodeModulesPath;
+}
+
+async function installDependencies(cacheDir: string, timeoutMs: number): Promise<ChildResult> {
+    await mkdir(join(functionNpmCacheRoot(), '_cacache'), { recursive: true });
+
     return runChild(
         'npm',
-        ['install', '--omit=dev', '--package-lock=false', '--ignore-scripts', ...packages],
-        workDir,
+        [
+            'install',
+            '--omit=dev',
+            '--package-lock=false',
+            '--ignore-scripts',
+            '--no-audit',
+            '--no-fund',
+        ],
+        cacheDir,
         undefined,
-        timeoutMs
+        timeoutMs,
+        {
+            npm_config_cache: join(functionNpmCacheRoot(), '_cacache'),
+            npm_config_tmp: join(cacheDir, '.npm-tmp'),
+            npm_config_update_notifier: 'false',
+        }
     );
 }
 
@@ -158,18 +214,97 @@ function functionTimeoutMs(): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_FUNCTION_TIMEOUT_MS;
 }
 
+function functionInstalledCacheDir(dependencies: FunctionDependency[]): string {
+    return join(functionNpmCacheRoot(), 'installed', dependencyHash(dependencies));
+}
+
+function dependencyHash(dependencies: FunctionDependency[]): string {
+    return createHash('sha256')
+        .update(JSON.stringify([...dependencies].sort(compareDependencies)))
+        .digest('hex')
+        .slice(0, 16);
+}
+
+function functionNpmCacheRoot(): string {
+    return process.env.RUNHELM_FUNCTION_NPM_CACHE_ROOT || DEFAULT_NPM_CACHE_ROOT;
+}
+
+function functionRuntimeRoot(): string {
+    return process.env.RUNHELM_FUNCTION_RUNTIME_ROOT || DEFAULT_RUNTIME_ROOT;
+}
+
+function compareDependencies(left: FunctionDependency, right: FunctionDependency): number {
+    return `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`);
+}
+
+function dependencyMap(dependencies: FunctionDependency[]): Record<string, string> {
+    return Object.fromEntries(
+        [...dependencies].sort(compareDependencies).map((dependency) => [dependency.name, dependency.version])
+    );
+}
+
+function sanitizePathPart(value: string): string {
+    return value.replace(/[^a-zA-Z0-9._-]/g, '_') || 'unnamed';
+}
+
+async function withInstallLock(cacheDir: string, timeoutMs: number, install: () => Promise<void>): Promise<void> {
+    const lockDir = `${cacheDir}.lock`;
+    const startedAt = Date.now();
+
+    await mkdir(dirname(cacheDir), { recursive: true });
+
+    while (true) {
+        try {
+            await mkdir(lockDir, { recursive: false });
+            break;
+        } catch (error) {
+            if (!isAlreadyExistsError(error)) {
+                throw error;
+            }
+            if (Date.now() - startedAt > timeoutMs) {
+                throw new Error(`Timed out waiting for Function dependency cache lock: ${lockDir}`);
+            }
+            await sleep(LOCK_RETRY_DELAY_MS);
+        }
+    }
+
+    try {
+        await install();
+    } finally {
+        await rm(lockDir, { recursive: true, force: true });
+    }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+    try {
+        await access(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+    return error instanceof Error && (error as NodeJS.ErrnoException).code === 'EEXIST';
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function runChild(
     command: string,
     args: string[],
     cwd: string,
     stdin: string | undefined,
-    timeoutMs: number
+    timeoutMs: number,
+    envOverrides: NodeJS.ProcessEnv = {}
 ): Promise<ChildResult> {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {
             cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: process.env,
+            env: { ...process.env, ...envOverrides },
         });
 
         let stdout = '';

@@ -4,11 +4,15 @@ tasks:
   - id: summarize_user
     kind:
       Function:
-        dependencies: []
+        dependencies:
+          - name: lodash-es
+            version: 4.17.21
         code: |
+          import { startCase } from "lodash-es";
+
           export default async function run(ctx) {
             return {
-              response: "hello world"
+              response: startCase("hello world from runhelm")
             };
           }
     input_schemas: []

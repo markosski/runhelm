@@ -18,6 +18,7 @@ export interface TaskDef {
 }
 
 export interface TaskExecutionPayload {
+    workflow_def_id: string;
     task: TaskDef;
     inputs: any[];
     input_provided?: string;

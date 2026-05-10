@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RunHelm Architecture</title>
+  <title>RunHelm - Agentic Workflow Engine</title>
   <style>
     :root {
       color-scheme: light;
@@ -120,11 +120,13 @@
     }
 
     .hero {
-      display: grid;
-      grid-template-columns: minmax(0, 0.94fr) minmax(320px, 1.06fr);
-      gap: 34px;
+      display: flex;
       align-items: center;
-      min-height: 560px;
+      min-height: 460px;
+    }
+
+    .hero > div {
+      max-width: 760px;
     }
 
     .eyebrow {
@@ -228,133 +230,87 @@
       font-size: 13px;
     }
 
-    .system-map {
+    .method {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 58px;
+      min-height: 28px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+
+    .method.get {
+      background: var(--state);
+    }
+
+    .method.post {
+      background: var(--api);
+    }
+
+    .method.delete {
+      background: var(--danger);
+    }
+
+    .api-reference {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .endpoint-card {
+      min-height: 245px;
       padding: 18px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #fff;
-      box-shadow: var(--shadow);
     }
 
-    .map-title {
+    .endpoint-head {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 16px;
+      gap: 12px;
+      min-width: 0;
     }
 
-    .map-title p {
-      margin: 4px 0 0;
+    .endpoint-head h3 {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-family:
+        "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 16px;
+    }
+
+    .endpoint-card p {
+      margin: 13px 0 0;
       color: var(--muted);
+      font-size: 14px;
+    }
+
+    .endpoint-card dl {
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      gap: 8px 12px;
+      margin: 16px 0 0;
+    }
+
+    .endpoint-card dt {
+      color: var(--ink);
       font-size: 13px;
-    }
-
-    .legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 7px;
-      justify-content: flex-end;
-    }
-
-    .legend span {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 8px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      color: var(--muted);
-      font-size: 12px;
-      white-space: nowrap;
-    }
-
-    .chip-dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 999px;
-    }
-
-    .map-grid {
-      display: grid;
-      grid-template-columns: 1fr 28px 1fr 28px 1fr;
-      gap: 12px;
-      align-items: stretch;
-    }
-
-    .map-column {
-      display: grid;
-      gap: 12px;
-    }
-
-    .arrow-column {
-      display: grid;
-      place-items: center;
-      color: #8b97a8;
       font-weight: 900;
     }
 
-    .node {
-      position: relative;
-      min-height: 116px;
-      padding: 15px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
-    }
-
-    .node::before {
-      content: "";
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 6px;
-      border-radius: 8px 0 0 8px;
-    }
-
-    .node p {
-      margin: 8px 0 0;
+    .endpoint-card dd {
+      margin: 0;
       color: var(--muted);
       font-size: 13px;
-    }
-
-    .node.api {
-      background: var(--api-soft);
-    }
-
-    .node.api::before {
-      background: var(--api);
-    }
-
-    .node.engine {
-      background: var(--engine-soft);
-    }
-
-    .node.engine::before {
-      background: var(--engine);
-    }
-
-    .node.function {
-      background: var(--function-soft);
-    }
-
-    .node.function::before {
-      background: var(--function);
-    }
-
-    .node.state {
-      background: var(--state-soft);
-    }
-
-    .node.state::before {
-      background: var(--state);
-    }
-
-    .node.external {
-      background: var(--external-soft);
-    }
-
-    .node.external::before {
-      background: var(--external);
+      overflow-wrap: anywhere;
     }
 
     .section {
@@ -746,6 +702,7 @@
 
       .flow,
       .panels,
+      .api-reference,
       .task-kinds,
       .checkpoint-strip {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -765,14 +722,6 @@
         height: 28px;
       }
 
-      .map-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .arrow-column {
-        min-height: 22px;
-        transform: rotate(90deg);
-      }
     }
 
     @media (max-width: 700px) {
@@ -804,6 +753,7 @@
       .mini-stats,
       .flow,
       .panels,
+      .api-reference,
       .task-kinds,
       .checkpoint-strip {
         grid-template-columns: 1fr;
@@ -832,11 +782,11 @@
         <span>RunHelm Architecture</span>
       </div>
       <div class="nav-links">
-        <a href="#map">Map</a>
         <a href="#compose">Compose</a>
         <a href="#flow">Execution</a>
         <a href="#contracts">Contracts</a>
         <a href="#use">How to use</a>
+        <a href="#api">API</a>
       </div>
     </nav>
   </header>
@@ -868,67 +818,6 @@
           </div>
         </div>
       </div>
-
-      <aside class="system-map" id="map" aria-labelledby="map-title">
-        <div class="map-title">
-          <div>
-            <h2 id="map-title">System Map</h2>
-            <p>Color shows responsibility, not deployment boundary.</p>
-          </div>
-          <div class="legend" aria-label="Color legend">
-            <span><i class="chip-dot" style="background: var(--api)"></i>API</span>
-            <span><i class="chip-dot" style="background: var(--engine)"></i>Engine</span>
-            <span><i class="chip-dot" style="background: var(--function)"></i>Function</span>
-            <span><i class="chip-dot" style="background: var(--state)"></i>State</span>
-          </div>
-        </div>
-
-        <div class="map-grid">
-          <div class="map-column">
-            <div class="node api">
-              <h3>API consumer</h3>
-              <p>Registers workflow definitions, starts runs, and reads status through HTTP.</p>
-            </div>
-            <div class="node api">
-              <h3>HTTP API</h3>
-              <p>Exposes <span class="inline-code">/health</span>, workflow registration, run trigger, queue management,
-                isolated task invoke, and workflow query endpoints.</p>
-            </div>
-          </div>
-          <div class="arrow-column" aria-hidden="true">-></div>
-          <div class="map-column">
-            <div class="node engine">
-              <h3>Orchestrator</h3>
-              <p>Coordinates workflow definitions, instances, queueing, and injected ports.</p>
-            </div>
-            <div class="node engine">
-              <h3>Workflow engine</h3>
-              <p>Finds runnable tasks, calls the executor port, validates outputs, and propagates data bindings.</p>
-            </div>
-            <div class="node state">
-              <h3>Storage port</h3>
-              <p>Persists workflow definitions, run status, task input data, output data, and side effect records.</p>
-            </div>
-          </div>
-          <div class="arrow-column" aria-hidden="true">-></div>
-          <div class="map-column">
-            <div class="node function">
-              <h3>Worker pool</h3>
-              <p>Workers register over a Unix socket, advertise capabilities, receive dispatches, and return task
-                results.</p>
-            </div>
-            <div class="node function">
-              <h3>Task executors</h3>
-              <p><span class="inline-code">Agent</span>, <span class="inline-code">ApiCall</span>, and <span
-                  class="inline-code">Function</span> task kinds run behind a common executor interface.</p>
-            </div>
-            <div class="node external">
-              <h3>Providers and tools</h3>
-              <p>LLM providers, HTTP calls, URL fetch, search, current time, and credential-backed integrations.</p>
-            </div>
-          </div>
-        </div>
-      </aside>
     </section>
 
     <section class="section" id="compose" aria-labelledby="compose-title">
@@ -1065,7 +954,7 @@
 
     <section class="section" id="contracts" aria-labelledby="contracts-title">
       <div class="section-head">
-        <h2 id="contracts-title">Contracts</h2>
+        <h2 id="contracts-title">Task Contracts</h2>
         <p>
           The important boundary is the task contract: inputs, output schema,
           required credentials, and the selected task kind.
@@ -1318,29 +1207,183 @@
 docker compose up --build
 
 # Health check
-curl -sS http://localhost:3000/health
+curl -sS http://localhost:3456/health
 
 # Register the sample workflow
-yq -o=json worker/example_workflow.yaml \
-  | curl -sS -X POST http://localhost:3000/workflow-def \
+yq . worker/example_workflow.yaml \
+  | curl -sS -X POST http://localhost:3456/workflow-def \
       -H 'content-type: application/json' \
       --data-binary @-
 
 # Trigger a workflow run
-curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow \
+curl -sS -X POST http://localhost:3456/workflow-def/simple-function-workflow \
   -H 'content-type: application/json' \
   -d '{}'
 
 # Check run status
-curl -sS http://localhost:3000/workflows/&lt;workflow-instance-id&gt;
+curl -sS http://localhost:3456/workflows/&lt;workflow-instance-id&gt;
 
 # List workflow runs
-curl -sS 'http://localhost:3000/workflows?status=running'
+curl -sS 'http://localhost:3456/workflows?status=running'
 
 # Inspect and manage pending queue
-curl -sS http://localhost:3000/queue
-curl -sS -X DELETE http://localhost:3000/queue/&lt;workflow-instance-id&gt;
-curl -sS -X DELETE http://localhost:3000/queue</code></pre>
+curl -sS http://localhost:3456/queue
+curl -sS -X DELETE http://localhost:3456/queue/&lt;workflow-instance-id&gt;
+curl -sS -X DELETE http://localhost:3456/queue</code></pre>
+      </div>
+    </section>
+
+    <section class="section" id="api" aria-labelledby="api-title">
+      <div class="section-head">
+        <h2 id="api-title">Orchestrator API</h2>
+        <p>
+          The orchestrator exposes a small HTTP API on <span class="inline-code">localhost:3456</span> by default.
+          All write endpoints that accept data expect JSON request bodies.
+        </p>
+      </div>
+
+      <div class="api-reference">
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <h3>/health</h3>
+          </div>
+          <p>Checks whether the orchestrator process is accepting HTTP traffic.</p>
+          <dl>
+            <dt>Response</dt>
+            <dd><span class="inline-code">200 OK</span> with plain text <span class="inline-code">OK</span>.</dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <h3>/workflow-def</h3>
+          </div>
+          <p>Registers or replaces a workflow definition made of task definitions and data bindings.</p>
+          <dl>
+            <dt>Body</dt>
+            <dd><span class="inline-code">WorkflowDef</span>: <span class="inline-code">id</span>, <span
+                class="inline-code">tasks</span>, and <span class="inline-code">data_bindings</span>.</dd>
+            <dt>Response</dt>
+            <dd><span class="inline-code">{ "status": "created", "id": "..." }</span></dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <h3>/workflow-def/{def_id}</h3>
+          </div>
+          <p>Creates a workflow instance from an existing definition and puts it on the execution queue.</p>
+          <dl>
+            <dt>Body</dt>
+            <dd>Any JSON object. The current handler accepts the payload but does not consume fields from it.</dd>
+            <dt>Response</dt>
+            <dd><span class="inline-code">{ "status": "queued", "id": "..." }</span>; <span
+                class="inline-code">404</span> when the definition is unknown.</dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <h3>/workflow-def/{def_id}/tasks/{task_id}</h3>
+          </div>
+          <p>Runs one task from a registered workflow definition without creating a workflow instance.</p>
+          <dl>
+            <dt>Body</dt>
+            <dd><span class="inline-code">{ "inputs": [...] }</span>, where each array item is passed to the task as an
+              input value.</dd>
+            <dt>Response</dt>
+            <dd><span class="inline-code">success</span>, <span class="inline-code">input_needed</span>, or <span
+                class="inline-code">failure</span>; <span class="inline-code">404</span> when the definition or task is
+              unknown.</dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <h3>/queue</h3>
+          </div>
+          <p>Lists pending workflow instance IDs waiting for scheduler pickup.</p>
+          <dl>
+            <dt>Response</dt>
+            <dd><span class="inline-code">{ "pending": ["..."] }</span></dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method delete">DELETE</span>
+            <h3>/queue</h3>
+          </div>
+          <p>Removes every pending workflow instance from the queue. Running workflows are not cancelled.</p>
+          <dl>
+            <dt>Response</dt>
+            <dd><span class="inline-code">{ "status": "purged", "purged": ["..."] }</span></dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method delete">DELETE</span>
+            <h3>/queue/{id}</h3>
+          </div>
+          <p>Removes one pending workflow instance from the queue.</p>
+          <dl>
+            <dt>Response</dt>
+            <dd><span class="inline-code">204 No Content</span>; <span class="inline-code">404</span> when the queue
+              item is missing.</dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <h3>/workflows</h3>
+          </div>
+          <p>Lists workflow instances, optionally filtered by lifecycle status.</p>
+          <dl>
+            <dt>Query</dt>
+            <dd><span class="inline-code">status</span> accepts <span class="inline-code">pending</span>, <span
+                class="inline-code">running</span>, <span class="inline-code">paused</span>, <span
+                class="inline-code">input_needed</span>, <span class="inline-code">completed</span>, or <span
+                class="inline-code">failed</span>.</dd>
+            <dt>Response</dt>
+            <dd><span class="inline-code">{ "workflows": [{ "id": "...", "workflow_def_id": "...", "status": "..." }]
+                }</span></dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <h3>/workflows/{id}</h3>
+          </div>
+          <p>Returns a status report for one workflow instance, including task state and output availability.</p>
+          <dl>
+            <dt>Response</dt>
+            <dd><span class="inline-code">instance_id</span>, <span class="inline-code">workflow_def_id</span>, <span
+                class="inline-code">status</span>, and <span class="inline-code">tasks</span>; <span
+                class="inline-code">404</span> when the instance is unknown.</dd>
+          </dl>
+        </article>
+
+        <article class="endpoint-card">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <h3>/workflows/{workflow_instance_id}/tasks/{task_id}</h3>
+          </div>
+          <p>Fetches the current result state for one task in a workflow instance.</p>
+          <dl>
+            <dt>Response</dt>
+            <dd><span class="inline-code">success</span> with <span class="inline-code">output</span>, <span
+                class="inline-code">failure</span> with <span class="inline-code">error_message</span>, <span
+                class="inline-code">pending</span>, or <span class="inline-code">running</span>.</dd>
+          </dl>
+        </article>
       </div>
     </section>
 

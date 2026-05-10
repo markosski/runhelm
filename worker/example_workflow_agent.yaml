@@ -4,7 +4,7 @@ tasks:
   - id: fetch_user
     kind:
       ApiCall:
-        url: "http://localhost:3000/health"
+        url: "http://localhost:3456/health"
         method: "GET"
     input_schemas: []
     output_schema:

@@ -59,7 +59,10 @@ impl Orchestrator {
             return Ok(None);
         };
 
-        self.execute_task_isolated(&task, inputs).await.map(Some)
+        self.executor
+            .execute(workflow_def_id, &task, inputs)
+            .await
+            .map(Some)
     }
 
     /// Creates a new workflow instance.
@@ -227,7 +230,7 @@ impl Orchestrator {
         task: &TaskDef,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
-        self.executor.execute(task, inputs).await
+        self.executor.execute("isolated", task, inputs).await
     }
 }
 
@@ -277,6 +280,7 @@ mod tests {
     impl ExecutorPort for CountingExecutor {
         async fn execute(
             &self,
+            _workflow_def_id: &str,
             _task: &TaskDef,
             _inputs: &[serde_json::Value],
         ) -> anyhow::Result<ExecutionResult> {

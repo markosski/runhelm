@@ -29,9 +29,14 @@ impl DockerExecutor {
 
 #[async_trait]
 impl ExecutorPort for DockerExecutor {
-    async fn execute(&self, task: &TaskDef, inputs: &[Value]) -> anyhow::Result<ExecutionResult> {
+    async fn execute(
+        &self,
+        workflow_def_id: &str,
+        task: &TaskDef,
+        inputs: &[Value],
+    ) -> anyhow::Result<ExecutionResult> {
         self.worker_pool
-            .dispatch_task(task, inputs, self.task_timeout)
+            .dispatch_task(workflow_def_id, task, inputs, self.task_timeout)
             .await
     }
 }
@@ -64,7 +69,7 @@ mod tests {
             required_credentials: vec![],
         };
 
-        let error = executor.execute(&task, &[]).await.unwrap_err();
+        let error = executor.execute("isolated", &task, &[]).await.unwrap_err();
 
         assert!(error.to_string().contains("no idle workers available"));
     }

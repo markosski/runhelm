@@ -141,7 +141,7 @@ cd orchestrator
 cargo run
 ```
 
-The orchestrator starts an Axum server on `0.0.0.0:3000`.
+The orchestrator starts an Axum server on `0.0.0.0:3456`.
 
 ### Worker
 

@@ -34,6 +34,7 @@ pub struct WorkerRegistration {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDispatch {
     pub task_id: String,
+    pub workflow_def_id: String,
     pub task: TaskDef,
     #[serde(default)]
     pub inputs: Vec<serde_json::Value>,
@@ -197,6 +198,7 @@ impl WorkerPool {
 
     pub async fn dispatch_task(
         &self,
+        workflow_def_id: &str,
         task: &TaskDef,
         inputs: &[serde_json::Value],
         timeout: Duration,
@@ -226,6 +228,7 @@ impl WorkerPool {
 
         let dispatch = OrchestratorMessage::TaskDispatch(TaskDispatch {
             task_id: task_id.clone(),
+            workflow_def_id: workflow_def_id.to_string(),
             task: task.clone(),
             inputs: inputs.to_vec(),
         });
@@ -469,6 +472,7 @@ mod tests {
         };
         let message = OrchestratorMessage::TaskDispatch(TaskDispatch {
             task_id: "task-1".to_string(),
+            workflow_def_id: "workflow-1".to_string(),
             task,
             inputs: vec![json!({"value": 1})],
         });
@@ -477,6 +481,7 @@ mod tests {
 
         assert_eq!(encoded["type"], "task_dispatch");
         assert_eq!(encoded["task_id"], "task-1");
+        assert_eq!(encoded["workflow_def_id"], "workflow-1");
         assert_eq!(encoded["inputs"], json!([{"value": 1}]));
     }
 
@@ -562,8 +567,8 @@ mod tests {
         let task_1 = test_task("task-1");
         let task_2 = test_task("task-2");
         let (result_1, result_2) = tokio::join!(
-            pool.dispatch_task(&task_1, &[], Duration::from_secs(5)),
-            pool.dispatch_task(&task_2, &[], Duration::from_secs(5)),
+            pool.dispatch_task("isolated", &task_1, &[], Duration::from_secs(5)),
+            pool.dispatch_task("isolated", &task_2, &[], Duration::from_secs(5)),
         );
 
         let outputs = [

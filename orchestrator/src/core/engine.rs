@@ -123,7 +123,7 @@ impl WorkflowEngine {
                     .map(|t| t.input_data.clone())
                     .unwrap_or_default();
 
-                let execution_result = self.executor.execute(task_def, &inputs).await;
+                let execution_result = self.executor.execute(&def.id, task_def, &inputs).await;
 
                 match execution_result {
                     Ok(ExecutionResult::Success(output)) => {

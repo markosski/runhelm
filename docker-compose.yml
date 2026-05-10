@@ -1,9 +1,10 @@
 services:
   ipc-permissions:
     image: busybox:1.36
-    command: ["sh", "-c", "chown 10001:10001 /run/runhelm && chmod 0750 /run/runhelm"]
+    command: ["sh", "-c", "mkdir -p /tmp/runhelm/npm && chown 10001:10001 /run/runhelm && chmod 0750 /run/runhelm && chown -R 10001:${RUNHELM_HOST_GID:-1000} /tmp/runhelm/npm && chmod -R ug+rwX,o-rwx /tmp/runhelm/npm"]
     volumes:
       - runhelm-ipc:/run/runhelm
+      - /tmp/runhelm/npm:/tmp/runhelm/npm
     restart: "no"
 
   orchestrator:
@@ -14,10 +15,11 @@ services:
         condition: service_completed_successfully
     environment:
       RUST_LOG: info
+      RUNHELM_HTTP_ADDR: 0.0.0.0:3456
       RUNHELM_SOCKET_PATH: /run/runhelm/runhelm.sock
       RUNHELM_TASK_TIMEOUT_SECS: "300"
     ports:
-      - "3000:3000"
+      - "3456:3456"
     volumes:
       - runhelm-ipc:/run/runhelm
     read_only: true
@@ -26,7 +28,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3456/health"]
       interval: 5s
       timeout: 2s
       retries: 12
@@ -41,12 +43,18 @@ services:
         condition: service_healthy
     environment:
       RUNHELM_SOCKET_PATH: /run/runhelm/runhelm.sock
+      RUNHELM_FUNCTION_NPM_CACHE_ROOT: /tmp/runhelm/npm
+      RUNHELM_FUNCTION_RUNTIME_ROOT: /tmp/runhelm/runtime
+    group_add:
+      - "${RUNHELM_HOST_GID:-1000}"
     volumes:
       - runhelm-ipc:/run/runhelm:ro
+      - /tmp/runhelm/npm:/tmp/runhelm/npm
       - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro
     read_only: true
     tmpfs:
       - /tmp
+      - /tmp/runhelm/runtime:uid=10001,gid=10001,mode=0700
     security_opt:
       - no-new-privileges:true
     restart: on-failure

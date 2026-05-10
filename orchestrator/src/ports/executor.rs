@@ -12,6 +12,7 @@ pub enum ExecutionResult {
 pub trait ExecutorPort {
     async fn execute(
         &self,
+        workflow_def_id: &str,
         task: &TaskDef,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<ExecutionResult>;

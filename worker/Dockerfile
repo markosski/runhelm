@@ -18,21 +18,22 @@ RUN npm run build
 # Stage 2: Create the production image
 FROM node:20-alpine
 
-WORKDIR /app
 ENV NODE_ENV=production
 ENV HOME=/home/runhelm
 RUN addgroup -g 10001 runhelm \
     && adduser -D -h /home/runhelm -u 10001 -G runhelm runhelm \
-    && mkdir -p /home/runhelm/.runhelm
+    && mkdir -p /app /home/runhelm/.runhelm \
+    && chown runhelm:runhelm /app /home/runhelm /home/runhelm/.runhelm
+
+WORKDIR /app
 
 # Copy package.json and install production dependencies only
-COPY package*.json ./
+COPY --chown=runhelm:runhelm package*.json ./
+USER runhelm
 RUN npm install --omit=dev
 
 # Copy the built output from the builder stage
-COPY --from=builder /app/dist ./dist
-RUN chown -R runhelm:runhelm /app /home/runhelm
-USER runhelm
+COPY --from=builder --chown=runhelm:runhelm /app/dist ./dist
 
 # Set the entrypoint to run the worker directly with node
 ENTRYPOINT ["node", "dist/index.js"]

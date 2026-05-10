@@ -52,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Start server
-    let listener = TcpListener::bind("0.0.0.0:3000").await?;
+    let bind_addr = http_bind_addr();
+    let listener = TcpListener::bind(&bind_addr).await?;
     info!("Listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
 
@@ -73,4 +74,8 @@ fn workflow_queue_capacity() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1024)
+}
+
+fn http_bind_addr() -> String {
+    std::env::var("RUNHELM_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:3456".to_string())
 }

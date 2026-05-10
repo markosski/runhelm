@@ -18,11 +18,19 @@
   - *Issue:* Workflow instances are saved to storage synchronously after every single task finishes, which will overwhelm the DB under heavy concurrent load.
   - *Action:* Implement event sourcing (appending state changes), state caching, or batched updates to reduce the frequency of full workflow blob writes.
 
-- [ ] **Cache function task dependencies on the host**
+- [x] **Cache function task dependencies on the host**
   - *Issue:* Function-type tasks with dependencies may reinstall packages repeatedly, increasing execution latency and wasting network and disk work.
-  - *Action:* Ensure dependencies are cached on the host machine at `/tmp/runhelm/npm/<workflow_def_name>/<task_id>/` when executing function-type tasks with dependencies.
+  - *Action:* Ensure installed dependency trees are cached on the host machine at `/tmp/runhelm/npm/installed/<dependency_hash>/` when executing function-type tasks with dependencies.
 
 ## Workflow Orchestration Capabilities
+
+- [ ] **Add endpoint to retry a failed task**
+  - *Issue:* Failed task executions cannot currently be retried directly, forcing users to rerun broader workflow state or intervene manually.
+  - *Action:* Add an API endpoint that accepts a workflow instance and failed task identifier, validates retry eligibility, resets the task state as needed, and re-enqueues execution while preserving observability of the retry attempt.
+
+- [ ] **Add endpoint to provide requested input and resume an agent task**
+  - *Issue:* Agent tasks that pause for user input do not yet have a direct API path for submitting the requested input and resuming execution.
+  - *Action:* Add an API endpoint that accepts the pending agent task context and user-provided input, validates that the task is waiting for input, persists the supplied input, and resumes the task from the paused state.
 
 - [ ] **Execute workflows on a schedule**
   - *Issue:* The orchestrator can execute workflows on demand, but it cannot currently trigger workflows automatically on a recurring schedule.

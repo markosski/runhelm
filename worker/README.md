@@ -49,7 +49,7 @@ The worker reads credentials from `~/.runhelm/file_credentials.json` during star
 
 ## Orchestrator HTTP Endpoints
 
-The orchestrator listens on port `3000` by default.
+The orchestrator listens on port `3456` by default.
 
 ### `GET /health`
 
@@ -68,8 +68,8 @@ Registers a workflow definition.
 Example:
 
 ```bash
-yq -o=json worker/example_workflow.yaml \
-  | curl -sS -X POST http://localhost:3000/workflow-def \
+yq . worker/example_workflow.yaml \
+  | curl -sS -X POST http://localhost:3456/workflow-def \
       -H 'content-type: application/json' \
       --data-binary @-
 ```
@@ -90,7 +90,7 @@ Creates and starts a workflow instance from a registered workflow definition. Th
 Example:
 
 ```bash
-curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow \
+curl -sS -X POST http://localhost:3456/workflow-def/simple-function-workflow \
   -H 'content-type: application/json' \
   -d '{}'
 ```
@@ -111,7 +111,7 @@ Executes a task from a registered workflow definition in isolation. This bypasse
 Example:
 
 ```bash
-curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow/tasks/summarize_user \
+curl -sS -X POST http://localhost:3456/workflow-def/simple-function-workflow/tasks/summarize_user \
   -H 'content-type: application/json' \
   -d '{ "inputs": [] }'
 ```
@@ -134,7 +134,7 @@ Returns a workflow instance status report.
 Example:
 
 ```bash
-curl -sS http://localhost:3000/workflows/simple-function-workflow-1780000000000000000
+curl -sS http://localhost:3456/workflows/simple-function-workflow-1780000000000000000
 ```
 
 Response shape:
@@ -161,7 +161,7 @@ Returns a task result for a workflow instance.
 Example:
 
 ```bash
-curl -sS http://localhost:3000/workflows/simple-function-workflow-1780000000000000000/tasks/summarize_user
+curl -sS http://localhost:3456/workflows/simple-function-workflow-1780000000000000000/tasks/summarize_user
 ```
 
 Example response:
@@ -301,12 +301,14 @@ The Function context contains:
 
 ```ts
 {
+  workflow_def_id: string;
   inputs: unknown[];
   credentials: Record<string, string>;
 }
 ```
 
 `dependencies` is required. Use `[]` when the task has no npm dependencies.
+Function dependency lists are installed into a host-backed cache keyed by dependency hash and reused by later invocations with the same declared dependencies.
 
 ### Agent
 
@@ -334,7 +336,7 @@ Currently simulated by the worker.
 ```yaml
 kind:
   ApiCall:
-    url: "http://localhost:3000/health"
+    url: "http://localhost:3456/health"
     method: "GET"
 ```
 
@@ -345,6 +347,8 @@ kind:
 | `RUNHELM_SOCKET_PATH` | `/tmp/runhelm.sock` | Unix socket path used by the worker and orchestrator IPC server. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
+| `RUNHELM_FUNCTION_NPM_CACHE_ROOT` | `/tmp/runhelm/npm` | Root directory for host-backed installed dependency cache used by Function dependencies. |
+| `RUNHELM_FUNCTION_RUNTIME_ROOT` | `/tmp/runhelm/runtime` | Root directory for per-invocation Function runtime files. |
 
 Credential values are not read from environment variables. Put credential values in `~/.runhelm/file_credentials.json`.
 

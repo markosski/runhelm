@@ -12,5 +12,5 @@ RUN addgroup -g 10001 runhelm && adduser -D -H -u 10001 -G runhelm runhelm
 COPY --from=builder /app/target/debug/orchestrator /usr/local/bin/orchestrator
 USER runhelm
 
-EXPOSE 3000
+EXPOSE 3456
 ENTRYPOINT ["/usr/local/bin/orchestrator"]
