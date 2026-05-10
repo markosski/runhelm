@@ -1,35 +1,39 @@
 id: simple-agent-workflow
 
 tasks:
-  - id: fetch_user
-    kind:
-      ApiCall:
-        url: "http://localhost:3456/health"
-        method: "GET"
-    input_schemas: []
-    output_schema:
-      type: object
-      required:
-        - response
-      properties:
-        response:
-          type: string
-    expected_side_effects: []
-    required_credentials: []
-
   - id: pull_stocks
     kind:
       Agent:
-        model_id: "google/gemini-2.5-flash"
+        model_id: "google/gemini-3-flash-preview"
         provider_url: ""
         prompt: |
-          Find most recent closing stock price for Apple Inc. (AAPL) and Microsoft Corporation (MSFT) and summarize the trend in a sentence.
+          Find most recent (based on current date) closing stock price for Apple Inc. (AAPL) and Microsoft Corporation (MSFT) and summarize the trend in a sentence.
+          It is required for you to use real information from the internet, do not attempt to recall from memory.
+
+          You must call the stock_quote tool once for AAPL and once for MSFT. Base the answer only on those tool results.
+          If a value is missing from tool results, state that it could not be verified instead of guessing.
 
           Return exactly this JSON shape:
           {
-            "response": "summary text"
+            "response": "summary text including the close date, close price, trend direction, and source",
+            "quotes": [
+              {
+                "symbol": "AAPL",
+                "latestClose": 123.45,
+                "latestCloseTime": "ISO timestamp from tool",
+                "trendFromPreviousClose": "up|down|flat|unknown",
+                "sourceUrl": "URL from tool"
+              },
+              {
+                "symbol": "MSFT",
+                "latestClose": 123.45,
+                "latestCloseTime": "ISO timestamp from tool",
+                "trendFromPreviousClose": "up|down|flat|unknown",
+                "sourceUrl": "URL from tool"
+              }
+            ]
           }
-        tools: []
+        tools: ["_all_"]
         ask: false
         schema_failure_retry_times: 2
     input_schemas: []
@@ -37,14 +41,129 @@ tasks:
       type: object
       required:
         - response
+        - quotes
       properties:
         response:
           type: string
+        quotes:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: object
+            required:
+              - symbol
+              - latestClose
+              - latestCloseTime
+              - trendFromPreviousClose
+              - sourceUrl
+            properties:
+              symbol:
+                type: string
+                enum:
+                  - AAPL
+                  - MSFT
+              latestClose:
+                type: number
+              latestCloseTime:
+                type: string
+              trendFromPreviousClose:
+                type: string
+                enum:
+                  - up
+                  - down
+                  - flat
+                  - unknown
+              sourceUrl:
+                type: string
     expected_side_effects: []
     required_credentials:
       - llm_api_key
+  - id: send_email
+    kind:
+      Function:
+        dependencies:
+          - name: form-data
+            version: v4.0.1
+          - name: mailgun.js
+            version: v11.1.0
+        code: |
+          import FormData from "form-data"; // form-data v4.0.1
+          import Mailgun from "mailgun.js"; // mailgun.js v11.1.0
+
+          export default async function run(ctx) {
+            const mailgun = new Mailgun(FormData);
+            const mg = mailgun.client({
+              username: "api",
+              key: ctx.credentials.mailgun_api_key,
+              // When you have an EU-domain, you must specify the endpoint:
+              // url: "https://api.eu.mailgun.net"
+            });
+
+            const stockSummary = ctx.inputs[0]?.response;
+            if (typeof stockSummary !== "string" || stockSummary.length === 0) {
+              throw new Error("Missing pull_stocks response at ctx.inputs[0].response");
+            }
+
+            let data;
+            try {
+              data = await mg.messages.create("mg.getrunhelm.com", {
+                from: "Mailgun Sandbox <postmaster@mg.getrunhelm.com>",
+                to: ["marcin kossakowski <marcin.kossakowski@gmail.com>"],
+                subject: "Hello marcin kossakowski",
+                text: stockSummary,
+              });
+            } catch (error) {
+              throw new Error(`Mailgun send failed: ${describeError(error)}`);
+            }
+
+            return {
+              response: "email sent",
+              id: data.id ?? null,
+              message: data.message ?? null,
+            };
+          }
+
+          function describeError(error) {
+            if (error instanceof Error) {
+              return error.stack ?? error.message;
+            }
+
+            try {
+              return JSON.stringify(error);
+            } catch {
+              return String(error);
+            }
+          }
+    input_schemas:
+      - type: object
+        required:
+          - response
+        properties:
+          response:
+            type: string
+    output_schema:
+      type: object
+      required:
+        - response
+        - id
+        - message
+      properties:
+        response:
+          type: string
+        id:
+          type:
+            - string
+            - "null"
+        message:
+          type:
+            - string
+            - "null"
+    expected_side_effects: []
+    required_credentials:
+      - mailgun_api_key
 
 data_bindings:
-  - source_task_id: fetch_user
-    target_task_id: summarize_user
+  - source_task_id: pull_stocks
+    target_task_id: send_email
     target_input_index: 0

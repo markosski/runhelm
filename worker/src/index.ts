@@ -59,8 +59,12 @@ function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult 
         case 'input_needed':
             return { kind: 'input_needed', description: result.description };
         case 'error':
-            return { kind: 'failure', reason: result.message };
+            return { kind: 'failure', reason: nonEmptyMessage(result.message, 'Task failed without an error message') };
     }
+}
+
+function nonEmptyMessage(message: string, fallback: string): string {
+    return message.trim().length > 0 ? message : fallback;
 }
 
 async function processTask(
@@ -90,8 +94,29 @@ async function processTask(
         }
         return mapExecutionResult(result);
     } catch (error) {
-        return { kind: 'failure', reason: String(error) };
+        return { kind: 'failure', reason: describeUnknownError(error) };
     }
+}
+
+function describeUnknownError(error: unknown): string {
+    if (error instanceof Error) {
+        return nonEmptyMessage(error.message, error.name || 'Unknown error');
+    }
+
+    if (typeof error === 'string') {
+        return nonEmptyMessage(error, 'Task processing threw an empty string');
+    }
+
+    try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== '{}') {
+            return serialized;
+        }
+    } catch {
+        // Fall through to the generic object description.
+    }
+
+    return `Task processing threw ${Object.prototype.toString.call(error)}`;
 }
 
 async function main() {

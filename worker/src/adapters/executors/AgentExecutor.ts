@@ -225,6 +225,7 @@ export class AgentExecutor implements TaskExecutor {
 
             Use the approved tools available to you to gather the needed information.
             DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
+            If the task asks for current, recent, latest, real-world, or internet-backed information, do not answer from memory. Use approved tools first, and if the tools do not provide enough evidence, say that the requested information could not be verified instead of inventing it.
             `;
 
         if (payload.task.output_schema) {

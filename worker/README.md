@@ -322,12 +322,14 @@ kind:
     model_id: "google/gemini-2.5-flash"
     provider_url: ""
     prompt: "Return a JSON response."
-    tools: []
+    tools: ["_all_"]
     ask: false
     schema_failure_retry_times: 0
 required_credentials:
   - llm_api_key
 ```
+
+Use `tools: []` to disable tools, `tools: ["_all_"]` to allow every tool currently available to the worker, or list specific tool names such as `["fetch_url", "get_current_time"]`.
 
 ### ApiCall
 

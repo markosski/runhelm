@@ -82,12 +82,12 @@ export class FunctionExecutor implements TaskExecutor {
             }
 
             if (envelope.status === 'error') {
-                return { status: 'error', message: envelope.message };
+                return { status: 'error', message: nonEmptyMessage(envelope.message, 'Function task failed without an error message') };
             }
 
             return { status: 'ok', output: envelope.output as JsonValue };
         } catch (error) {
-            return { status: 'error', message: error instanceof Error ? error.message : String(error) };
+            return { status: 'error', message: describeUnknownError(error) };
         } finally {
             await rm(workDir, { recursive: true, force: true });
         }
@@ -301,10 +301,13 @@ function runChild(
     envOverrides: NodeJS.ProcessEnv = {}
 ): Promise<ChildResult> {
     return new Promise((resolve, reject) => {
+        const env = { ...process.env, ...envOverrides };
+        delete env.NODE_TEST_CONTEXT;
+
         const child = spawn(command, args, {
             cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env, ...envOverrides },
+            env,
         });
 
         let stdout = '';
@@ -368,6 +371,31 @@ function formatChildFailure(result: ChildResult): string {
     return details.join(', ') || 'unknown error';
 }
 
+function nonEmptyMessage(message: string, fallback: string): string {
+    return message.trim().length > 0 ? message : fallback;
+}
+
+function describeUnknownError(error: unknown): string {
+    if (error instanceof Error) {
+        return nonEmptyMessage(error.message, error.name || 'Unknown error');
+    }
+
+    if (typeof error === 'string') {
+        return nonEmptyMessage(error, 'Function executor threw an empty string');
+    }
+
+    try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== '{}') {
+            return serialized;
+        }
+    } catch {
+        // Fall through to the generic object description.
+    }
+
+    return `Function executor threw ${Object.prototype.toString.call(error)}`;
+}
+
 function runnerSource(): string {
     return `
 import task from './task.mjs';
@@ -392,8 +420,33 @@ try {
   const output = await task(context);
   process.stdout.write(RESULT_PREFIX + JSON.stringify({ status: 'ok', output: output ?? null }) + '\\n');
 } catch (error) {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  const message = describeThrownValue(error);
   process.stdout.write(RESULT_PREFIX + JSON.stringify({ status: 'error', message }) + '\\n');
+}
+
+function describeThrownValue(error) {
+  if (error instanceof Error) {
+    return nonEmptyMessage(error.stack ?? error.message, error.name || 'Error');
+  }
+
+  if (typeof error === 'string') {
+    return nonEmptyMessage(error, 'Function task threw an empty string');
+  }
+
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== '{}') {
+      return serialized;
+    }
+  } catch {
+    // Fall through to the generic object description.
+  }
+
+  return 'Function task threw ' + Object.prototype.toString.call(error);
+}
+
+function nonEmptyMessage(message, fallback) {
+  return message.trim().length > 0 ? message : fallback;
 }
 `.trimStart();
 }
