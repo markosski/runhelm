@@ -1,8 +1,9 @@
 import type { TaskExecutor, JsonValue, TaskExecutionResult } from '../../core/ports/TaskExecutor.js';
 import type { TaskExecutionPayload } from '../../core/models/TaskDef.js';
 import type { CredentialsPort } from '../../core/ports/CredentialsPort.js';
-import { getModel, streamSimple, Type } from '@mariozechner/pi-ai';
-import { Agent } from '@mariozechner/pi-agent-core';
+import { getModel, streamSimple } from '@earendil-works/pi-ai';
+import { Agent } from '@earendil-works/pi-agent-core';
+import { createCodingTools, formatSkillsForPrompt } from '@earendil-works/pi-coding-agent';
 import { Ajv } from 'ajv';
 import { logger } from '../../utils/logger.js';
 import { createBraveSearchTool } from './agent_tools/braveSearchTool.js';
@@ -10,13 +11,9 @@ import { createFetchUrlTool } from './agent_tools/fetchUrlTool.js';
 import { createHttpRequestTool } from './agent_tools/httpRequestTool.js';
 import { createCurrentTimeTool } from './agent_tools/currentTimeTool.js';
 import { createAskUserTool, InputNeededError } from './agent_tools/askUserTool.js';
-
-
-type AvailableTool = {
-    name: string;
-    description: string;
-    tool: any;
-};
+import { ToolRegistry } from './agent_tools/ToolRegistry.js';
+import { PiResourceToolProvider } from './agent_tools/PiResourceToolProvider.js';
+import { selectApprovedTools } from './agent_tools/toolSelection.js';
 
 function extractAssistantText(agent: Agent): string {
     let resultText = '';
@@ -150,33 +147,26 @@ export class AgentExecutor implements TaskExecutor {
         }
 
         const finalPrompt = prompt + contextPrompt;
+        const agentOpts: any = {
+            streamFn: streamSimple,
+            getApiKey: () => apiKey,
+        };
+        const agent = new Agent(agentOpts);
 
-        const availableTools: AvailableTool[] = [
-            {
-                name: "fetch_url",
-                description: "fetch URL data and read website/page content; use this as the primary URL fetching tool",
-                tool: createFetchUrlTool()
-            },
-            {
-                name: "http_request",
-                description: "make arbitrary HTTP requests; use this as the secondary URL/API fetching tool when fetch_url is not suitable or fails",
-                tool: createHttpRequestTool()
-            },
-            {
-                name: "get_current_time",
-                description: "get the current time when time/date context is needed",
-                tool: createCurrentTimeTool()
-            }
-        ];
+        const toolRegistry = new ToolRegistry();
+        toolRegistry.registerTools([
+            createFetchUrlTool(),
+            createHttpRequestTool(),
+            createCurrentTimeTool(),
+        ]);
+        toolRegistry.registerTools(createCodingTools(process.cwd()));
+        const piResources = await new PiResourceToolProvider().loadResources();
+        toolRegistry.registerTools(piResources.tools);
 
         const systemBraveApiKey = "system_brave_api_key";
         const braveApiKey = await credentialsPort.getCredential(systemBraveApiKey);
         if (braveApiKey) {
-            availableTools.push({
-                name: "web_search",
-                description: "find information on the internet with web search",
-                tool: createBraveSearchTool(braveApiKey)
-            });
+            toolRegistry.registerTool(createBraveSearchTool(braveApiKey));
         } else {
             logger.error(`Error retrieving system credentials for ${systemBraveApiKey}`);
         }
@@ -184,23 +174,14 @@ export class AgentExecutor implements TaskExecutor {
         let inputNeededQuestion: string | undefined = undefined;
 
         if (ask) {
-            availableTools.push({
-                name: "ask_user",
-                description: "ask the user for additional information or clarification when needed",
-                tool: createAskUserTool((question) => {
-                    inputNeededQuestion = question;
-                    agent.abort();
-                })
-            });
+            toolRegistry.registerTool(createAskUserTool((question) => {
+                inputNeededQuestion = question;
+                agent.abort();
+            }));
         }
 
-        const approvedToolNames = Array.isArray(agentDef.tools) ? agentDef.tools : ["_all_"];
-        const approvedTools = approvedToolNames.includes("_all_")
-            ? availableTools
-            : availableTools.filter((availableTool) => approvedToolNames.includes(availableTool.name));
-        const unavailableApprovedToolNames = approvedToolNames
-            .filter((toolName: string) => toolName !== "_all_")
-            .filter((toolName: string) => !approvedTools.some((approvedTool) => approvedTool.name === toolName));
+        const availableTools = toolRegistry.getTools();
+        const { approvedTools, unavailableApprovedToolNames } = selectApprovedTools(availableTools, agentDef.tools);
 
         if (unavailableApprovedToolNames.length > 0) {
             logger.warn({ unavailableApprovedToolNames }, "[AgentExecutor] Ignoring approved tools that are not available");
@@ -209,12 +190,10 @@ export class AgentExecutor implements TaskExecutor {
         const toolAvailabilityPrompt = approvedTools.length > 0
             ? `You have access to the following approved tools:\n${approvedTools.map((approvedTool) => `- ${approvedTool.name} - ${approvedTool.description}`).join('\n')}`
             : "You do not have access to any tools for this task.";
-
-        const agentOpts: any = {
-            streamFn: streamSimple,
-            getApiKey: () => apiKey,
-        };
-        const agent = new Agent(agentOpts);
+        const canLoadSkills = approvedTools.some((approvedTool) => approvedTool.name === 'read');
+        const skillsPrompt = piResources.skills.length > 0 && canLoadSkills
+            ? `\n\n${formatSkillsForPrompt(piResources.skills)}`
+            : '';
 
         agent.state.model = model;
         agent.state.systemPrompt = `
@@ -222,6 +201,7 @@ export class AgentExecutor implements TaskExecutor {
 
             You are an autonomous AI agent.
             ${toolAvailabilityPrompt}
+            ${skillsPrompt}
 
             Use the approved tools available to you to gather the needed information.
             DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.

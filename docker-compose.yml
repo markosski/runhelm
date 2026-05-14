@@ -13,9 +13,7 @@ services:
       ipc-permissions:
         condition: service_completed_successfully
     environment:
-      RUST_LOG: info
       RUNHELM_SOCKET_PATH: /run/runhelm/runhelm.sock
-      RUNHELM_TASK_TIMEOUT_SECS: "300"
     ports:
       - "3000:3000"
     volumes:
@@ -44,14 +42,20 @@ services:
     volumes:
       - runhelm-ipc:/run/runhelm:ro
       - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro
+      - runhelm-workspaces:/workspaces
+      - runhelm-cache:/home/runhelm/.cache
     read_only: true
     tmpfs:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: on-failure
     deploy:
       replicas: 2
 
 volumes:
   runhelm-ipc:
+  runhelm-workspaces:
+  runhelm-cache:

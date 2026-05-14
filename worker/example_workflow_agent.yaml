@@ -1,11 +1,23 @@
 id: simple-agent-workflow
 
 tasks:
-  - id: fetch_user
+  - id: test
     kind:
-      ApiCall:
-        url: "http://localhost:3000/health"
-        method: "GET"
+      Agent:
+        model_id: "google/gemini-2.5-flash"
+        provider_url: ""
+        prompt: |
+          Perform the following actions:
+          - Use curl to access www.marcinkossakowski.com
+          - Download the content to /tmp/marcin.html
+          - Extract the title of the page and return as response
+
+          {
+            "response": "summary text including the close date, close price, trend direction, and source",
+          }
+        tools: ["read", "write", "edit"]
+        ask: false
+        schema_failure_retry_times: 2
     input_schemas: []
     output_schema:
       type: object
@@ -15,21 +27,41 @@ tasks:
         response:
           type: string
     expected_side_effects: []
-    required_credentials: []
-
+    required_credentials:
+      - llm_api_key
   - id: pull_stocks
     kind:
       Agent:
         model_id: "google/gemini-2.5-flash"
         provider_url: ""
         prompt: |
-          Find most recent closing stock price for Apple Inc. (AAPL) and Microsoft Corporation (MSFT) and summarize the trend in a sentence.
+          Find most recent (based on current date) closing stock price for Apple Inc. (AAPL) and Microsoft Corporation (MSFT) and summarize the trend in a sentence.
+          It is required for you to use real information from the internet, do not attempt to recall from memory.
+
+          You must call the tools to fetch stock information. Base the answer only on those tool results.
+          If a value is missing from tool results, state that it could not be verified instead of guessing.
 
           Return exactly this JSON shape:
           {
-            "response": "summary text"
+            "response": "summary text including the close date, close price, trend direction, and source",
+            "quotes": [
+              {
+                "symbol": "AAPL",
+                "latestClose": 123.45,
+                "latestCloseTime": "ISO timestamp from tool",
+                "trendFromPreviousClose": "up|down|flat|unknown",
+                "sourceUrl": "URL from tool"
+              },
+              {
+                "symbol": "MSFT",
+                "latestClose": 123.45,
+                "latestCloseTime": "ISO timestamp from tool",
+                "trendFromPreviousClose": "up|down|flat|unknown",
+                "sourceUrl": "URL from tool"
+              }
+            ]
           }
-        tools: []
+        tools: ["read", "bash", "write", "edit", "fetch_url"]
         ask: false
         schema_failure_retry_times: 2
     input_schemas: []

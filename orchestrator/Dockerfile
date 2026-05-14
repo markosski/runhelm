@@ -8,7 +8,10 @@ RUN cargo build
 
 FROM alpine:3.22
 
-RUN addgroup -g 10001 runhelm && adduser -D -H -u 10001 -G runhelm runhelm
+ENV HOME=/home/runhelm
+
+RUN addgroup -g 10001 runhelm \
+    && adduser -D -h /home/runhelm -u 10001 -G runhelm runhelm
 COPY --from=builder /app/target/debug/orchestrator /usr/local/bin/orchestrator
 USER runhelm
 
