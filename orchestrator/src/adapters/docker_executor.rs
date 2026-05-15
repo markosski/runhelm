@@ -49,7 +49,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn ipc_backed_executor_fails_when_no_workers_are_available() {
+    async fn ipc_backed_executor_times_out_when_no_worker_claims_task() {
         let executor =
             DockerExecutor::new(WorkerPool::new()).with_task_timeout(Duration::from_millis(10));
         let task = TaskDef {
@@ -66,6 +66,6 @@ mod tests {
 
         let error = executor.execute(&task, &[]).await.unwrap_err();
 
-        assert!(error.to_string().contains("no idle workers available"));
+        assert!(error.to_string().contains("timed out"));
     }
 }

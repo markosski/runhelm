@@ -42,6 +42,7 @@ flowchart TD
     Engine["Workflow Engine"]
     Storage["Storage Port<br>run state + workflow defs"]
     Executor["Executor Port"]
+    Queue["Worker Task Queue"]
     Worker["Worker Runtime<br>TypeScript"]
     TaskExec["Task Executors Agent | LLM | API | Function"]
     Tools["Built-in Tools HTTP | Fetch | Search | Time"]
@@ -54,7 +55,8 @@ flowchart TD
     App --> Engine
     Engine --> Storage
     Engine --> Executor
-    Executor --> Worker
+    Executor --> Queue
+    Worker -->|claim task| Queue
     Worker --> TaskExec
     TaskExec --> Tools
     TaskExec --> Providers
@@ -79,7 +81,7 @@ Current default wiring uses in-memory storage and a fake executor, which keeps t
 
 TypeScript execution runtime for task payloads:
 
-- receives task payloads over stdin in the current skeleton
+- claims task payloads from the orchestrator over IPC or HTTP
 - selects the correct executor through `ExecutorFactory`
 - supports agent, LLM, API-call, and function-style task execution
 - validates task output against JSON Schema using `ajv`
@@ -103,9 +105,10 @@ At a high level, RunHelm executes a workflow like this:
 1. A workflow definition is registered with tasks and data bindings.
 2. A workflow instance is created for a specific run.
 3. The orchestrator identifies tasks whose dependencies are satisfied.
-4. Runnable tasks are dispatched through an executor backend.
-5. Task outputs are schema-validated and propagated to downstream tasks.
-6. State is persisted after progress so runs can be inspected and resumed.
+4. Runnable tasks are queued behind an executor backend.
+5. Workers claim queued tasks over IPC or HTTP.
+6. Task outputs are schema-validated and propagated to downstream tasks.
+7. State is persisted after progress so runs can be inspected and resumed.
 
 This design keeps orchestration logic deterministic while allowing execution environments to evolve independently.
 
@@ -152,7 +155,7 @@ npm run build
 npm start
 ```
 
-The current worker reads task payloads from stdin and logs execution results.
+The current worker pulls tasks from the orchestrator over the Unix socket by default. Set `RUNHELM_WORKER_TRANSPORT=http` and `RUNHELM_ORCHESTRATOR_HTTP_URL` for remote workers.
 
 ### Frontend
 

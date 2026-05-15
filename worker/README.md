@@ -1,8 +1,8 @@
 # RunHelm Worker
 
-The worker executes tasks for the RunHelm orchestrator. It starts as a resident Node.js process, connects to the orchestrator over a Unix domain socket, registers its capabilities, receives task dispatch messages, and sends task results back over the same socket.
+The worker executes tasks for the RunHelm orchestrator. It starts as a resident Node.js process, registers its capabilities, asks the orchestrator for work, executes claimed tasks, and sends task results back.
 
-The worker does not expose HTTP endpoints. HTTP requests go to the orchestrator API.
+Workers can communicate with the orchestrator over a Unix domain socket or over HTTP. The orchestrator owns both endpoints; workers only initiate connections and requests.
 
 ## Requirements
 
@@ -36,7 +36,7 @@ Run the worker from TypeScript source:
 npm run dev
 ```
 
-The worker connects to the socket at `RUNHELM_SOCKET_PATH`, or `/tmp/runhelm.sock` when the environment variable is not set. The orchestrator owns that socket and must be running before a worker can connect.
+By default the worker connects to the socket at `RUNHELM_SOCKET_PATH`, or `/tmp/runhelm.sock` when the environment variable is not set. Set `RUNHELM_WORKER_TRANSPORT=http` to use the orchestrator HTTP API instead.
 
 The worker reads credentials from `~/.runhelm/file_credentials.json` during startup. The file must contain a flat JSON object whose keys are credential names and whose values are strings:
 
@@ -174,9 +174,75 @@ Example response:
 
 Unknown routes return `404`.
 
+## Worker HTTP Protocol
+
+HTTP workers use the same task and result payloads as the IPC protocol. The orchestrator listens on port `3000` by default.
+
+### `POST /workers/register`
+
+Registers a worker.
+
+```json
+{
+  "worker_id": "remote-worker-1",
+  "capabilities": ["Agent", "ApiCall", "Function"]
+}
+```
+
+Response:
+
+```json
+{
+  "type": "registration_ack",
+  "worker_id": "remote-worker-1"
+}
+```
+
+### `POST /workers/tasks/claim`
+
+Long-polls for one task. Returns `no_task` when the poll timeout expires.
+
+```json
+{
+  "worker_id": "remote-worker-1"
+}
+```
+
+Task response:
+
+```json
+{
+  "type": "task_dispatch",
+  "task_id": "summarize_user-0",
+  "task": {},
+  "inputs": []
+}
+```
+
+Empty response:
+
+```json
+{
+  "type": "no_task"
+}
+```
+
+### `POST /workers/tasks/{task_id}/result`
+
+Completes a claimed task.
+
+```json
+{
+  "kind": "success",
+  "output": {
+    "response": "hello world"
+  }
+}
+```
+
 ## Worker IPC Protocol
 
-The worker and orchestrator exchange newline-delimited JSON over the Unix socket.
+The worker and orchestrator exchange newline-delimited JSON over the Unix socket. The worker registers once, then sends `task_request` whenever it is ready for more work.
 
 ### Worker Registration
 
@@ -201,9 +267,19 @@ Sent by the orchestrator:
 }
 ```
 
+### Task Request
+
+Sent by the worker when it is ready to claim work:
+
+```json
+{
+  "type": "task_request"
+}
+```
+
 ### Task Dispatch
 
-Sent by the orchestrator:
+Sent by the orchestrator in response to `task_request`:
 
 ```json
 {
@@ -229,6 +305,16 @@ Sent by the orchestrator:
     "required_credentials": []
   },
   "inputs": []
+}
+```
+
+### No Task
+
+Sent by the orchestrator when a task request times out without pending work:
+
+```json
+{
+  "type": "no_task"
 }
 ```
 
@@ -362,7 +448,9 @@ kind:
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `RUNHELM_WORKER_TRANSPORT` | `ipc` | Worker transport. Use `ipc` for the Unix socket path or `http` for remote polling. |
 | `RUNHELM_SOCKET_PATH` | `/tmp/runhelm.sock` | Unix socket path used by the worker and orchestrator IPC server. |
+| `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3000` | Orchestrator base URL used when `RUNHELM_WORKER_TRANSPORT=http`. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
 | `RUNHELM_AGENT_EXTENSION_PATHS` | unset | Comma-separated Pi extension files, directories, or package roots to load in addition to auto-discovered installed Pi packages. Relative paths are resolved from the worker process cwd. |

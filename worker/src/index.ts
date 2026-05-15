@@ -13,6 +13,8 @@ import * as os from 'os';
 import { logger } from './utils/logger.js';
 
 const DEFAULT_SOCKET_PATH = '/tmp/runhelm.sock';
+const DEFAULT_ORCHESTRATOR_HTTP_URL = 'http://127.0.0.1:3000';
+const DEFAULT_POLL_DELAY_MS = 1_000;
 const SUPPORTED_CAPABILITIES = ['Agent', 'ApiCall', 'Function'] as const;
 
 type WorkerRegistrationMessage = {
@@ -26,12 +28,20 @@ type RegistrationAckMessage = {
     worker_id: string;
 };
 
+type NoTaskMessage = {
+    type: 'no_task';
+};
+
 type TaskDispatchMessage = TaskExecutionPayload & {
     type: 'task_dispatch';
     task_id: string;
 };
 
-type OrchestratorMessage = RegistrationAckMessage | TaskDispatchMessage;
+type OrchestratorMessage = RegistrationAckMessage | NoTaskMessage | TaskDispatchMessage;
+
+type TaskRequestMessage = {
+    type: 'task_request';
+};
 
 type WorkerExecutionResult =
     | { kind: 'success'; output: unknown }
@@ -94,16 +104,25 @@ async function processTask(
     }
 }
 
-async function main() {
-    logger.info("Worker starting up...");
+function workerRegistration(workerId: string): WorkerRegistrationMessage {
+    return {
+        type: 'register',
+        worker_id: workerId,
+        capabilities: [...SUPPORTED_CAPABILITIES],
+    };
+}
 
-    const executorFactory = new ExecutorFactory();
-    const credentialsFilePath = defaultCredentialsFilePath();
-    const credentialsAdapter = await FileCredentialsAdapter.fromFile(credentialsFilePath);
+function taskRequest(): TaskRequestMessage {
+    return { type: 'task_request' };
+}
 
-    const ajv = new Ajv();
+async function runIpcWorker(
+    workerId: string,
+    executorFactory: ExecutorFactory,
+    credentialsAdapter: CredentialsPort,
+    ajv: Ajv
+) {
     const socketPath = process.env.RUNHELM_SOCKET_PATH || DEFAULT_SOCKET_PATH;
-    const workerId = createWorkerId();
     const socket = net.createConnection(socketPath);
 
     let buffer = '';
@@ -113,13 +132,21 @@ async function main() {
         socket.write(serializeNdjson(message));
     };
 
+    const requestTask = () => {
+        send(taskRequest());
+    };
+
     const handleMessage = async (message: OrchestratorMessage) => {
         switch (message.type) {
             case 'registration_ack':
                 logger.info({ workerId: message.worker_id }, "Worker registration acknowledged");
+                requestTask();
+                return;
+            case 'no_task':
+                requestTask();
                 return;
             case 'task_dispatch': {
-                logger.info({ taskId: message.task_id }, "Received task dispatch");
+                logger.info({ taskId: message.task_id }, "Claimed task dispatch");
                 const result = await processTask(message, executorFactory, credentialsAdapter, ajv);
                 const response: TaskResultMessage = {
                     type: 'task_result',
@@ -128,19 +155,15 @@ async function main() {
                 };
                 send(response);
                 logger.info({ taskId: message.task_id, resultKind: result.kind }, "Sent task result");
+                requestTask();
                 return;
             }
         }
     };
 
     socket.on('connect', () => {
-        const registration: WorkerRegistrationMessage = {
-            type: 'register',
-            worker_id: workerId,
-            capabilities: [...SUPPORTED_CAPABILITIES],
-        };
         logger.info({ socketPath, workerId }, "Connected to orchestrator IPC socket");
-        send(registration);
+        send(workerRegistration(workerId));
     });
 
     socket.on('data', (data) => {
@@ -181,6 +204,69 @@ async function main() {
 
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);
+}
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status} from ${url}: ${await response.text()}`);
+    }
+
+    return await response.json() as T;
+}
+
+async function runHttpWorker(
+    workerId: string,
+    executorFactory: ExecutorFactory,
+    credentialsAdapter: CredentialsPort,
+    ajv: Ajv
+) {
+    const baseUrl = (process.env.RUNHELM_ORCHESTRATOR_HTTP_URL || DEFAULT_ORCHESTRATOR_HTTP_URL).replace(/\/$/, '');
+    logger.info({ baseUrl, workerId }, "Connecting to orchestrator HTTP API");
+
+    await postJson<RegistrationAckMessage>(`${baseUrl}/workers/register`, workerRegistration(workerId));
+
+    for (;;) {
+        const message = await postJson<OrchestratorMessage>(`${baseUrl}/workers/tasks/claim`, {
+            worker_id: workerId,
+        });
+
+        if (message.type === 'no_task') {
+            await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_DELAY_MS));
+            continue;
+        }
+
+        if (message.type === 'registration_ack') {
+            continue;
+        }
+
+        logger.info({ taskId: message.task_id }, "Claimed task dispatch");
+        const result = await processTask(message, executorFactory, credentialsAdapter, ajv);
+        await postJson(`${baseUrl}/workers/tasks/${encodeURIComponent(message.task_id)}/result`, result);
+        logger.info({ taskId: message.task_id, resultKind: result.kind }, "Sent task result");
+    }
+}
+
+async function main() {
+    logger.info("Worker starting up...");
+
+    const executorFactory = new ExecutorFactory();
+    const credentialsFilePath = defaultCredentialsFilePath();
+    const credentialsAdapter = await FileCredentialsAdapter.fromFile(credentialsFilePath);
+
+    const ajv = new Ajv();
+    const workerId = createWorkerId();
+
+    if (process.env.RUNHELM_WORKER_TRANSPORT === 'http') {
+        await runHttpWorker(workerId, executorFactory, credentialsAdapter, ajv);
+    } else {
+        await runIpcWorker(workerId, executorFactory, credentialsAdapter, ajv);
+    }
 }
 
 main().catch((err) => {

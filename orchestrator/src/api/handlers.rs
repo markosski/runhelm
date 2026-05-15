@@ -7,10 +7,14 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
+use crate::adapters::ipc::{
+    OrchestratorMessage, TaskResult, WorkerExecutionResult, WorkerRegistration,
+};
 use crate::core::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::ports::executor::ExecutionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 use super::router::AppState;
 
@@ -187,6 +191,70 @@ pub async fn get_task_result(
         Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+#[derive(Deserialize)]
+pub struct HttpWorkerClaimRequest {
+    worker_id: String,
+}
+
+pub async fn register_http_worker(
+    State(state): State<AppState>,
+    Json(registration): Json<WorkerRegistration>,
+) -> Result<Json<Value>, StatusCode> {
+    let worker_id = registration.worker_id.clone();
+    state.worker_pool.add_http_worker(registration).await;
+
+    Ok(Json(json!({
+        "type": "registration_ack",
+        "worker_id": worker_id,
+    })))
+}
+
+pub async fn claim_worker_task(
+    State(state): State<AppState>,
+    Json(payload): Json<HttpWorkerClaimRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    match state
+        .worker_pool
+        .claim_task(&payload.worker_id, Duration::from_secs(30))
+        .await
+    {
+        Ok(Some(dispatch)) => Ok(Json(
+            serde_json::to_value(OrchestratorMessage::TaskDispatch(dispatch)).unwrap(),
+        )),
+        Ok(None) => Ok(Json(
+            serde_json::to_value(OrchestratorMessage::NoTask).unwrap(),
+        )),
+        Err(error) if error.to_string().contains("not registered") => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(worker_id = %payload.worker_id, %error, "HTTP worker failed to claim task");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn complete_worker_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+    Json(result): Json<WorkerExecutionResult>,
+) -> Result<Json<Value>, StatusCode> {
+    let worker_id = state
+        .worker_pool
+        .worker_for_task(&task_id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    state
+        .worker_pool
+        .complete_task_result(&worker_id, TaskResult { task_id, result })
+        .await
+        .map_err(|error| {
+            tracing::error!(%worker_id, %error, "HTTP worker failed to complete task");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(json!({ "status": "accepted" })))
 }
 
 fn execution_result_to_value(result: ExecutionResult) -> Value {

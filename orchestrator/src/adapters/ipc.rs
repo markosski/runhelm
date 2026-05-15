@@ -2,7 +2,7 @@ use crate::core::models::TaskDef;
 use crate::ports::executor::ExecutionResult;
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tokio::time;
 use tracing::{debug, info, warn};
 
@@ -77,6 +77,7 @@ impl From<WorkerExecutionResult> for ExecutionResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerMessage {
     Register(WorkerRegistration),
+    TaskRequest,
     TaskResult(TaskResult),
 }
 
@@ -84,6 +85,7 @@ pub enum WorkerMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OrchestratorMessage {
     RegistrationAck { worker_id: String },
+    NoTask,
     TaskDispatch(TaskDispatch),
 }
 
@@ -99,14 +101,23 @@ struct WorkerConnection {
     registration: WorkerRegistration,
     status: WorkerStatus,
     current_task_id: Option<String>,
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+    writer: Option<Arc<Mutex<OwnedWriteHalf>>>,
+}
+
+#[derive(Debug)]
+struct PendingTask {
+    dispatch: TaskDispatch,
+    result_tx: oneshot::Sender<WorkerExecutionResult>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkerPool {
     workers: Arc<RwLock<HashMap<String, WorkerConnection>>>,
+    pending_tasks: Arc<Mutex<VecDeque<PendingTask>>>,
+    in_flight_tasks: Arc<Mutex<HashMap<String, String>>>,
     result_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<WorkerExecutionResult>>>>,
     next_dispatch_id: Arc<AtomicU64>,
+    task_available: Arc<Notify>,
 }
 
 impl WorkerPool {
@@ -134,7 +145,7 @@ impl WorkerPool {
                     registration,
                     status: WorkerStatus::Idle,
                     current_task_id: None,
-                    writer: Arc::new(Mutex::new(writer)),
+                    writer: Some(Arc::new(Mutex::new(writer))),
                 },
             )
             .map(|worker| WorkerSnapshot {
@@ -143,6 +154,37 @@ impl WorkerPool {
             });
 
         debug!(worker_id = %snapshot.worker_id, "registered worker");
+        previous
+    }
+
+    pub async fn add_http_worker(
+        &self,
+        registration: WorkerRegistration,
+    ) -> Option<WorkerSnapshot> {
+        let snapshot = WorkerSnapshot {
+            worker_id: registration.worker_id.clone(),
+            status: WorkerStatus::Idle,
+        };
+
+        let previous = self
+            .workers
+            .write()
+            .await
+            .insert(
+                registration.worker_id.clone(),
+                WorkerConnection {
+                    registration,
+                    status: WorkerStatus::Idle,
+                    current_task_id: None,
+                    writer: None,
+                },
+            )
+            .map(|worker| WorkerSnapshot {
+                worker_id: worker.registration.worker_id,
+                status: worker.status,
+            });
+
+        debug!(worker_id = %snapshot.worker_id, "registered HTTP worker");
         previous
     }
 
@@ -188,7 +230,11 @@ impl WorkerPool {
             let worker = workers
                 .get(worker_id)
                 .with_context(|| format!("worker {worker_id} is not registered"))?;
-            Arc::clone(&worker.writer)
+            worker
+                .writer
+                .as_ref()
+                .map(Arc::clone)
+                .with_context(|| format!("worker {worker_id} is not connected over IPC"))?
         };
 
         let mut writer = writer.lock().await;
@@ -206,65 +252,74 @@ impl WorkerPool {
             task.id,
             self.next_dispatch_id.fetch_add(1, Ordering::Relaxed)
         );
-        let (worker_id, writer) = {
-            let mut workers = self.workers.write().await;
-            let (worker_id, worker) = workers
-                .iter_mut()
-                .find(|(_, worker)| worker.status == WorkerStatus::Idle)
-                .ok_or_else(|| anyhow!("no idle workers available"))?;
-
-            worker.status = WorkerStatus::Busy;
-            worker.current_task_id = Some(task_id.clone());
-            (worker_id.clone(), Arc::clone(&worker.writer))
-        };
-
         let (result_tx, result_rx) = oneshot::channel();
-        self.result_waiters
-            .lock()
-            .await
-            .insert(task_id.clone(), result_tx);
 
-        let dispatch = OrchestratorMessage::TaskDispatch(TaskDispatch {
-            task_id: task_id.clone(),
-            task: task.clone(),
-            inputs: inputs.to_vec(),
+        self.pending_tasks.lock().await.push_back(PendingTask {
+            dispatch: TaskDispatch {
+                task_id: task_id.clone(),
+                task: task.clone(),
+                inputs: inputs.to_vec(),
+            },
+            result_tx,
         });
-
-        let send_result = {
-            let mut writer = writer.lock().await;
-            write_ndjson(&mut *writer, &dispatch).await
-        };
-
-        if let Err(error) = send_result {
-            self.result_waiters.lock().await.remove(&task_id);
-            self.remove_worker(&worker_id).await;
-            return Err(error)
-                .with_context(|| format!("dispatch task {task_id} to worker {worker_id}"));
-        }
+        self.task_available.notify_one();
 
         match time::timeout(timeout, result_rx).await {
             Ok(Ok(result)) => Ok(result.into()),
             Ok(Err(_)) => {
-                self.mark_worker_idle_if_current(&worker_id, &task_id).await;
-                Err(anyhow!(
-                    "worker {worker_id} disconnected before returning task {task_id}"
-                ))
+                self.remove_pending_task(&task_id).await;
+                Err(anyhow!("task {task_id} was cancelled before completion"))
             }
             Err(_) => {
+                self.remove_pending_task(&task_id).await;
                 self.result_waiters.lock().await.remove(&task_id);
-                self.remove_worker(&worker_id).await;
+                if let Some(worker_id) = self.in_flight_tasks.lock().await.remove(&task_id) {
+                    self.mark_worker_idle_if_current(&worker_id, &task_id).await;
+                }
                 Err(anyhow!("task {task_id} timed out after {:?}", timeout))
             }
         }
     }
 
-    async fn complete_task_result(
+    pub async fn claim_task(
+        &self,
+        worker_id: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<TaskDispatch>> {
+        if self.get_worker(worker_id).await.is_none() {
+            anyhow::bail!("worker {worker_id} is not registered");
+        }
+
+        let claim = async {
+            loop {
+                if let Some(task) = self.pending_tasks.lock().await.pop_front() {
+                    let task_id = task.dispatch.task_id.clone();
+                    self.result_waiters
+                        .lock()
+                        .await
+                        .insert(task_id.clone(), task.result_tx);
+                    self.in_flight_tasks
+                        .lock()
+                        .await
+                        .insert(task_id.clone(), worker_id.to_string());
+                    self.mark_worker_running(worker_id, &task_id).await;
+                    return task.dispatch;
+                }
+                self.task_available.notified().await;
+            }
+        };
+
+        Ok(time::timeout(timeout, claim).await.ok())
+    }
+
+    pub async fn complete_task_result(
         &self,
         worker_id: &str,
         result: TaskResult,
     ) -> anyhow::Result<()> {
         let task_id = result.task_id.clone();
         let waiter = self.result_waiters.lock().await.remove(&task_id);
+        self.in_flight_tasks.lock().await.remove(&task_id);
         self.mark_worker_idle_if_current(worker_id, &task_id).await;
 
         if let Some(waiter) = waiter {
@@ -274,6 +329,28 @@ impl WorkerPool {
         }
 
         Ok(())
+    }
+
+    pub async fn worker_for_task(&self, task_id: &str) -> Option<String> {
+        self.in_flight_tasks.lock().await.get(task_id).cloned()
+    }
+
+    async fn remove_pending_task(&self, task_id: &str) {
+        let mut pending_tasks = self.pending_tasks.lock().await;
+        if let Some(index) = pending_tasks
+            .iter()
+            .position(|task| task.dispatch.task_id == task_id)
+        {
+            pending_tasks.remove(index);
+        }
+    }
+
+    async fn mark_worker_running(&self, worker_id: &str, task_id: &str) {
+        let mut workers = self.workers.write().await;
+        if let Some(worker) = workers.get_mut(worker_id) {
+            worker.status = WorkerStatus::Busy;
+            worker.current_task_id = Some(task_id.to_string());
+        }
     }
 
     async fn mark_worker_idle_if_current(&self, worker_id: &str, task_id: &str) {
@@ -295,6 +372,7 @@ impl WorkerPool {
         };
 
         if let Some(task_id) = current_task_id {
+            self.in_flight_tasks.lock().await.remove(&task_id);
             if let Some(waiter) = self.result_waiters.lock().await.remove(&task_id) {
                 let _ = waiter.send(WorkerExecutionResult::Failure {
                     reason: format!("worker {worker_id} disconnected while running task {task_id}"),
@@ -363,7 +441,7 @@ pub async fn handle_worker_connection(
             info!(worker_id = %registration.worker_id, "worker connected");
             registration
         }
-        WorkerMessage::TaskResult(_) => {
+        WorkerMessage::TaskRequest | WorkerMessage::TaskResult(_) => {
             anyhow::bail!("expected worker registration as first IPC message")
         }
     };
@@ -391,6 +469,20 @@ pub async fn handle_worker_connection(
         }
 
         match parse_worker_message(&line) {
+            Ok(WorkerMessage::TaskRequest) => {
+                let message = match worker_pool
+                    .claim_task(&worker_id, Duration::from_secs(30))
+                    .await
+                    .with_context(|| format!("claim task for worker {worker_id}"))?
+                {
+                    Some(dispatch) => OrchestratorMessage::TaskDispatch(dispatch),
+                    None => OrchestratorMessage::NoTask,
+                };
+                worker_pool
+                    .send_to_worker(&worker_id, &message)
+                    .await
+                    .with_context(|| format!("send task claim response to worker {worker_id}"))?;
+            }
             Ok(WorkerMessage::TaskResult(result)) => {
                 debug!(worker_id = %worker_id, task_id = %result.task_id, "received worker task result");
                 worker_pool
@@ -480,6 +572,13 @@ mod tests {
         assert_eq!(encoded["inputs"], json!([{"value": 1}]));
     }
 
+    #[test]
+    fn protocol_serializes_task_request_message() {
+        let encoded = serde_json::to_string(&WorkerMessage::TaskRequest).unwrap();
+
+        assert_eq!(encoded, r#"{"type":"task_request"}"#);
+    }
+
     #[tokio::test]
     async fn connection_handler_registers_worker_and_removes_on_disconnect() {
         let socket_path = std::env::current_dir()
@@ -517,6 +616,48 @@ mod tests {
 
         assert!(pool.get_worker("worker-1").await.is_none());
         let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn http_worker_claims_queued_task_and_completes_result() {
+        let pool = WorkerPool::new();
+        pool.add_http_worker(WorkerRegistration {
+            worker_id: "http-worker-1".to_string(),
+            capabilities: vec!["Function".to_string()],
+        })
+        .await;
+
+        let task = test_task("task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .dispatch_task(&task, &[], Duration::from_secs(5))
+                .await
+        });
+        let claimed = pool
+            .claim_task("http-worker-1", Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claimed.task.id, "task-1");
+
+        pool.complete_task_result(
+            "http-worker-1",
+            TaskResult {
+                task_id: claimed.task_id,
+                result: WorkerExecutionResult::Success {
+                    output: json!({"transport": "http"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            unwrap_success(execution.await.unwrap().unwrap()),
+            json!({"transport": "http"})
+        );
     }
 
     #[tokio::test]
@@ -601,6 +742,9 @@ mod tests {
         assert!(matches!(ack, OrchestratorMessage::RegistrationAck { .. }));
 
         line.clear();
+        write_ndjson(&mut writer, &WorkerMessage::TaskRequest)
+            .await
+            .unwrap();
         reader.read_line(&mut line).await.unwrap();
         let dispatch: OrchestratorMessage = serde_json::from_str(line.trim_end()).unwrap();
         let OrchestratorMessage::TaskDispatch(dispatch) = dispatch else {

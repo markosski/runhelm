@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Setup API (Interface Layer)
     // Setup router
-    let app = router::create_router(orchestrator);
+    let app = router::create_router(orchestrator, worker_pool.clone());
 
     let socket_path = socket_path_from_env();
     tokio::spawn(async move {
