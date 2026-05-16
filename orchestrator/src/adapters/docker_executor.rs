@@ -107,8 +107,11 @@ mod tests {
             .unwrap();
         assert!(claimed.is_some());
 
-        let error = execution.await.unwrap().unwrap_err();
+        let result = execution.await.unwrap().unwrap();
 
-        assert!(error.to_string().contains("1s"));
+        assert!(matches!(
+            result,
+            ExecutionResult::Failure(reason) if reason.contains("1s")
+        ));
     }
 }

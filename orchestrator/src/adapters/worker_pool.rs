@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
-use tokio::time;
+use tokio::time::{self, Instant};
 use tracing::{debug, warn};
+
+const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkerRegistration {
@@ -75,31 +77,57 @@ struct PendingTask {
     dispatch: TaskDispatch,
     result_tx: oneshot::Sender<WorkerExecutionResult>,
     claimed_tx: oneshot::Sender<()>,
+    timeout: Duration,
 }
 
-/// Manages a pool of workers and task dispatching. 
-/// Tasks are dispatched to workers in the order they are received, but only when a worker claims them. 
-/// This allows for more efficient handling of task timeouts, as a task will not start its timeout countdown until it has been claimed by a worker.
-/// 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
+struct InFlightTask {
+    worker_id: String,
+    claimed_at: Instant,
+    timeout: Duration,
+}
+
+/// Manages queued and in-flight worker tasks.
+/// Tasks are claimed by workers in FIFO order, and execution timeout tracking
+/// starts when a worker claims a task.
+#[derive(Debug, Clone)]
 pub struct WorkerPool {
     // Registered workers and their current state
     workers: Arc<RwLock<HashMap<String, WorkerState>>>,
     // Queue of pending tasks waiting to be claimed by workers
     pending_tasks: Arc<Mutex<VecDeque<PendingTask>>>,
-    // Map of in-flight task IDs to the worker ID that claimed them
-    in_flight_tasks: Arc<Mutex<HashMap<String, String>>>,
+    // Map of in-flight task IDs to their execution state
+    in_flight_tasks: Arc<Mutex<HashMap<String, InFlightTask>>>,
     // Map of task IDs to the oneshot sender waiting for their result
     result_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<WorkerExecutionResult>>>>,
     // Atomic counter for generating unique task dispatch IDs
     next_dispatch_id: Arc<AtomicU64>,
-    // Notify workers when a new task is available for claiming 
+    // Notify workers when a new task is available for claiming
     task_available: Arc<Notify>,
+}
+
+impl Default for WorkerPool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorkerPool {
     pub fn new() -> Self {
-        Self::default()
+        let pool = Self::new_without_monitor();
+        pool.spawn_timeout_monitor(TASK_TIMEOUT_MONITOR_INTERVAL);
+        pool
+    }
+
+    fn new_without_monitor() -> Self {
+        Self {
+            workers: Arc::new(RwLock::new(HashMap::new())),
+            pending_tasks: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight_tasks: Arc::new(Mutex::new(HashMap::new())),
+            result_waiters: Arc::new(Mutex::new(HashMap::new())),
+            next_dispatch_id: Arc::new(AtomicU64::new(0)),
+            task_available: Arc::new(Notify::new()),
+        }
     }
 
     pub async fn register_worker(&self, registration: WorkerRegistration) {
@@ -114,8 +142,8 @@ impl WorkerPool {
         debug!(%worker_id, "registered worker");
     }
 
-    /// Enqueues a task to be claimed by a worker. The task will not start its timeout until it has been claimed. 
-    /// If the task is not claimed within the specified timeout, it will be removed from the pending queue and an error will be returned.
+    /// Enqueues a task and waits until it reaches a terminal worker result.
+    /// Execution timeout is tracked separately after the task is claimed.
     pub async fn enqueue_task(
         &self,
         task: &TaskDef,
@@ -128,12 +156,7 @@ impl WorkerPool {
             self.next_dispatch_id.fetch_add(1, Ordering::Relaxed)
         );
 
-        // Create a oneshot channel to receive the task result and another to signal when the task has been claimed
         let (result_tx, result_rx) = oneshot::channel();
-
-        // The claimed_tx channel is used to signal when a worker has claimed the task. 
-        // This allows us to start the timeout countdown only after the task has been claimed, 
-        // preventing premature timeouts while the task is still waiting to be claimed.
         let (claimed_tx, claimed_rx) = oneshot::channel();
 
         self.pending_tasks.lock().await.push_back(PendingTask {
@@ -144,9 +167,9 @@ impl WorkerPool {
             },
             result_tx,
             claimed_tx,
+            timeout,
         });
 
-        // Notify workers that a new task is available for claiming
         self.task_available.notify_one();
 
         if claimed_rx.await.is_err() {
@@ -154,19 +177,11 @@ impl WorkerPool {
             return Err(anyhow!("task {task_id} was cancelled before claim"));
         }
 
-        match time::timeout(timeout, result_rx).await {
-            Ok(Ok(result)) => Ok(result.into()),
-            Ok(Err(_)) => {
-                self.remove_pending_task(&task_id).await;
-                Err(anyhow!("task {task_id} was cancelled before completion"))
-            }
+        match result_rx.await {
+            Ok(result) => Ok(result.into()),
             Err(_) => {
                 self.remove_pending_task(&task_id).await;
-                self.result_waiters.lock().await.remove(&task_id);
-                if let Some(worker_id) = self.in_flight_tasks.lock().await.remove(&task_id) {
-                    self.mark_worker_idle_if_current(&worker_id, &task_id).await;
-                }
-                Err(anyhow!("task {task_id} timed out after {:?}", timeout))
+                Err(anyhow!("task {task_id} was cancelled before completion"))
             }
         }
     }
@@ -189,10 +204,14 @@ impl WorkerPool {
                         .lock()
                         .await
                         .insert(task_id.clone(), task.result_tx);
-                    self.in_flight_tasks
-                        .lock()
-                        .await
-                        .insert(task_id.clone(), worker_id.to_string());
+                    self.in_flight_tasks.lock().await.insert(
+                        task_id.clone(),
+                        InFlightTask {
+                            worker_id: worker_id.to_string(),
+                            claimed_at: Instant::now(),
+                            timeout: task.timeout,
+                        },
+                    );
                     self.mark_worker_running(worker_id, &task_id).await;
                     let _ = task.claimed_tx.send(());
                     return task.dispatch;
@@ -224,7 +243,59 @@ impl WorkerPool {
     }
 
     pub async fn worker_for_task(&self, task_id: &str) -> Option<String> {
-        self.in_flight_tasks.lock().await.get(task_id).cloned()
+        self.in_flight_tasks
+            .lock()
+            .await
+            .get(task_id)
+            .map(|task| task.worker_id.clone())
+    }
+
+    fn spawn_timeout_monitor(&self, interval: Duration) {
+        let pool = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = time::interval(interval);
+            loop {
+                ticker.tick().await;
+                pool.complete_timed_out_tasks().await;
+            }
+        });
+    }
+
+    async fn complete_timed_out_tasks(&self) {
+        let now = Instant::now();
+        let timed_out_task_ids = {
+            let in_flight_tasks = self.in_flight_tasks.lock().await;
+            in_flight_tasks
+                .iter()
+                .filter(|(_, task)| now.duration_since(task.claimed_at) >= task.timeout)
+                .map(|(task_id, _)| task_id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for task_id in timed_out_task_ids {
+            self.complete_task_timeout(&task_id).await;
+        }
+    }
+
+    async fn complete_task_timeout(&self, task_id: &str) {
+        let Some(in_flight_task) = self.in_flight_tasks.lock().await.remove(task_id) else {
+            return;
+        };
+
+        let waiter = self.result_waiters.lock().await.remove(task_id);
+        self.mark_worker_idle_if_current(&in_flight_task.worker_id, task_id)
+            .await;
+
+        if let Some(waiter) = waiter {
+            let _ = waiter.send(WorkerExecutionResult::Failure {
+                reason: format!(
+                    "task {task_id} timed out after {:?}",
+                    in_flight_task.timeout
+                ),
+            });
+        } else {
+            warn!(worker_id = %in_flight_task.worker_id, task_id = %task_id, "timed out task had no result waiter");
+        }
     }
 
     async fn remove_pending_task(&self, task_id: &str) {
@@ -373,6 +444,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claimed_task_times_out_through_result_waiter() {
+        let pool = WorkerPool::new();
+        pool.register_worker(WorkerRegistration {
+            worker_id: "worker-1".to_string(),
+        })
+        .await;
+
+        let task = test_task("task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .enqueue_task(&task, &[], Duration::from_millis(10))
+                .await
+        });
+
+        let claimed = pool
+            .claim_task("worker-1", Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap();
+
+        time::sleep(Duration::from_millis(20)).await;
+        pool.complete_timed_out_tasks().await;
+
+        assert_eq!(
+            unwrap_failure(execution.await.unwrap().unwrap()),
+            format!("task {} timed out after 10ms", claimed.task_id)
+        );
+        assert_eq!(pool.worker_for_task(&claimed.task_id).await, None);
+    }
+
+    #[tokio::test]
     async fn unregistered_worker_cannot_claim_task() {
         let pool = WorkerPool::new();
         let error = pool
@@ -402,6 +505,13 @@ mod tests {
         match result {
             ExecutionResult::Success(output) => output,
             other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    fn unwrap_failure(result: ExecutionResult) -> String {
+        match result {
+            ExecutionResult::Failure(reason) => reason,
+            other => panic!("expected failure, got {other:?}"),
         }
     }
 }
