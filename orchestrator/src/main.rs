@@ -9,9 +9,9 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::adapters::docker_executor::DockerExecutor;
-use crate::adapters::ipc::{WorkerPool, run_ipc_server, socket_path_from_env};
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+use crate::adapters::worker_pool::WorkerPool;
 use crate::api::router;
 use crate::core::orchestrator::Orchestrator;
 
@@ -42,14 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Setup API (Interface Layer)
     // Setup router
-    let app = router::create_router(orchestrator);
-
-    let socket_path = socket_path_from_env();
-    tokio::spawn(async move {
-        if let Err(error) = run_ipc_server(socket_path, worker_pool).await {
-            tracing::error!(%error, "IPC server stopped");
-        }
-    });
+    let app = router::create_router(orchestrator, worker_pool);
 
     // Start server
     let listener = TcpListener::bind("0.0.0.0:3000").await?;

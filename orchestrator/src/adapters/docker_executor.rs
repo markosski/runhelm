@@ -1,4 +1,4 @@
-use crate::adapters::ipc::WorkerPool;
+use crate::adapters::worker_pool::WorkerPool;
 use crate::core::models::TaskDef;
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
@@ -30,8 +30,13 @@ impl DockerExecutor {
 #[async_trait]
 impl ExecutorPort for DockerExecutor {
     async fn execute(&self, task: &TaskDef, inputs: &[Value]) -> anyhow::Result<ExecutionResult> {
+        let task_timeout = task
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(self.task_timeout);
+
         self.worker_pool
-            .dispatch_task(task, inputs, self.task_timeout)
+            .enqueue_task(task, inputs, task_timeout)
             .await
     }
 }
@@ -49,7 +54,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn ipc_backed_executor_fails_when_no_workers_are_available() {
+    async fn worker_pool_backed_executor_waits_when_no_worker_claims_task() {
         let executor =
             DockerExecutor::new(WorkerPool::new()).with_task_timeout(Duration::from_millis(10));
         let task = TaskDef {
@@ -58,14 +63,55 @@ mod tests {
                 dependencies: vec![],
                 code: "return 1".to_string(),
             },
+            timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
             expected_side_effects: vec![],
             required_credentials: vec![],
         };
 
-        let error = executor.execute(&task, &[]).await.unwrap_err();
+        let result =
+            tokio::time::timeout(Duration::from_millis(30), executor.execute(&task, &[])).await;
 
-        assert!(error.to_string().contains("no idle workers available"));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn task_timeout_overrides_executor_default_timeout() {
+        let worker_pool = WorkerPool::new();
+        worker_pool
+            .register_worker(crate::adapters::worker_pool::WorkerRegistration {
+                worker_id: "worker-1".to_string(),
+            })
+            .await;
+
+        let executor =
+            DockerExecutor::new(worker_pool.clone()).with_task_timeout(Duration::from_secs(60));
+        let task = TaskDef {
+            id: "task-1".to_string(),
+            kind: crate::core::models::TaskTypeDef::Function {
+                dependencies: vec![],
+                code: "return 1".to_string(),
+            },
+            timeout_secs: Some(1),
+            input_schemas: vec![],
+            output_schema: None,
+            expected_side_effects: vec![],
+            required_credentials: vec![],
+        };
+
+        let execution = tokio::spawn(async move { executor.execute(&task, &[]).await });
+        let claimed = worker_pool
+            .claim_task("worker-1", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(claimed.is_some());
+
+        let result = execution.await.unwrap().unwrap();
+
+        assert!(matches!(
+            result,
+            ExecutionResult::Failure(reason) if reason.contains("1s")
+        ));
     }
 }

@@ -49,6 +49,8 @@ pub struct FunctionDependency {
 pub struct TaskDef {
     pub id: String,
     pub kind: TaskTypeDef,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     pub input_schemas: Vec<JsonSchema>,
     pub output_schema: Option<JsonSchema>,
     pub expected_side_effects: Vec<String>,

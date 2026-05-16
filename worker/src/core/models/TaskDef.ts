@@ -11,6 +11,7 @@ export interface FunctionDependency {
 export interface TaskDef {
     id: string;
     kind: TaskKind;
+    timeout_secs?: number;
     input_schemas: any[];
     output_schema?: any;
     expected_side_effects: any[];

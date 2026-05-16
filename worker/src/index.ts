@@ -1,6 +1,3 @@
-// This is the skeleton worker for executing agentic tasks
-// It uses pi-mono as a dependency for execution
-
 import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
 import { FileCredentialsAdapter, defaultCredentialsFilePath } from './adapters/FileCredentialsAdapter.js';
@@ -8,17 +5,17 @@ import type { TaskExecutionPayload } from './core/models/TaskDef.js';
 import type { CredentialsPort } from './core/ports/CredentialsPort.js';
 import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
 
-import * as net from 'net';
 import * as os from 'os';
 import { logger } from './utils/logger.js';
 
-const DEFAULT_SOCKET_PATH = '/tmp/runhelm.sock';
-const SUPPORTED_CAPABILITIES = ['Agent', 'ApiCall', 'Function'] as const;
+const DEFAULT_ORCHESTRATOR_HTTP_URL = 'http://127.0.0.1:3000';
+const DEFAULT_POLL_DELAY_MS = 1_000;
+const DEFAULT_RESULT_ACK_RETRY_DELAY_MS = 1_000;
+const DEFAULT_RESULT_ACK_MAX_ATTEMPTS = 3;
 
 type WorkerRegistrationMessage = {
     type: 'register';
     worker_id: string;
-    capabilities: typeof SUPPORTED_CAPABILITIES[number][];
 };
 
 type RegistrationAckMessage = {
@@ -26,30 +23,33 @@ type RegistrationAckMessage = {
     worker_id: string;
 };
 
+type NoTaskMessage = {
+    type: 'no_task';
+};
+
 type TaskDispatchMessage = TaskExecutionPayload & {
     type: 'task_dispatch';
     task_id: string;
 };
 
-type OrchestratorMessage = RegistrationAckMessage | TaskDispatchMessage;
+type WorkerResponse = RegistrationAckMessage | NoTaskMessage | TaskDispatchMessage;
+
+type ResultAckMessage = {
+    status: 'accepted';
+};
 
 type WorkerExecutionResult =
     | { kind: 'success'; output: unknown }
     | { kind: 'input_needed'; description: string }
     | { kind: 'failure'; reason: string };
 
-type TaskResultMessage = {
-    type: 'task_result';
-    task_id: string;
-    result: WorkerExecutionResult;
+type ResultAckRetryPolicy = {
+    maxAttempts: number;
+    retryDelayMs: number;
 };
 
 function createWorkerId(): string {
     return process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
-}
-
-function serializeNdjson(message: unknown): string {
-    return `${JSON.stringify(message)}\n`;
 }
 
 function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult {
@@ -94,6 +94,101 @@ async function processTask(
     }
 }
 
+function workerRegistration(workerId: string): WorkerRegistrationMessage {
+    return {
+        type: 'register',
+        worker_id: workerId,
+    };
+}
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status} from ${url}: ${await response.text()}`);
+    }
+
+    return await response.json() as T;
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function postTaskResultUntilAck(
+    baseUrl: string,
+    taskId: string,
+    result: WorkerExecutionResult,
+    retryPolicy: ResultAckRetryPolicy = {
+        maxAttempts: DEFAULT_RESULT_ACK_MAX_ATTEMPTS,
+        retryDelayMs: DEFAULT_RESULT_ACK_RETRY_DELAY_MS,
+    }
+): Promise<void> {
+    const url = `${baseUrl}/workers/tasks/${encodeURIComponent(taskId)}/result`;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= retryPolicy.maxAttempts; attempt++) {
+        try {
+            const ack = await postJson<ResultAckMessage>(url, result);
+            if (ack.status === 'accepted') {
+                return;
+            }
+
+            lastError = new Error(`Unexpected result ack: ${JSON.stringify(ack)}`);
+            logger.warn({ taskId, ack, attempt, maxAttempts: retryPolicy.maxAttempts }, "Task result post did not receive accepted ack");
+        } catch (err) {
+            lastError = err;
+            logger.warn({ taskId, err, attempt, maxAttempts: retryPolicy.maxAttempts }, "Task result post failed");
+        }
+
+        if (attempt < retryPolicy.maxAttempts) {
+            await sleep(retryPolicy.retryDelayMs);
+        }
+    }
+
+    throw new Error(`Task result for ${taskId} was not acknowledged after ${retryPolicy.maxAttempts} attempts`, {
+        cause: lastError,
+    });
+}
+
+async function runWorker(
+    workerId: string,
+    executorFactory: ExecutorFactory,
+    credentialsAdapter: CredentialsPort,
+    ajv: Ajv
+) {
+    const baseUrl = (process.env.RUNHELM_ORCHESTRATOR_HTTP_URL || DEFAULT_ORCHESTRATOR_HTTP_URL)
+        .replace(/\/$/, '');
+    logger.info({ baseUrl, workerId }, "Connecting to orchestrator HTTP API");
+
+    await postJson<RegistrationAckMessage>(`${baseUrl}/workers/register`, workerRegistration(workerId));
+
+    while(true) {
+        const message = await postJson<WorkerResponse>(`${baseUrl}/workers/tasks/claim`, {
+            worker_id: workerId,
+        });
+
+        if (message.type === 'no_task') {
+            await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_DELAY_MS));
+            continue;
+        }
+
+        if (message.type === 'registration_ack') {
+            continue;
+        }
+
+        logger.info({ taskId: message.task_id }, "Claimed task dispatch");
+        // TODO: consider adding a timeout for task execution and implement a heartbeat mechanism to let the orchestrator know the worker is still alive and working on the task, especially for long-running tasks
+        const result = await processTask(message, executorFactory, credentialsAdapter, ajv);
+        await postTaskResultUntilAck(baseUrl, message.task_id, result);
+        logger.info({ taskId: message.task_id, resultKind: result.kind }, "Task result acknowledged");
+    }
+}
+
 async function main() {
     logger.info("Worker starting up...");
 
@@ -102,85 +197,9 @@ async function main() {
     const credentialsAdapter = await FileCredentialsAdapter.fromFile(credentialsFilePath);
 
     const ajv = new Ajv();
-    const socketPath = process.env.RUNHELM_SOCKET_PATH || DEFAULT_SOCKET_PATH;
     const workerId = createWorkerId();
-    const socket = net.createConnection(socketPath);
 
-    let buffer = '';
-    let processing = Promise.resolve();
-
-    const send = (message: unknown) => {
-        socket.write(serializeNdjson(message));
-    };
-
-    const handleMessage = async (message: OrchestratorMessage) => {
-        switch (message.type) {
-            case 'registration_ack':
-                logger.info({ workerId: message.worker_id }, "Worker registration acknowledged");
-                return;
-            case 'task_dispatch': {
-                logger.info({ taskId: message.task_id }, "Received task dispatch");
-                const result = await processTask(message, executorFactory, credentialsAdapter, ajv);
-                const response: TaskResultMessage = {
-                    type: 'task_result',
-                    task_id: message.task_id,
-                    result,
-                };
-                send(response);
-                logger.info({ taskId: message.task_id, resultKind: result.kind }, "Sent task result");
-                return;
-            }
-        }
-    };
-
-    socket.on('connect', () => {
-        const registration: WorkerRegistrationMessage = {
-            type: 'register',
-            worker_id: workerId,
-            capabilities: [...SUPPORTED_CAPABILITIES],
-        };
-        logger.info({ socketPath, workerId }, "Connected to orchestrator IPC socket");
-        send(registration);
-    });
-
-    socket.on('data', (data) => {
-        buffer += data.toString('utf8');
-
-        let newlineIndex = buffer.indexOf('\n');
-        while (newlineIndex !== -1) {
-            const line = buffer.slice(0, newlineIndex).trim();
-            buffer = buffer.slice(newlineIndex + 1);
-
-            if (line.length > 0) {
-                processing = processing
-                    .then(async () => {
-                        try {
-                            await handleMessage(JSON.parse(line) as OrchestratorMessage);
-                        } catch (err) {
-                            logger.error({ err, line }, "Failed to process orchestrator IPC message");
-                        }
-                    });
-            }
-
-            newlineIndex = buffer.indexOf('\n');
-        }
-    });
-
-    socket.on('error', (err) => {
-        logger.error({ err, socketPath }, "Orchestrator socket error");
-    });
-
-    socket.on('close', () => {
-        logger.info("Orchestrator socket closed");
-        process.exit(0);
-    });
-
-    const cleanup = () => {
-        socket.end();
-    };
-
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
+    await runWorker(workerId, executorFactory, credentialsAdapter, ajv);
 }
 
 main().catch((err) => {

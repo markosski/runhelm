@@ -2,6 +2,7 @@ id: simple-function-workflow
 
 tasks:
   - id: summarize_user
+    timeout_secs: 60
     kind:
       Function:
         dependencies: []

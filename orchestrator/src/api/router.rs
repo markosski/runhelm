@@ -6,16 +6,21 @@ use std::sync::Arc;
 
 use super::handlers;
 
+use crate::adapters::worker_pool::WorkerPool;
 use crate::core::orchestrator::Orchestrator;
 
 // AppState holds the injected dependencies
 #[derive(Clone)]
 pub struct AppState {
     pub orchestrator: Arc<Orchestrator>,
+    pub worker_pool: WorkerPool,
 }
 
-pub fn create_router(orchestrator: Arc<Orchestrator>) -> Router {
-    let state = AppState { orchestrator };
+pub fn create_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
+    let state = AppState {
+        orchestrator,
+        worker_pool,
+    };
 
     Router::new()
         .route("/health", get(handlers::health_check))
@@ -38,6 +43,12 @@ pub fn create_router(orchestrator: Arc<Orchestrator>) -> Router {
         .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
+        )
+        .route("/workers/register", post(handlers::register_worker))
+        .route("/workers/tasks/claim", post(handlers::claim_worker_task))
+        .route(
+            "/workers/tasks/{task_id}/result",
+            post(handlers::complete_worker_task),
         )
         .fallback(handlers::not_found)
         .with_state(state)
