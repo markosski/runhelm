@@ -22,7 +22,6 @@ services:
       orchestrator:
         condition: service_healthy
     environment:
-      RUNHELM_WORKER_TRANSPORT: http
       RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3000
     volumes:
       - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro

@@ -311,6 +311,7 @@ mod tests {
                 url: "http://example.com".to_string(),
                 method: "GET".to_string(),
             },
+            timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(output_schema),
             expected_side_effects: vec![],
@@ -379,6 +380,7 @@ mod tests {
                         url: "http://example.com".to_string(),
                         method: "POST".to_string(),
                     },
+                    timeout_secs: None,
                     input_schemas: vec![
                         json!({ "type": "object" }), // from task-a
                         json!({ "type": "object" }), // from task-b

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::handlers;
 
-use crate::adapters::ipc::WorkerPool;
+use crate::adapters::worker_pool::WorkerPool;
 use crate::core::orchestrator::Orchestrator;
 
 // AppState holds the injected dependencies
@@ -44,7 +44,7 @@ pub fn create_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
         )
-        .route("/workers/register", post(handlers::register_http_worker))
+        .route("/workers/register", post(handlers::register_worker))
         .route("/workers/tasks/claim", post(handlers::claim_worker_task))
         .route(
             "/workers/tasks/{task_id}/result",

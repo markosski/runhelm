@@ -1,8 +1,8 @@
 # RunHelm Worker
 
-The worker executes tasks for the RunHelm orchestrator. It starts as a resident Node.js process, registers its capabilities, asks the orchestrator for work, executes claimed tasks, and sends task results back.
+The worker executes tasks for the RunHelm orchestrator. It starts as a resident Node.js process, registers with the orchestrator, asks for work, executes claimed tasks, and sends task results back.
 
-Workers can communicate with the orchestrator over a Unix domain socket or over HTTP. The orchestrator owns both endpoints; workers only initiate connections and requests.
+Workers communicate with the orchestrator over HTTP. The orchestrator owns the HTTP API; workers only initiate requests.
 
 ## Requirements
 
@@ -36,7 +36,7 @@ Run the worker from TypeScript source:
 npm run dev
 ```
 
-By default the worker connects to the socket at `RUNHELM_SOCKET_PATH`, or `/tmp/runhelm.sock` when the environment variable is not set. Set `RUNHELM_WORKER_TRANSPORT=http` to use the orchestrator HTTP API instead.
+By default the worker connects to the orchestrator at `http://127.0.0.1:3000`. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the orchestrator is reachable at a different URL.
 
 The worker reads credentials from `~/.runhelm/file_credentials.json` during startup. The file must contain a flat JSON object whose keys are credential names and whose values are strings:
 
@@ -176,7 +176,7 @@ Unknown routes return `404`.
 
 ## Worker HTTP Protocol
 
-HTTP workers use the same task and result payloads as the IPC protocol. The orchestrator listens on port `3000` by default.
+Workers use HTTP JSON endpoints for registration, task claiming, and task completion. The orchestrator listens on port `3000` by default.
 
 ### `POST /workers/register`
 
@@ -184,8 +184,7 @@ Registers a worker.
 
 ```json
 {
-  "worker_id": "remote-worker-1",
-  "capabilities": ["Agent", "ApiCall", "Function"]
+  "worker_id": "remote-worker-1"
 }
 ```
 
@@ -240,128 +239,9 @@ Completes a claimed task.
 }
 ```
 
-## Worker IPC Protocol
-
-The worker and orchestrator exchange newline-delimited JSON over the Unix socket. The worker registers once, then sends `task_request` whenever it is ready for more work.
-
-### Worker Registration
-
-Sent by the worker after connecting:
-
-```json
-{
-  "type": "register",
-  "worker_id": "host-12345",
-  "capabilities": ["Agent", "ApiCall", "Function"]
-}
-```
-
-### Registration Ack
-
-Sent by the orchestrator:
-
-```json
-{
-  "type": "registration_ack",
-  "worker_id": "host-12345"
-}
-```
-
-### Task Request
-
-Sent by the worker when it is ready to claim work:
-
-```json
-{
-  "type": "task_request"
-}
-```
-
-### Task Dispatch
-
-Sent by the orchestrator in response to `task_request`:
-
-```json
-{
-  "type": "task_dispatch",
-  "task_id": "summarize_user",
-  "task": {
-    "id": "summarize_user",
-    "kind": {
-      "Function": {
-        "dependencies": [],
-        "code": "export default async function run(ctx) { return { response: 'hello world' }; }"
-      }
-    },
-    "input_schemas": [],
-    "output_schema": {
-      "type": "object",
-      "required": ["response"],
-      "properties": {
-        "response": { "type": "string" }
-      }
-    },
-    "expected_side_effects": [],
-    "required_credentials": []
-  },
-  "inputs": []
-}
-```
-
-### No Task
-
-Sent by the orchestrator when a task request times out without pending work:
-
-```json
-{
-  "type": "no_task"
-}
-```
-
-### Task Result
-
-Sent by the worker:
-
-```json
-{
-  "type": "task_result",
-  "task_id": "summarize_user",
-  "result": {
-    "kind": "success",
-    "output": {
-      "response": "hello world"
-    }
-  }
-}
-```
-
-Failure result:
-
-```json
-{
-  "type": "task_result",
-  "task_id": "summarize_user",
-  "result": {
-    "kind": "failure",
-    "reason": "error message"
-  }
-}
-```
-
-Input-needed result:
-
-```json
-{
-  "type": "task_result",
-  "task_id": "agent_task",
-  "result": {
-    "kind": "input_needed",
-    "description": "question for the user"
-  }
-}
-```
-
 ## Supported Task Types
+
+Every task may set `timeout_secs`. When omitted, the orchestrator falls back to `RUNHELM_TASK_TIMEOUT_SECS`.
 
 ### Function
 
@@ -380,6 +260,20 @@ kind:
         return {
           response: leftPad(ctx.inputs[0].value, 5, "0")
         };
+      }
+```
+
+Use a task-specific timeout when execution duration differs from the global default:
+
+```yaml
+id: summarize_user
+timeout_secs: 60
+kind:
+  Function:
+    dependencies: []
+    code: |
+      export default async function run() {
+        return { response: "hello world" };
       }
 ```
 
@@ -448,11 +342,10 @@ kind:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `RUNHELM_WORKER_TRANSPORT` | `ipc` | Worker transport. Use `ipc` for the Unix socket path or `http` for remote polling. |
-| `RUNHELM_SOCKET_PATH` | `/tmp/runhelm.sock` | Unix socket path used by the worker and orchestrator IPC server. |
-| `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3000` | Orchestrator base URL used when `RUNHELM_WORKER_TRANSPORT=http`. |
+| `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3000` | Orchestrator base URL used for worker registration, task claiming, and task completion. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
+| `RUNHELM_TASK_TIMEOUT_SECS` | `300` | Orchestrator fallback timeout for tasks that do not set `timeout_secs`. |
 | `RUNHELM_AGENT_EXTENSION_PATHS` | unset | Comma-separated Pi extension files, directories, or package roots to load in addition to auto-discovered installed Pi packages. Relative paths are resolved from the worker process cwd. |
 | `RUNHELM_PI_AGENT_DIR` | `$HOME/.pi/agent` | Pi resource-loader agent directory used for user-level extension discovery metadata. |
 
@@ -480,17 +373,16 @@ Use an empty build arg to produce an image with no extra Pi packages:
 docker build --build-arg RUNHELM_PI_PACKAGES= -t runhelm-worker worker
 ```
 
-Run the worker container with access to the orchestrator socket:
+Run the worker container with access to the orchestrator HTTP API:
 
 ```bash
 docker run --rm \
-  -e RUNHELM_SOCKET_PATH=/tmp/runhelm.sock \
-  -v /tmp/runhelm.sock:/tmp/runhelm.sock \
+  -e RUNHELM_ORCHESTRATOR_HTTP_URL=http://host.docker.internal:3000 \
   -v ~/.runhelm:/home/runhelm/.runhelm:ro \
   runhelm-worker
 ```
 
-Mount `~/.runhelm` read-only in containers. It must contain `file_credentials.json`. Keep runtime files such as `runhelm.sock` outside this directory; the default socket path remains `/tmp/runhelm.sock`.
+Mount `~/.runhelm` read-only in containers. It must contain `file_credentials.json`.
 
 ## Project Structure
 

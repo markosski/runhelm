@@ -4,17 +4,16 @@ use axum::{
     http::StatusCode,
 };
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::info;
 
-use crate::adapters::ipc::{
-    OrchestratorMessage, TaskResult, WorkerExecutionResult, WorkerRegistration,
+use crate::adapters::worker_pool::{
+    TaskResult, WorkerExecutionResult, WorkerRegistration, WorkerResponse,
 };
 use crate::core::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::ports::executor::ExecutionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::Duration;
 
 use super::router::AppState;
 
@@ -194,26 +193,25 @@ pub async fn get_task_result(
 }
 
 #[derive(Deserialize)]
-pub struct HttpWorkerClaimRequest {
+pub struct WorkerClaimRequest {
     worker_id: String,
 }
 
-pub async fn register_http_worker(
+pub async fn register_worker(
     State(state): State<AppState>,
     Json(registration): Json<WorkerRegistration>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
-    state.worker_pool.add_http_worker(registration).await;
+    state.worker_pool.register_worker(registration).await;
 
-    Ok(Json(json!({
-        "type": "registration_ack",
-        "worker_id": worker_id,
-    })))
+    Ok(Json(
+        serde_json::to_value(WorkerResponse::RegistrationAck { worker_id }).unwrap(),
+    ))
 }
 
 pub async fn claim_worker_task(
     State(state): State<AppState>,
-    Json(payload): Json<HttpWorkerClaimRequest>,
+    Json(payload): Json<WorkerClaimRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
         .worker_pool
@@ -221,14 +219,12 @@ pub async fn claim_worker_task(
         .await
     {
         Ok(Some(dispatch)) => Ok(Json(
-            serde_json::to_value(OrchestratorMessage::TaskDispatch(dispatch)).unwrap(),
+            serde_json::to_value(WorkerResponse::TaskDispatch(dispatch)).unwrap(),
         )),
-        Ok(None) => Ok(Json(
-            serde_json::to_value(OrchestratorMessage::NoTask).unwrap(),
-        )),
+        Ok(None) => Ok(Json(serde_json::to_value(WorkerResponse::NoTask).unwrap())),
         Err(error) if error.to_string().contains("not registered") => Err(StatusCode::NOT_FOUND),
         Err(error) => {
-            tracing::error!(worker_id = %payload.worker_id, %error, "HTTP worker failed to claim task");
+            tracing::error!(worker_id = %payload.worker_id, %error, "worker failed to claim task");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -239,20 +235,20 @@ pub async fn complete_worker_task(
     Path(task_id): Path<String>,
     Json(result): Json<WorkerExecutionResult>,
 ) -> Result<Json<Value>, StatusCode> {
-    let worker_id = state
-        .worker_pool
-        .worker_for_task(&task_id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let worker_id = state.worker_pool.worker_for_task(&task_id).await;
 
-    state
-        .worker_pool
-        .complete_task_result(&worker_id, TaskResult { task_id, result })
-        .await
-        .map_err(|error| {
-            tracing::error!(%worker_id, %error, "HTTP worker failed to complete task");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    if let Some(worker_id) = worker_id {
+        state
+            .worker_pool
+            .complete_task_result(&worker_id, TaskResult { task_id, result })
+            .await
+            .map_err(|error| {
+                tracing::error!(%worker_id, %error, "worker failed to complete task");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    } else {
+        tracing::warn!(%task_id, "acknowledging late or untracked worker task result");
+    }
 
     Ok(Json(json!({ "status": "accepted" })))
 }

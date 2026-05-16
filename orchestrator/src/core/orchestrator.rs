@@ -295,6 +295,7 @@ mod tests {
                 dependencies: vec![],
                 code: "export default async function run() { return {}; }".to_string(),
             },
+            timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(json!({
                 "type": "object",

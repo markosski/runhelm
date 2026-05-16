@@ -26,6 +26,7 @@ A workflow is defined as JSON and contains:
 
 - tasks
 - data bindings between task outputs and downstream task inputs
+- optional per-task timeouts
 - per-task input schemas and optional output schemas
 - task kinds such as `Agent`, `LLM`, `ApiCall`, and `Function`
 
@@ -81,7 +82,7 @@ Current default wiring uses in-memory storage and a fake executor, which keeps t
 
 TypeScript execution runtime for task payloads:
 
-- claims task payloads from the orchestrator over IPC or HTTP
+- claims task payloads from the orchestrator over HTTP
 - selects the correct executor through `ExecutorFactory`
 - supports agent, LLM, API-call, and function-style task execution
 - validates task output against JSON Schema using `ajv`
@@ -106,7 +107,7 @@ At a high level, RunHelm executes a workflow like this:
 2. A workflow instance is created for a specific run.
 3. The orchestrator identifies tasks whose dependencies are satisfied.
 4. Runnable tasks are queued behind an executor backend.
-5. Workers claim queued tasks over IPC or HTTP.
+5. Workers claim queued tasks over HTTP.
 6. Task outputs are schema-validated and propagated to downstream tasks.
 7. State is persisted after progress so runs can be inspected and resumed.
 
@@ -155,7 +156,7 @@ npm run build
 npm start
 ```
 
-The current worker pulls tasks from the orchestrator over the Unix socket by default. Set `RUNHELM_WORKER_TRANSPORT=http` and `RUNHELM_ORCHESTRATOR_HTTP_URL` for remote workers.
+The worker pulls tasks from the orchestrator HTTP API. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the orchestrator is not reachable at the default local URL.
 
 ### Frontend
 
