@@ -10,6 +10,7 @@ import { logger } from './utils/logger.js';
 
 const DEFAULT_ORCHESTRATOR_HTTP_URL = 'http://127.0.0.1:3000';
 const DEFAULT_POLL_DELAY_MS = 1_000;
+const DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS = 1_000;
 const DEFAULT_RESULT_ACK_RETRY_DELAY_MS = 1_000;
 const DEFAULT_RESULT_ACK_MAX_ATTEMPTS = 3;
 
@@ -47,6 +48,17 @@ type ResultAckRetryPolicy = {
     maxAttempts: number;
     retryDelayMs: number;
 };
+
+class HttpError extends Error {
+    constructor(
+        public readonly status: number,
+        public readonly url: string,
+        message: string
+    ) {
+        super(`HTTP ${status} from ${url}: ${message}`);
+        this.name = 'HttpError';
+    }
+}
 
 function createWorkerId(): string {
     return process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
@@ -109,7 +121,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     });
 
     if (!response.ok) {
-        throw new Error(`HTTP ${response.status} from ${url}: ${await response.text()}`);
+        throw new HttpError(response.status, url, await response.text());
     }
 
     return await response.json() as T;
@@ -117,6 +129,26 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function registerWorkerUntilAck(baseUrl: string, workerId: string): Promise<void> {
+    const url = `${baseUrl}/workers/register`;
+
+    while (true) {
+        try {
+            const ack = await postJson<RegistrationAckMessage>(url, workerRegistration(workerId));
+            if (ack.type === 'registration_ack' && ack.worker_id === workerId) {
+                logger.info({ workerId }, "Worker registered with orchestrator");
+                return;
+            }
+
+            logger.warn({ ack, workerId }, "Unexpected worker registration ack");
+        } catch (err) {
+            logger.warn({ err, workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker registration failed; retrying");
+        }
+
+        await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
+    }
 }
 
 async function postTaskResultUntilAck(
@@ -165,12 +197,24 @@ async function runWorker(
         .replace(/\/$/, '');
     logger.info({ baseUrl, workerId }, "Connecting to orchestrator HTTP API");
 
-    await postJson<RegistrationAckMessage>(`${baseUrl}/workers/register`, workerRegistration(workerId));
+    await registerWorkerUntilAck(baseUrl, workerId);
 
     while(true) {
-        const message = await postJson<WorkerResponse>(`${baseUrl}/workers/tasks/claim`, {
-            worker_id: workerId,
-        });
+        let message: WorkerResponse;
+        try {
+            message = await postJson<WorkerResponse>(`${baseUrl}/workers/tasks/claim`, {
+                worker_id: workerId,
+            });
+        } catch (err) {
+            if (err instanceof HttpError && err.status === 404) {
+                logger.warn({ workerId }, "Worker is not registered with orchestrator; re-registering");
+                await registerWorkerUntilAck(baseUrl, workerId);
+            } else {
+                logger.warn({ err, workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker task claim failed; retrying");
+                await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
+            }
+            continue;
+        }
 
         if (message.type === 'no_task') {
             await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_DELAY_MS));

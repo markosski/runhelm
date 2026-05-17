@@ -489,10 +489,10 @@ mod tests {
     fn test_task(id: &str) -> TaskDef {
         TaskDef {
             id: id.to_string(),
-            kind: TaskTypeDef::Function {
+            kind: TaskTypeDef::Function(crate::core::models::FunctionTaskDef::Inline {
                 dependencies: vec![],
                 code: "return 1".to_string(),
-            },
+            }),
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,

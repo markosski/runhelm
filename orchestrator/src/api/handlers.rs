@@ -10,7 +10,7 @@ use tracing::info;
 use crate::adapters::worker_pool::{
     TaskResult, WorkerExecutionResult, WorkerRegistration, WorkerResponse,
 };
-use crate::core::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
+use crate::core::models::{FunctionDef, WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::ports::executor::ExecutionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -45,6 +45,39 @@ pub async fn create_workflow_def(
         "status": "created",
         "id": workflow_def_id
     })))
+}
+
+pub async fn create_function_def(
+    State(state): State<AppState>,
+    Json(function_def): Json<FunctionDef>,
+) -> Result<Json<Value>, StatusCode> {
+    let function_def_id = function_def.id.clone();
+
+    state
+        .orchestrator
+        .create_function_def(function_def)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    info!(
+        id = %function_def_id,
+        "Registered function definition"
+    );
+
+    Ok(Json(json!({
+        "status": "created",
+        "id": function_def_id
+    })))
+}
+
+pub async fn delete_function_def(
+    State(state): State<AppState>,
+    Path(function_def_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    match state.orchestrator.delete_function_def(&function_def_id).await {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 pub async fn trigger_workflow_instance(

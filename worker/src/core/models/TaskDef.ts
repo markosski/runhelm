@@ -1,7 +1,16 @@
 export type TaskKind =
     | { Agent: { model_id: string; provider_url: string; prompt: string; tools: string[]; ask?: boolean; schema_failure_retry_times?: number } }
     | { ApiCall: { url: string; method: string } }
-    | { Function: { code: string; dependencies: FunctionDependency[] } };
+    | { Function: InlineFunctionTask | ReferencedFunctionTask };
+
+export interface InlineFunctionTask {
+    code: string;
+    dependencies: FunctionDependency[];
+}
+
+export interface ReferencedFunctionTask {
+    ref: string;
+}
 
 export interface FunctionDependency {
     name: string;

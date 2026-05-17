@@ -24,6 +24,11 @@ pub fn create_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -
 
     Router::new()
         .route("/health", get(handlers::health_check))
+        .route("/function-def", post(handlers::create_function_def))
+        .route(
+            "/function-def/{def_id}",
+            delete(handlers::delete_function_def),
+        )
         .route("/workflow-def", post(handlers::create_workflow_def))
         .route(
             "/workflow-def/{def_id}/tasks/{task_id}",

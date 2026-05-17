@@ -1,3 +1,4 @@
+use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
     TaskStatus, TaskStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus,
     WorkflowStatusReport,
@@ -123,7 +124,13 @@ impl WorkflowEngine {
                     .map(|t| t.input_data.clone())
                     .unwrap_or_default();
 
-                let execution_result = self.executor.execute(task_def, &inputs).await;
+                let execution_result =
+                    match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
+                        Ok(resolved_task_def) => {
+                            self.executor.execute(&resolved_task_def, &inputs).await
+                        }
+                        Err(error) => Err(error),
+                    };
 
                 match execution_result {
                     Ok(ExecutionResult::Success(output)) => {

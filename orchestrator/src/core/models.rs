@@ -32,17 +32,34 @@ pub enum TaskTypeDef {
         // How many times agent should re-try when output does not match expected output_schema
         schema_failure_retry_times: Number,
     },
-    Function {
-        // Task will attempt to download these dependencies
-        dependencies: Vec<FunctionDependency>,
-        code: String,
-    },
+    Function(FunctionTaskDef),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionDependency {
-    name: String,
-    version: String,
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FunctionTaskDef {
+    Inline {
+        // Task will attempt to download these dependencies
+        dependencies: Vec<FunctionDependency>,
+        code: String,
+    },
+    Ref {
+        #[serde(rename = "ref")]
+        reference: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDef {
+    pub id: String,
+    pub dependencies: Vec<FunctionDependency>,
+    pub code: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
