@@ -24,10 +24,6 @@
 
 ## Workflow Orchestration Capabilities
 
-- [ ] **Execute workflows on a schedule**
-  - *Issue:* The orchestrator can execute workflows on demand, but it cannot currently trigger workflows automatically on a recurring schedule.
-  - *Action:* Add scheduler support to register cron-like or interval-based workflow triggers, persist schedule definitions, and enqueue workflow runs at the configured times.
-
 - [ ] **Define workflow definition versioning strategy**
   - *Issue:* Workflow definitions do not yet have a clear versioning model, which makes it unclear how old and new versions should be maintained, referenced, and executed over time.
   - *Action:* Decide whether workflow versions should be explicit in workflow names or stored at the definition level, and define how version history, compatibility, migration, and execution of older versions should work.
@@ -43,3 +39,11 @@
 - [ ] **Make RunHelm easy to install locally**
   - *Issue:* Users currently need to understand the repository layout and manually run the orchestrator, worker, frontend, and supporting services.
   - *Action:* Add the packaging, installer scripts, default configuration, dependency checks, documentation, and startup commands needed for users to install and run RunHelm on their own computer with minimal manual setup.
+
+## Dismissed Tasks
+
+Tasks that were considered but later deemed unnecessary.
+
+- [x] **Execute workflows on a schedule**
+  - *Issue:* The orchestrator can execute workflows on demand, but it cannot currently trigger workflows automatically on a recurring schedule.
+  - *Dismissal reason:* RunHelm exposes an API, so recurring scheduling should be handled by external applications such as `crontab`.
