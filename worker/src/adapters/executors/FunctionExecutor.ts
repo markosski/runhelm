@@ -30,6 +30,10 @@ export class FunctionExecutor implements TaskExecutor {
         }
 
         const functionDef = payload.task.kind.Function;
+        if (!('code' in functionDef)) {
+            return { status: 'error', message: `Function ref ${functionDef.ref} was not resolved before worker execution` };
+        }
+
         const dependencies = functionDef.dependencies;
         const timeoutMs = functionTimeoutMs();
         const workDir = await mkdtemp(join(tmpdir(), 'runhelm-function-'));

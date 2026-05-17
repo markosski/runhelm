@@ -59,10 +59,12 @@ mod tests {
             DockerExecutor::new(WorkerPool::new()).with_task_timeout(Duration::from_millis(10));
         let task = TaskDef {
             id: "task-1".to_string(),
-            kind: crate::core::models::TaskTypeDef::Function {
-                dependencies: vec![],
-                code: "return 1".to_string(),
-            },
+            kind: crate::core::models::TaskTypeDef::Function(
+                crate::core::models::FunctionTaskDef::Inline {
+                    dependencies: vec![],
+                    code: "return 1".to_string(),
+                },
+            ),
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
@@ -89,10 +91,12 @@ mod tests {
             DockerExecutor::new(worker_pool.clone()).with_task_timeout(Duration::from_secs(60));
         let task = TaskDef {
             id: "task-1".to_string(),
-            kind: crate::core::models::TaskTypeDef::Function {
-                dependencies: vec![],
-                code: "return 1".to_string(),
-            },
+            kind: crate::core::models::TaskTypeDef::Function(
+                crate::core::models::FunctionTaskDef::Inline {
+                    dependencies: vec![],
+                    code: "return 1".to_string(),
+                },
+            ),
             timeout_secs: Some(1),
             input_schemas: vec![],
             output_schema: None,

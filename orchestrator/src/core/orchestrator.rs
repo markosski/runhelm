@@ -1,7 +1,8 @@
 use crate::core::engine::WorkflowEngine;
+use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
-    TaskDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowList, WorkflowQueueStatus,
-    WorkflowStatus, WorkflowStatusReport, WorkflowSummary,
+    FunctionDef, TaskDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowList,
+    WorkflowQueueStatus, WorkflowStatus, WorkflowStatusReport, WorkflowSummary,
 };
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
@@ -42,6 +43,16 @@ impl Orchestrator {
     /// Retrieves a workflow definition by ID.
     pub async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
         self.storage.get_workflow_def(id).await
+    }
+
+    /// Registers a reusable function definition.
+    pub async fn create_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
+        self.storage.save_function_def(def).await
+    }
+
+    /// Deletes a reusable function definition.
+    pub async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
+        self.storage.delete_function_def(id).await
     }
 
     /// Finds a task in a registered workflow definition and executes it directly.
@@ -227,7 +238,12 @@ impl Orchestrator {
         task: &TaskDef,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
-        self.executor.execute(task, inputs).await
+        let task = self.resolve_task_function_ref(task).await?;
+        self.executor.execute(&task, inputs).await
+    }
+
+    async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
+        resolve_task_function_ref(self.storage.as_ref(), task).await
     }
 }
 
@@ -237,7 +253,7 @@ mod tests {
     use crate::adapters::fake_executor::FakeExecutor;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-    use crate::core::models::TaskTypeDef;
+    use crate::core::models::{FunctionDef, FunctionTaskDef, TaskTypeDef};
     use crate::ports::executor::ExecutionResult;
     use async_trait::async_trait;
     use serde_json::json;
@@ -291,10 +307,30 @@ mod tests {
     fn task(id: &str) -> TaskDef {
         TaskDef {
             id: id.to_string(),
-            kind: TaskTypeDef::Function {
+            kind: TaskTypeDef::Function(FunctionTaskDef::Inline {
                 dependencies: vec![],
                 code: "export default async function run() { return {}; }".to_string(),
-            },
+            }),
+            timeout_secs: None,
+            input_schemas: vec![],
+            output_schema: Some(json!({
+                "type": "object",
+                "required": ["ok"],
+                "properties": {
+                    "ok": { "type": "boolean" }
+                }
+            })),
+            expected_side_effects: vec![],
+            required_credentials: vec![],
+        }
+    }
+
+    fn function_ref_task(id: &str, reference: &str) -> TaskDef {
+        TaskDef {
+            id: id.to_string(),
+            kind: TaskTypeDef::Function(FunctionTaskDef::Ref {
+                reference: reference.to_string(),
+            }),
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(json!({
@@ -365,6 +401,59 @@ mod tests {
         assert_eq!(
             result,
             Some(ExecutionResult::Success(json!({ "ok": false })))
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_workflow_task_isolated_resolves_registered_function_ref() {
+        let orchestrator = orchestrator();
+        orchestrator
+            .create_function_def(FunctionDef {
+                id: "function-a".to_string(),
+                dependencies: vec![],
+                code: "export default async function run() { return {}; }".to_string(),
+            })
+            .await
+            .unwrap();
+        orchestrator
+            .create_workflow_def(workflow(
+                "workflow-1",
+                vec![function_ref_task("task-a", "function-a")],
+            ))
+            .await
+            .unwrap();
+
+        let result = orchestrator
+            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            Some(ExecutionResult::Success(json!({ "ok": false })))
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_workflow_task_isolated_errors_for_missing_function_ref() {
+        let orchestrator = orchestrator();
+        orchestrator
+            .create_workflow_def(workflow(
+                "workflow-1",
+                vec![function_ref_task("task-a", "missing-function")],
+            ))
+            .await
+            .unwrap();
+
+        let error = orchestrator
+            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Function definition not found: missing-function")
         );
     }
 

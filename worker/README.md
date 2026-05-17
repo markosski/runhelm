@@ -83,6 +83,38 @@ Response:
 }
 ```
 
+### `POST /function-def`
+
+Registers a reusable function definition. Workflow Function tasks can reference the registered definition with `ref`.
+
+Example:
+
+```bash
+curl -sS -X POST http://localhost:3000/function-def \
+  -H 'content-type: application/json' \
+  --data-binary @functions/mailgun-dispatcher/dist/mailgun.fetch_inbound_mail.json
+```
+
+Response:
+
+```json
+{
+  "status": "created",
+  "id": "mailgun.fetch_inbound_mail",
+  "version": null
+}
+```
+
+### `DELETE /function-def/{def_id}`
+
+Deletes a reusable function definition.
+
+Example:
+
+```bash
+curl -sS -X DELETE http://localhost:3000/function-def/mailgun.fetch_inbound_mail
+```
+
 ### `POST /workflow-def/{def_id}`
 
 Creates and starts a workflow instance from a registered workflow definition. The current handler accepts a JSON body but does not read fields from it.
@@ -247,6 +279,8 @@ Every task may set `timeout_secs`. When omitted, the orchestrator falls back to 
 
 Runs JavaScript ESM in a per-task temporary directory and executes it in a child Node.js process. The task must export a default async or sync function.
 
+Functions may be declared inline for small tasks:
+
 ```yaml
 kind:
   Function:
@@ -261,6 +295,32 @@ kind:
           response: leftPad(ctx.inputs[0].value, 5, "0")
         };
       }
+```
+
+Or referenced from a registered function definition:
+
+```yaml
+kind:
+  Function:
+    ref: mailgun.fetch_inbound_mail
+```
+
+Register reusable functions separately:
+
+```bash
+(cd functions/mailgun-dispatcher && npm run build)
+
+curl -sS -X POST http://localhost:3000/function-def \
+  -H 'content-type: application/json' \
+  --data-binary @functions/mailgun-dispatcher/dist/mailgun.fetch_inbound_mail.json
+```
+
+The build writes YAML registration artifacts for review and JSON artifacts for the current HTTP API.
+
+Delete a registered function with:
+
+```bash
+curl -sS -X DELETE http://localhost:3000/function-def/mailgun.fetch_inbound_mail
 ```
 
 Use a task-specific timeout when execution duration differs from the global default:
