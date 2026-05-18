@@ -1,5 +1,27 @@
 # RunHelm Architectural TODOs
 
+## MVP Solidification
+
+- [ ] **Add durable local storage**
+  - *Issue:* The orchestrator currently wires `MemoryStorage`, so workflow definitions, function definitions, workflow instances, task state, and task results are lost when the process restarts.
+  - *Action:* Add a durable `StoragePort` implementation, preferably SQLite first, with data stored under `~/.runhelm/` for local MVP installs. Keep the existing in-memory adapter for tests and lightweight development.
+
+- [ ] **Make workflow trigger payloads first-class run inputs**
+  - *Issue:* `POST /workflow-def/{def_id}` accepts a JSON payload but currently ignores it, so workflow runs cannot be meaningfully parameterized by caller-provided input.
+  - *Action:* Persist workflow run inputs on `WorkflowInstance`, define how initial inputs bind into task inputs, and expose the run input metadata through status/result APIs where appropriate.
+
+- [ ] **Improve run and task observability**
+  - *Issue:* Workflow status currently exposes task state and whether output exists, but it does not provide enough information to debug real user workflows.
+  - *Action:* Track and expose run/task timestamps, failure reasons, timeout reasons, assigned worker IDs when available, and task result/error details in a stable API shape.
+
+- [ ] **Wire the frontend to real backend APIs**
+  - *Issue:* The frontend is currently a static operator-console prototype with mock workflow and run data.
+  - *Action:* Connect the UI to the orchestrator APIs for workflow lists, run lists, queue state, task status, and task result inspection. Keep the first integrated UI narrow and focused on observing existing workflows rather than designing new ones.
+
+- [ ] **Implement local install and distribution path**
+  - *Issue:* Local installation is documented, but users still need repository knowledge and local build tooling to run RunHelm.
+  - *Action:* Implement the Docker-first local distribution plan: release Compose file, versioned service images, `runhelm init`, `runhelm up`, `runhelm down`, `runhelm status`, `runhelm logs`, and `runhelm doctor`.
+
 ## Scalability & Performance Bottlenecks
 
 - [x] **Implement long-running workers (Queue-based)**
