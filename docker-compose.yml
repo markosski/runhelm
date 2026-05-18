@@ -3,7 +3,7 @@ services:
     build:
       context: ./orchestrator
     ports:
-      - "3000:3000"
+      - "0.0.0.0:3000:3000"
     read_only: true
     tmpfs:
       - /tmp
@@ -25,6 +25,7 @@ services:
       RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3000
     volumes:
       - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro
+      - ${RUNHELM_SKILLS_DIR:-${HOME}/.runhelm/skills}:/home/runhelm/.pi/agent/skills:ro
       - runhelm-workspaces:/workspaces
       - runhelm-cache:/home/runhelm/.cache
     read_only: true

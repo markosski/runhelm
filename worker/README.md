@@ -361,6 +361,7 @@ kind:
     provider_url: ""
     prompt: "Return a JSON response."
     tools: ["_all_"]
+    skills: []
     ask: false
     schema_failure_retry_times: 0
 required_credentials:
@@ -371,7 +372,11 @@ Use `tools: []` to disable tools, `tools: ["_all_"]` to allow every tool availab
 
 Agent tools include RunHelm built-ins, Pi coding-agent built-ins, and Pi-compatible extension tools. The Pi built-in tool names are `read`, `bash`, `edit`, and `write`.
 
-The worker uses Pi's resource loader, so TypeScript extensions and skills are supported. Extension and skill packages are runtime resources, not worker application dependencies. They must already be installed in the worker image or mounted into the worker environment before startup. Packages installed under the worker's `node_modules` are auto-discovered when their `package.json` contains a `pi` manifest:
+Use `skills: []` to expose no skills, or list exact skill names such as `["ticket-triage"]`. Skills do not support `"_all_"`.
+
+The worker uses Pi's resource loader, so TypeScript extensions and skills are supported. Extension and skill packages are runtime resources, not worker application dependencies. They must already be installed in the worker image or mounted into the worker environment before startup. The default Docker Compose deployment mounts `${RUNHELM_SKILLS_DIR:-${HOME}/.runhelm/skills}` into `/home/runhelm/.pi/agent/skills` as read-only. If a mounted skill and an installed package skill have the same name, the mounted skill takes priority.
+
+Packages installed under the worker's `node_modules` are auto-discovered when their `package.json` contains a `pi` manifest:
 
 ```json
 {

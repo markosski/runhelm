@@ -123,6 +123,74 @@ Assign priority and route the ticket.
     }
 });
 
+test('loads mounted RunHelm skills', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'runhelm-mounted-skill-'));
+    const skillDir = join(dir, '.pi-agent', 'skills', 'ticket-triage');
+
+    try {
+        await mkdir(skillDir, { recursive: true });
+        await writeFile(join(skillDir, 'SKILL.md'), `---
+name: ticket-triage
+description: Triage support tickets by severity and owner.
+---
+
+# Ticket Triage
+`, 'utf8');
+
+        const resources = await new PiResourceToolProvider({
+            cwd: dir,
+            agentDir: join(dir, '.pi-agent'),
+        }).loadResources();
+
+        assert.deepEqual(resources.skills.map((skill) => skill.name), ['ticket-triage']);
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('mounted skills take priority over package skills with the same name', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'runhelm-skill-collision-'));
+    const skillDir = join(dir, '.pi-agent', 'skills', 'ticket-triage');
+    const packageRoot = join(dir, 'node_modules', '@acme', 'pi-skills');
+    const packageSkillDir = join(packageRoot, 'skills', 'ticket-triage');
+
+    try {
+        await mkdir(skillDir, { recursive: true });
+        await mkdir(packageSkillDir, { recursive: true });
+        await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
+            name: '@acme/pi-skills',
+            pi: {
+                skills: ['./skills'],
+            },
+        }), 'utf8');
+        await writeFile(join(skillDir, 'SKILL.md'), `---
+name: ticket-triage
+description: Mounted ticket triage skill.
+---
+
+# Ticket Triage
+`, 'utf8');
+        await writeFile(join(packageSkillDir, 'SKILL.md'), `---
+name: ticket-triage
+description: Package ticket triage skill.
+---
+
+# Ticket Triage
+`, 'utf8');
+
+        const resources = await new PiResourceToolProvider({
+            cwd: dir,
+            agentDir: join(dir, '.pi-agent'),
+        }).loadResources();
+
+        assert.deepEqual(resources.skills.map((skill) => skill.name), ['ticket-triage']);
+        assert.equal(resources.skills[0].description, 'Mounted ticket triage skill.');
+        assert.equal(resources.skills[0].filePath, join(skillDir, 'SKILL.md'));
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
 test('skips broken Pi extensions while loading valid tools', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'runhelm-pi-broken-extension-'));
     const validPath = join(dir, 'valid.ts');
