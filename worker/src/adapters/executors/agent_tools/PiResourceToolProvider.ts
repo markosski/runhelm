@@ -5,6 +5,7 @@ import {
     AuthStorage,
     DefaultResourceLoader,
     ExtensionRunner,
+    loadSkillsFromDir,
     ModelRegistry,
     SessionManager,
     type Skill,
@@ -66,6 +67,7 @@ export class PiResourceToolProvider {
         for (const diagnostic of skillsResult.diagnostics) {
             logger.warn(diagnostic, '[PiResourceToolProvider] Pi skill load issue');
         }
+        const skills = loadSkillsWithMountedPriority(skillsResult.skills, join(agentDir, 'skills'));
 
         const runner = new ExtensionRunner(
             extensionsResult.extensions,
@@ -109,9 +111,26 @@ export class PiResourceToolProvider {
 
         return {
             tools: wrapRegisteredTools(runner.getAllRegisteredTools(), runner),
-            skills: skillsResult.skills,
+            skills,
         };
     }
+}
+
+function loadSkillsWithMountedPriority(discoveredSkills: Skill[], mountedSkillsDir: string): Skill[] {
+    const mountedSkillsResult = loadSkillsFromDir({ dir: mountedSkillsDir, source: 'user' });
+    for (const diagnostic of mountedSkillsResult.diagnostics) {
+        logger.warn(diagnostic, '[PiResourceToolProvider] mounted Pi skill load issue');
+    }
+
+    const skillsByName = new Map<string, Skill>();
+    for (const skill of discoveredSkills) {
+        skillsByName.set(skill.name, skill);
+    }
+    for (const skill of mountedSkillsResult.skills) {
+        skillsByName.set(skill.name, skill);
+    }
+
+    return [...skillsByName.values()];
 }
 
 async function discoverPiPackageRoots(nodeModulesDir: string): Promise<string[]> {

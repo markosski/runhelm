@@ -17,6 +17,8 @@ task:
         - INTC - $10.00
         - AMD - $10.00
         ```
+      tools: []
+      skills: []
   ask: false
   input_schemas: []
   output_schema:

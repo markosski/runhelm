@@ -27,6 +27,8 @@ pub enum TaskTypeDef {
         prompt: String,
         // Allowed tools, [] - none, ["_all_"] - all available tools
         tools: Vec<String>,
+        // Allowed skills, [] - none, no wildcard support
+        skills: Vec<String>,
         // Gives agent allowance to pause task to get additional information if needed
         ask: bool,
         // How many times agent should re-try when output does not match expected output_schema

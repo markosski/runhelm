@@ -28,8 +28,8 @@ ENV COREPACK_HOME=/home/runhelm/.cache/corepack
 RUN apk add --no-cache bash curl git make g++ python3 py3-pip
 RUN addgroup -g 10001 runhelm \
     && adduser -D -h /home/runhelm -u 10001 -G runhelm runhelm \
-    && mkdir -p /app /home/runhelm/.runhelm /home/runhelm/.cache /workspaces \
-    && chown runhelm:runhelm /app /home/runhelm /home/runhelm/.runhelm /home/runhelm/.cache /workspaces
+    && mkdir -p /app /home/runhelm/.runhelm /home/runhelm/.cache /home/runhelm/.pi/agent/skills /workspaces \
+    && chown runhelm:runhelm /app /home/runhelm /home/runhelm/.runhelm /home/runhelm/.cache /home/runhelm/.pi /workspaces
 
 # Copy package.json and install production dependencies only
 COPY --chown=runhelm:runhelm package*.json ./

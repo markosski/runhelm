@@ -14,6 +14,7 @@ import { createAskUserTool, InputNeededError } from './agent_tools/askUserTool.j
 import { ToolRegistry } from './agent_tools/ToolRegistry.js';
 import { PiResourceToolProvider } from './agent_tools/PiResourceToolProvider.js';
 import { selectApprovedTools } from './agent_tools/toolSelection.js';
+import { selectApprovedSkills } from './agent_tools/skillSelection.js';
 
 function extractAssistantText(agent: Agent): string {
     let resultText = '';
@@ -192,17 +193,26 @@ export class AgentExecutor implements TaskExecutor {
 
         const availableTools = toolRegistry.getTools();
         const { approvedTools, unavailableApprovedToolNames } = selectApprovedTools(availableTools, agentDef.tools);
+        const { approvedSkills, unavailableApprovedSkillNames } = selectApprovedSkills(piResources.skills, agentDef.skills);
 
         if (unavailableApprovedToolNames.length > 0) {
             logger.warn({ unavailableApprovedToolNames }, "[AgentExecutor] Ignoring approved tools that are not available");
+        }
+
+        if (unavailableApprovedSkillNames.length > 0) {
+            throw new Error(`Requested agent skills are not available: ${unavailableApprovedSkillNames.join(', ')}`);
         }
 
         const toolAvailabilityPrompt = approvedTools.length > 0
             ? `You have access to the following approved tools:\n${approvedTools.map((approvedTool) => `- ${approvedTool.name} - ${approvedTool.description}`).join('\n')}`
             : "You do not have access to any tools for this task.";
         const canLoadSkills = approvedTools.some((approvedTool) => approvedTool.name === 'read');
-        const skillsPrompt = piResources.skills.length > 0 && canLoadSkills
-            ? `\n\n${formatSkillsForPrompt(piResources.skills)}`
+        if (approvedSkills.length > 0 && !canLoadSkills) {
+            throw new Error('Agent skills require the read tool so the agent can load SKILL.md content');
+        }
+
+        const skillsPrompt = approvedSkills.length > 0 && canLoadSkills
+            ? `\n\n${formatSkillsForPrompt(approvedSkills)}`
             : '';
 
         agent.state.model = model;
