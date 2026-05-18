@@ -1,17 +1,23 @@
 id: simple-function-workflow
 
 tasks:
-  - id: summarize_user
-    timeout_secs: 60
+  - id: test
     kind:
-      Function:
-        dependencies: []
-        code: |
-          export default async function run(ctx) {
-            return {
-              response: "hello world"
-            };
+      Agent:
+        model_id: "google/gemini-2.5-flash"
+        provider_url: ""
+        prompt: |
+          Perform the following actions:
+          - Use curl to access www.marcinkossakowski.com
+          - Download the content to /tmp/marcin.html
+          - Extract the title of the page and return as response
+
+          {
+            "response": "summary text including the close date, close price, trend direction, and source",
           }
+        tools: ["read", "write", "edit"]
+        ask: false
+        schema_failure_retry_times: 2
     input_schemas: []
     output_schema:
       type: object
@@ -21,6 +27,8 @@ tasks:
         response:
           type: string
     expected_side_effects: []
-    required_credentials: []
+    required_credentials:
+      - llm_api_key
+
 
 data_bindings: []

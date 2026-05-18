@@ -25,7 +25,7 @@ ENV HOME=/home/runhelm
 ENV XDG_CACHE_HOME=/home/runhelm/.cache
 ENV npm_config_cache=/home/runhelm/.cache/npm
 ENV COREPACK_HOME=/home/runhelm/.cache/corepack
-RUN apk add --no-cache bash git make g++ python3
+RUN apk add --no-cache bash curl git make g++ python3 py3-pip
 RUN addgroup -g 10001 runhelm \
     && adduser -D -h /home/runhelm -u 10001 -G runhelm runhelm \
     && mkdir -p /app /home/runhelm/.runhelm /home/runhelm/.cache /workspaces \

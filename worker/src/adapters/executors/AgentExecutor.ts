@@ -152,6 +152,16 @@ export class AgentExecutor implements TaskExecutor {
             getApiKey: () => apiKey,
         };
         const agent = new Agent(agentOpts);
+        agent.subscribe((event) => {
+            if (event.type === 'tool_execution_start') {
+                logger.info({ toolName: event.toolName, args: event.args }, '[AgentExecutor] Agent tool started');
+            } else if (event.type === 'tool_execution_end') {
+                logger.info(
+                    { toolName: event.toolName, isError: event.isError },
+                    '[AgentExecutor] Agent tool finished'
+                );
+            }
+        });
 
         const toolRegistry = new ToolRegistry();
         toolRegistry.registerTools([
