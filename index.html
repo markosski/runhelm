@@ -914,8 +914,8 @@
           <div class="map-column">
             <div class="node function">
               <h3>Worker pool</h3>
-              <p>Workers register over a Unix socket, advertise capabilities, receive dispatches, and return task
-                results.</p>
+              <p>Workers register with the orchestrator over HTTP, poll for queued task dispatches, and post task
+                results back.</p>
             </div>
             <div class="node function">
               <h3>Task executors</h3>
@@ -924,7 +924,8 @@
             </div>
             <div class="node external">
               <h3>Providers and tools</h3>
-              <p>LLM providers, HTTP calls, URL fetch, search, current time, and credential-backed integrations.</p>
+              <p>LLM providers, HTTP calls, URL fetch, search, current time, ask-user pauses, coding tools, Pi
+                extensions, and credential-backed integrations.</p>
             </div>
           </div>
         </div>
@@ -975,7 +976,7 @@
             <h3>Reason over context</h3>
             <p>Calls an agent with structured inputs, declared available tools, and a required structured result.</p>
             <p><span class="inline-code">input: decision_context</span></p>
-            <p><span class="inline-code">tools: web search, fetch, time</span></p>
+            <p><span class="inline-code">tools: web_search, fetch_url, get_current_time</span></p>
           </article>
         </div>
 
@@ -1049,7 +1050,8 @@
         </article>
         <article class="step">
           <h3>Dispatch work</h3>
-          <p>The executor port sends task payloads to a fake, Docker, or IPC-backed worker executor.</p>
+          <p>The Docker executor enqueues task payloads in WorkerPool for registered TypeScript workers to claim over
+            HTTP.</p>
         </article>
         <article class="step">
           <h3>Validate output</h3>
@@ -1116,22 +1118,21 @@
   "kind": {
     "Agent": {
       "provider_url": "https://api.openai.com/v1",
-      "model": "gpt-4.1",
+      "model_id": "openai/gpt-4.1",
       "prompt": "Research the customer and return buying signals.",
-      "tools": ["web_search", "fetch", "time"],
-      "ask": "never"
+      "tools": ["web_search", "fetch_url", "get_current_time"],
+      "skills": [],
+      "ask": false,
+      "schema_failure_retry_times": 2
     }
   },
   "input_schemas": [
     {
-      "id": "decision_context",
-      "schema": {
-        "type": "object",
-        "required": ["company", "industry"],
-        "properties": {
-          "company": { "type": "string" },
-          "industry": { "type": "string" }
-        }
+      "type": "object",
+      "required": ["company", "industry"],
+      "properties": {
+        "company": { "type": "string" },
+        "industry": { "type": "string" }
       }
     }
   ],
@@ -1155,22 +1156,16 @@
   "id": "load_customer_profile",
   "kind": {
     "ApiCall": {
-      "method": "GET",
       "url": "https://api.example.com/customers/{customer_id}",
-      "headers": {
-        "accept": "application/json"
-      }
+      "method": "GET"
     }
   },
   "input_schemas": [
     {
-      "id": "customer_lookup",
-      "schema": {
-        "type": "object",
-        "required": ["customer_id"],
-        "properties": {
-          "customer_id": { "type": "string" }
-        }
+      "type": "object",
+      "required": ["customer_id"],
+      "properties": {
+        "customer_id": { "type": "string" }
       }
     }
   ],
@@ -1183,9 +1178,7 @@
       "plan": { "type": "string" }
     }
   },
-  "expected_side_effects": [
-    { "kind": "http_request", "target": "api.example.com" }
-  ],
+  "expected_side_effects": ["http_request:api.example.com"],
   "required_credentials": ["customer_api_token"]
 }</code></pre>
 
@@ -1194,21 +1187,18 @@
   "id": "build_decision_context",
   "kind": {
     "Function": {
-      "dependencies": ["zod@3.24.1"],
-      "code": "export default async function run(ctx) { return { decision_context: ctx.inputs.customer_profile }; }"
+      "dependencies": [{ "name": "zod", "version": "3.24.1" }],
+      "code": "export default async function run(ctx) { return { decision_context: ctx.inputs[0] }; }"
     }
   },
   "input_schemas": [
     {
-      "id": "customer_profile",
-      "schema": {
-        "type": "object",
-        "required": ["company", "industry", "plan"],
-        "properties": {
-          "company": { "type": "string" },
-          "industry": { "type": "string" },
-          "plan": { "type": "string" }
-        }
+      "type": "object",
+      "required": ["company", "industry", "plan"],
+      "properties": {
+        "company": { "type": "string" },
+        "industry": { "type": "string" },
+        "plan": { "type": "string" }
       }
     }
   ],
@@ -1237,8 +1227,9 @@
       <div class="section-head">
         <h2 id="operability">Operational Model</h2>
         <p>
-          Docker Compose runs the API and multiple workers with a shared Unix
-          socket volume. Credentials are mounted read-only into the worker.
+          Docker Compose runs the orchestrator API and multiple workers on the
+          internal Compose network. Credentials and mounted skills are read-only
+          inside the worker.
         </p>
       </div>
       <div class="panels">
@@ -1267,7 +1258,7 @@
           <h3>Isolation</h3>
           <ul>
             <li>HTTP traffic enters through the orchestrator only.</li>
-            <li>Workers communicate over the RunHelm socket.</li>
+            <li>Workers register, claim tasks, and post results through orchestrator HTTP endpoints.</li>
             <li>Compose services run with read-only filesystems and no-new-privileges.</li>
           </ul>
         </article>
@@ -1275,6 +1266,7 @@
           <h3>Credentials</h3>
           <ul>
             <li>The worker reads <span class="inline-code">~/.runhelm/file_credentials.json</span>.</li>
+            <li>Optional Pi skills are mounted from <span class="inline-code">~/.runhelm/skills</span> by default.</li>
             <li>Credential names are declared per task.</li>
             <li>Adapters keep secret lookup behind a testable interface.</li>
           </ul>

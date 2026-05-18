@@ -28,9 +28,9 @@ A workflow is defined as JSON and contains:
 - data bindings between task outputs and downstream task inputs
 - optional per-task timeouts
 - per-task input schemas and optional output schemas
-- task kinds such as `Agent`, `LLM`, `ApiCall`, and `Function`
+- task kinds such as `Agent`, `ApiCall`, and `Function`
 
-That definition becomes a workflow instance at runtime. The orchestrator tracks task state (`Pending`, `Running`, `Completed`, `Failed`) and promotes the overall run state as work progresses.
+That definition becomes a workflow instance at runtime. The orchestrator tracks task state (`Pending`, `Running`, `InputNeeded`, `Completed`, `Failed`) and promotes the overall run state as work progresses.
 
 ## Architecture
 
@@ -39,29 +39,50 @@ flowchart TD
     User["Developer or<br>Product System"]
     UI["Frontend UI React + Vite"]
     API["Orchestrator API Axum"]
-    App["Orchestrator Application Layer"]
+    App["Orchestrator Application Layer<br>Orchestrator"]
     Engine["Workflow Engine"]
-    Storage["Storage Port<br>run state + workflow defs"]
-    Executor["Executor Port"]
-    Queue["Worker Task Queue"]
-    Worker["Worker Runtime<br>TypeScript"]
-    TaskExec["Task Executors Agent | LLM | API | Function"]
-    Tools["Built-in Tools HTTP | Fetch | Search | Time"]
+    Storage["Storage Port<br>workflow defs + function defs + run state"]
+    WorkflowQueue["Workflow Queue Port<br>pending workflow instances"]
+    Scheduler["Workflow Scheduler"]
+    Executor["Executor Port<br>DockerExecutor"]
+    WorkerPool["WorkerPool<br>task dispatch queue + in-flight timeouts"]
+    WorkerAPI["Worker HTTP API<br>register | claim | result"]
+    Worker["Worker Runtime<br>TypeScript poller"]
+    Credentials["Credentials Port<br>local file adapter"]
+    Factory["ExecutorFactory"]
+    AgentExec["AgentExecutor<br>Pi agent runtime"]
+    ApiExec["ApiCallExecutor"]
+    FunctionExec["FunctionExecutor<br>isolated Node.js child process"]
+    Tools["Approved Agent Tools<br>HTTP | Fetch | Search | Time | Ask User | Coding/Pi extensions"]
+    Skills["Pi Skills<br>loaded for approved agents"]
     Providers["LLM Providers / External APIs"]
+    Npm["npm registry<br>function dependencies"]
 
     User --> UI
     User --> API
     UI --> API
     API --> App
     App --> Engine
+    App --> WorkflowQueue
+    Scheduler --> WorkflowQueue
+    Scheduler --> Engine
     Engine --> Storage
     Engine --> Executor
-    Executor --> Queue
-    Worker -->|claim task| Queue
-    Worker --> TaskExec
-    TaskExec --> Tools
-    TaskExec --> Providers
-    Worker --> Storage
+    Executor --> WorkerPool
+    API --> WorkerAPI
+    WorkerAPI --> WorkerPool
+    Worker -->|register / claim / post result| WorkerAPI
+    Worker --> Credentials
+    Worker --> Factory
+    Factory --> AgentExec
+    Factory --> ApiExec
+    Factory --> FunctionExec
+    AgentExec --> Tools
+    AgentExec --> Skills
+    AgentExec --> Providers
+    ApiExec --> Providers
+    FunctionExec --> Npm
+    FunctionExec --> Providers
 
 ```
 
@@ -74,9 +95,9 @@ Rust control plane built around ports and adapters:
 - `src/core/engine.rs` runs workflow instances by finding runnable tasks, executing them, validating outputs, and propagating data bindings.
 - `src/core/models.rs` defines workflow, task, run, and status models.
 - `src/ports/` abstracts persistence and execution so storage backends and worker backends stay replaceable.
-- `src/api/` exposes HTTP endpoints such as `/health`, `POST /workflows`, and `GET /workflows/:id`.
+- `src/api/` exposes HTTP endpoints such as `/health`, `POST /workflow-def`, `GET /workflows`, and `GET /workflows/:id`.
 
-Current default wiring uses in-memory storage and a fake executor, which keeps the control-plane behavior easy to develop and test before infrastructure choices are finalized.
+Current default wiring uses in-memory storage, an in-memory workflow queue, and a `DockerExecutor` backed by `WorkerPool`. The fake executor still exists for tests, but normal local startup now expects TypeScript workers to register, claim task dispatches over HTTP, and post results back to the orchestrator.
 
 ### `worker/`
 
@@ -84,10 +105,11 @@ TypeScript execution runtime for task payloads:
 
 - claims task payloads from the orchestrator over HTTP
 - selects the correct executor through `ExecutorFactory`
-- supports agent, LLM, API-call, and function-style task execution
+- supports agent, API-call, and function-style task execution
 - validates task output against JSON Schema using `ajv`
+- reads required credentials through a credentials port, currently the local file adapter
 
-The agent executor already shows the intended shape of the system: provider-agnostic model selection, credential lookup behind a port, and built-in tools for retrieval and external calls.
+The agent executor already shows the intended shape of the system: provider-agnostic model selection, credential lookup behind a port, approved tool and skill selection, built-in retrieval/external-call tools, and Pi coding-agent resources loaded from local extensions.
 
 ### `frontend/`
 
@@ -130,7 +152,8 @@ RunHelm is in an early implementation stage. The important pieces already visibl
 - workflow engine and run-state model
 - API skeleton for orchestration
 - in-memory storage adapter
-- fake and Docker-oriented executor adapter groundwork
+- in-memory workflow queue and scheduler
+- worker-pool-backed Docker executor
 - worker runtime with multiple task executor types
 - frontend dashboard prototype
 
