@@ -8,7 +8,7 @@ import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
 import * as os from 'os';
 import { logger } from './utils/logger.js';
 
-const DEFAULT_ORCHESTRATOR_HTTP_URL = 'http://127.0.0.1:3000';
+const DEFAULT_ORCHESTRATOR_HTTP_URL = 'http://127.0.0.1:3001';
 const DEFAULT_POLL_DELAY_MS = 1_000;
 const DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS = 1_000;
 const DEFAULT_RESULT_ACK_RETRY_DELAY_MS = 1_000;

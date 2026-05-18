@@ -4,6 +4,8 @@ services:
       context: ./orchestrator
     ports:
       - "0.0.0.0:3000:3000"
+    environment:
+      RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
     read_only: true
     tmpfs:
       - /tmp
@@ -22,7 +24,7 @@ services:
       orchestrator:
         condition: service_healthy
     environment:
-      RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3000
+      RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3001
     volumes:
       - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro
       - ${RUNHELM_SKILLS_DIR:-${HOME}/.runhelm/skills}:/home/runhelm/.pi/agent/skills:ro

@@ -1248,9 +1248,9 @@
         <article class="panel">
           <h3>Queue control</h3>
           <ul>
-            <li><span class="inline-code">GET /queue</span> returns pending workflow instance IDs.</li>
-            <li><span class="inline-code">DELETE /queue/{id}</span> removes one pending item.</li>
-            <li><span class="inline-code">DELETE /queue</span> purges the pending queue without cancelling running
+            <li><span class="inline-code">GET /workflow-queue</span> returns pending workflow instance IDs.</li>
+            <li><span class="inline-code">DELETE /workflow-queue/{id}</span> removes one pending item.</li>
+            <li><span class="inline-code">DELETE /workflow-queue</span> purges the pending queue without cancelling running
               workflows.</li>
           </ul>
         </article>
@@ -1292,7 +1292,7 @@
             <li>Start the system with <span class="inline-code">docker compose up --build</span>.</li>
             <li>Register a workflow definition with <span class="inline-code">POST /workflow-def</span>.</li>
             <li>Trigger a run with <span class="inline-code">POST /workflow-def/{def_id}</span>.</li>
-            <li>Inspect the pending queue with <span class="inline-code">GET /queue</span>.</li>
+            <li>Inspect the pending queue with <span class="inline-code">GET /workflow-queue</span>.</li>
             <li>List runs with <span class="inline-code">GET /workflows</span> or <span class="inline-code">GET
                 /workflows?status=completed</span>.</li>
             <li>Inspect the run with <span class="inline-code">GET /workflows/{id}</span>.</li>
@@ -1330,9 +1330,9 @@ curl -sS http://localhost:3000/workflows/&lt;workflow-instance-id&gt;
 curl -sS 'http://localhost:3000/workflows?status=running'
 
 # Inspect and manage pending queue
-curl -sS http://localhost:3000/queue
-curl -sS -X DELETE http://localhost:3000/queue/&lt;workflow-instance-id&gt;
-curl -sS -X DELETE http://localhost:3000/queue</code></pre>
+curl -sS http://localhost:3000/workflow-queue
+curl -sS -X DELETE http://localhost:3000/workflow-queue/&lt;workflow-instance-id&gt;
+curl -sS -X DELETE http://localhost:3000/workflow-queue</code></pre>
       </div>
     </section>
 

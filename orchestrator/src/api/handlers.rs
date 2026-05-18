@@ -73,7 +73,11 @@ pub async fn delete_function_def(
     State(state): State<AppState>,
     Path(function_def_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    match state.orchestrator.delete_function_def(&function_def_id).await {
+    match state
+        .orchestrator
+        .delete_function_def(&function_def_id)
+        .await
+    {
         Ok(true) => Ok(StatusCode::NO_CONTENT),
         Ok(false) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),

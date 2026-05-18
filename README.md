@@ -168,7 +168,7 @@ cd orchestrator
 cargo run
 ```
 
-The orchestrator starts an Axum server on `0.0.0.0:3000`.
+The orchestrator starts a public Axum server on `0.0.0.0:3000` and a worker-only server on `127.0.0.1:3001`. Override them with `RUNHELM_PUBLIC_HTTP_ADDR` and `RUNHELM_WORKER_HTTP_ADDR`.
 
 ### Worker
 
@@ -179,7 +179,7 @@ npm run build
 npm start
 ```
 
-The worker pulls tasks from the orchestrator HTTP API. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the orchestrator is not reachable at the default local URL.
+The worker pulls tasks from the worker-only orchestrator API. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the worker API is not reachable at the default local URL.
 
 ### Frontend
 

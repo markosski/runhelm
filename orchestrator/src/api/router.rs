@@ -16,7 +16,7 @@ pub struct AppState {
     pub worker_pool: WorkerPool,
 }
 
-pub fn create_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
+pub fn create_public_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
     let state = AppState {
         orchestrator,
         worker_pool,
@@ -39,16 +39,28 @@ pub fn create_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -
             post(handlers::trigger_workflow_instance),
         )
         .route(
-            "/queue",
+            "/workflow-queue",
             get(handlers::get_queue).delete(handlers::purge_queue),
         )
-        .route("/queue/{id}", delete(handlers::delete_queue_item))
+        .route("/workflow-queue/{id}", delete(handlers::delete_queue_item))
         .route("/workflows", get(handlers::list_workflows))
         .route("/workflows/{id}", get(handlers::get_workflow_instance))
         .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
         )
+        .fallback(handlers::not_found)
+        .with_state(state)
+}
+
+pub fn create_worker_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
+    let state = AppState {
+        orchestrator,
+        worker_pool,
+    };
+
+    Router::new()
+        .route("/health", get(handlers::health_check))
         .route("/workers/register", post(handlers::register_worker))
         .route("/workers/tasks/claim", post(handlers::claim_worker_task))
         .route(

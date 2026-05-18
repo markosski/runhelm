@@ -82,11 +82,13 @@ services:
     image: ghcr.io/runhelm/orchestrator:${RUNHELM_VERSION}
     ports:
       - "3000:3000"
+    environment:
+      RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
 
   worker:
     image: ghcr.io/runhelm/worker:${RUNHELM_VERSION}
     environment:
-      RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3000
+      RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3001
 
   frontend:
     image: ghcr.io/runhelm/frontend:${RUNHELM_VERSION}

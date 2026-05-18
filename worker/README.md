@@ -36,7 +36,7 @@ Run the worker from TypeScript source:
 npm run dev
 ```
 
-By default the worker connects to the orchestrator at `http://127.0.0.1:3000`. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the orchestrator is reachable at a different URL.
+By default the worker connects to the orchestrator worker API at `http://127.0.0.1:3001`. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the worker API is reachable at a different URL.
 
 The worker reads credentials from `~/.runhelm/file_credentials.json` during startup. The file must contain a flat JSON object whose keys are credential names and whose values are strings:
 
@@ -49,7 +49,7 @@ The worker reads credentials from `~/.runhelm/file_credentials.json` during star
 
 ## Orchestrator HTTP Endpoints
 
-The orchestrator listens on port `3000` by default.
+The public orchestrator API listens on port `3000` by default.
 
 ### `GET /health`
 
@@ -204,11 +204,51 @@ Example response:
 }
 ```
 
+### `GET /workflow-queue`
+
+Returns pending workflow instance IDs waiting for scheduler execution.
+
+Example:
+
+```bash
+curl -sS http://localhost:3000/workflow-queue
+```
+
+Response shape:
+
+```json
+{
+  "pending": [
+    "simple-function-workflow-1780000000000000000"
+  ]
+}
+```
+
+### `DELETE /workflow-queue/{id}`
+
+Removes one pending workflow instance from the scheduler queue without deleting the workflow instance record.
+
+Example:
+
+```bash
+curl -sS -X DELETE http://localhost:3000/workflow-queue/simple-function-workflow-1780000000000000000
+```
+
+### `DELETE /workflow-queue`
+
+Purges all pending workflow instances from the scheduler queue without deleting workflow instance records.
+
+Example:
+
+```bash
+curl -sS -X DELETE http://localhost:3000/workflow-queue
+```
+
 Unknown routes return `404`.
 
 ## Worker HTTP Protocol
 
-Workers use HTTP JSON endpoints for registration, task claiming, and task completion. The orchestrator listens on port `3000` by default.
+Workers use HTTP JSON endpoints for registration, task claiming, and task completion. The worker-only orchestrator API listens on `127.0.0.1:3001` by default.
 
 ### `POST /workers/register`
 
@@ -407,7 +447,7 @@ kind:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3000` | Orchestrator base URL used for worker registration, task claiming, and task completion. |
+| `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3001` | Worker API base URL used for worker registration, task claiming, and task completion. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
 | `RUNHELM_TASK_TIMEOUT_SECS` | `300` | Orchestrator fallback timeout for tasks that do not set `timeout_secs`. |
@@ -438,11 +478,11 @@ Use an empty build arg to produce an image with no extra Pi packages:
 docker build --build-arg RUNHELM_PI_PACKAGES= -t runhelm-worker worker
 ```
 
-Run the worker container with access to the orchestrator HTTP API:
+Run the worker container with access to the orchestrator worker API:
 
 ```bash
 docker run --rm \
-  -e RUNHELM_ORCHESTRATOR_HTTP_URL=http://host.docker.internal:3000 \
+  -e RUNHELM_ORCHESTRATOR_HTTP_URL=http://host.docker.internal:3001 \
   -v ~/.runhelm:/home/runhelm/.runhelm:ro \
   runhelm-worker
 ```

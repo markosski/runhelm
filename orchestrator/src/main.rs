@@ -41,13 +41,21 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Setup API (Interface Layer)
-    // Setup router
-    let app = router::create_router(orchestrator, worker_pool);
+    let public_app = router::create_public_router(orchestrator.clone(), worker_pool.clone());
+    let worker_app = router::create_worker_router(orchestrator, worker_pool);
 
-    // Start server
-    let listener = TcpListener::bind("0.0.0.0:3000").await?;
-    info!("Listening on {}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    let public_addr = resolve_public_http_addr();
+    let worker_addr = resolve_worker_http_addr();
+    let public_listener = TcpListener::bind(&public_addr).await?;
+    let worker_listener = TcpListener::bind(&worker_addr).await?;
+
+    info!("Public API listening on {}", public_listener.local_addr()?);
+    info!("Worker API listening on {}", worker_listener.local_addr()?);
+
+    tokio::try_join!(
+        axum::serve(public_listener, public_app),
+        axum::serve(worker_listener, worker_app),
+    )?;
 
     Ok(())
 }
@@ -66,4 +74,12 @@ fn workflow_queue_capacity() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1024)
+}
+
+fn resolve_public_http_addr() -> String {
+    std::env::var("RUNHELM_PUBLIC_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string())
+}
+
+fn resolve_worker_http_addr() -> String {
+    std::env::var("RUNHELM_WORKER_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string())
 }

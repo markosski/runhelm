@@ -15,5 +15,5 @@ RUN addgroup -g 10001 runhelm \
 COPY --from=builder /app/target/debug/orchestrator /usr/local/bin/orchestrator
 USER runhelm
 
-EXPOSE 3000
+EXPOSE 3000 3001
 ENTRYPOINT ["/usr/local/bin/orchestrator"]
