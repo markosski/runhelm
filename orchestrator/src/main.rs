@@ -7,13 +7,15 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use dirs;
 
 use crate::adapters::docker_executor::DockerExecutor;
-use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+use crate::adapters::storage::sqlite_storage::SqliteStorage;
 use crate::adapters::worker_pool::WorkerPool;
 use crate::api::router;
 use crate::core::orchestrator::Orchestrator;
+use crate::ports::storage::StoragePort;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,7 +25,12 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting RunHelm Orchestrator...");
 
     // Initialize dependencies (Adapters)
-    let storage = Arc::new(MemoryStorage::new());
+    let mut sqlitedb_path = dirs::home_dir().unwrap();
+    sqlitedb_path.push(".runhelm");
+    sqlitedb_path.push("sqlite");
+    sqlitedb_path.push("db.sqlite");
+
+    let storage: Arc<dyn StoragePort + Send + Sync> = Arc::new(SqliteStorage::init(sqlitedb_path).unwrap());
     let worker_pool = WorkerPool::new();
     let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));

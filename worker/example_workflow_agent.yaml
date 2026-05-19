@@ -42,9 +42,12 @@ tasks:
           You must call the tools to fetch stock information. Base the answer only on those tool results.
           If a value is missing from tool results, state that it could not be verified instead of guessing.
 
+          You can use bash tool to check current date with `date`
+
           Return exactly this JSON shape:
           {
             "response": "summary text including the close date, close price, trend direction, and source",
+            "now_date": "05/18/2026"
             "quotes": [
               {
                 "symbol": "AAPL",
@@ -62,7 +65,7 @@ tasks:
               }
             ]
           }
-        tools: ["read", "write", "edit", "web_search"]
+        tools: ["read", "write", "edit", "web_search", "bash"]
         skills: ["brave-web-search"]
         ask: false
         schema_failure_retry_times: 2
@@ -74,6 +77,10 @@ tasks:
       properties:
         response:
           type: string
+        now_date:
+          type: string
+        quotes:
+          type: array
     expected_side_effects: []
     required_credentials:
       - llm_api_key

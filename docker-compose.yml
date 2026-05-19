@@ -6,6 +6,8 @@ services:
       - "0.0.0.0:3000:3000"
     environment:
       RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
+    volumes:
+      - ${HOME}/.runhelm/sqlite:/home/runhelm/.runhelm/sqlite:rw
     read_only: true
     tmpfs:
       - /tmp

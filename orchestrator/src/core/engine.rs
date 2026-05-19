@@ -298,7 +298,7 @@ impl WorkflowEngine {
 mod tests {
     use super::*;
     use crate::adapters::fake_executor::FakeExecutor;
-    use crate::adapters::memory_storage::MemoryStorage;
+    use crate::adapters::storage::memory_storage::MemoryStorage;
     use crate::core::models::*;
     use serde_json::json;
     use std::collections::HashMap;

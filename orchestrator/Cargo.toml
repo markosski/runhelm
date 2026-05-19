@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dirs = "5.0"
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 axum = "0.8.9"
@@ -14,3 +15,4 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 schemars = "0.8"
 jsonschema = "0.46.4"
+rusqlite = { version = "0.32.1", features = ["bundled"] }

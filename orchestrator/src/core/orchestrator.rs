@@ -251,8 +251,8 @@ impl Orchestrator {
 mod tests {
     use super::*;
     use crate::adapters::fake_executor::FakeExecutor;
-    use crate::adapters::memory_storage::MemoryStorage;
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+    use crate::adapters::storage::memory_storage::MemoryStorage;
     use crate::core::models::{FunctionDef, FunctionTaskDef, TaskTypeDef};
     use crate::ports::executor::ExecutionResult;
     use async_trait::async_trait;
