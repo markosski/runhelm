@@ -96,6 +96,7 @@ Rust control plane built around ports and adapters:
 - `src/core/models.rs` defines workflow, task, run, and status models.
 - `src/ports/` abstracts persistence and execution so storage backends and worker backends stay replaceable.
 - `src/api/` exposes HTTP endpoints such as `/health`, `POST /workflow-def`, `GET /workflows`, and `GET /workflows/:id`.
+- Public API endpoints other than `/health` require `Authorization: Bearer <token>`. Configure token-to-namespace mappings with `RUNHELM_API_TOKENS`, for example `dev-token=default`.
 
 Current default wiring uses in-memory storage, an in-memory workflow queue, and a `DockerExecutor` backed by `WorkerPool`. The fake executor still exists for tests, but normal local startup now expects TypeScript workers to register, claim task dispatches over HTTP, and post results back to the orchestrator.
 
@@ -165,7 +166,7 @@ Not everything is wired end-to-end yet, but the repository already reflects the 
 
 ```bash
 cd orchestrator
-cargo run
+RUNHELM_API_TOKENS=dev-token=default cargo run
 ```
 
 The orchestrator starts a public Axum server on `0.0.0.0:3000` and a worker-only server on `127.0.0.1:3001`. Override them with `RUNHELM_PUBLIC_HTTP_ADDR` and `RUNHELM_WORKER_HTTP_ADDR`.

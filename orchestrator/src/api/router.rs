@@ -8,18 +8,25 @@ use super::handlers;
 
 use crate::adapters::worker_pool::WorkerPool;
 use crate::core::orchestrator::Orchestrator;
+use crate::ports::auth::AuthPort;
 
 // AppState holds the injected dependencies
 #[derive(Clone)]
 pub struct AppState {
     pub orchestrator: Arc<Orchestrator>,
     pub worker_pool: WorkerPool,
+    pub auth: Arc<dyn AuthPort + Send + Sync>,
 }
 
-pub fn create_public_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
+pub fn create_public_router(
+    orchestrator: Arc<Orchestrator>,
+    worker_pool: WorkerPool,
+    auth: Arc<dyn AuthPort + Send + Sync>,
+) -> Router {
     let state = AppState {
         orchestrator,
         worker_pool,
+        auth,
     };
 
     Router::new()
@@ -53,10 +60,15 @@ pub fn create_public_router(orchestrator: Arc<Orchestrator>, worker_pool: Worker
         .with_state(state)
 }
 
-pub fn create_worker_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
+pub fn create_worker_router(
+    orchestrator: Arc<Orchestrator>,
+    worker_pool: WorkerPool,
+    auth: Arc<dyn AuthPort + Send + Sync>,
+) -> Router {
     let state = AppState {
         orchestrator,
         worker_pool,
+        auth,
     };
 
     Router::new()

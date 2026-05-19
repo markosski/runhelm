@@ -36,33 +36,50 @@ impl Orchestrator {
     }
 
     /// Registers a new workflow definition.
-    pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
-        self.storage.save_workflow_def(def).await
+    pub async fn create_workflow_def(
+        &self,
+        namespace_id: &str,
+        def: WorkflowDef,
+    ) -> anyhow::Result<()> {
+        self.storage.save_workflow_def(namespace_id, def).await
     }
 
     /// Retrieves a workflow definition by ID.
-    pub async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
-        self.storage.get_workflow_def(id).await
+    pub async fn get_workflow_def(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowDef>> {
+        self.storage.get_workflow_def(namespace_id, id).await
     }
 
     /// Registers a reusable function definition.
-    pub async fn create_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
-        self.storage.save_function_def(def).await
+    pub async fn create_function_def(
+        &self,
+        namespace_id: &str,
+        def: FunctionDef,
+    ) -> anyhow::Result<()> {
+        self.storage.save_function_def(namespace_id, def).await
     }
 
     /// Deletes a reusable function definition.
-    pub async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
-        self.storage.delete_function_def(id).await
+    pub async fn delete_function_def(&self, namespace_id: &str, id: &str) -> anyhow::Result<bool> {
+        self.storage.delete_function_def(namespace_id, id).await
     }
 
     /// Finds a task in a registered workflow definition and executes it directly.
     pub async fn execute_workflow_task_isolated(
         &self,
+        namespace_id: &str,
         workflow_def_id: &str,
         task_id: &str,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<Option<crate::ports::executor::ExecutionResult>> {
-        let Some(def) = self.storage.get_workflow_def(workflow_def_id).await? else {
+        let Some(def) = self
+            .storage
+            .get_workflow_def(namespace_id, workflow_def_id)
+            .await?
+        else {
             return Ok(None);
         };
 
@@ -70,51 +87,75 @@ impl Orchestrator {
             return Ok(None);
         };
 
-        self.execute_task_isolated(&task, inputs).await.map(Some)
+        self.execute_task_isolated(namespace_id, &task, inputs)
+            .await
+            .map(Some)
     }
 
     /// Creates a new workflow instance.
-    pub async fn create_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()> {
-        self.storage.save_workflow_instance(instance).await
+    pub async fn create_workflow_instance(
+        &self,
+        namespace_id: &str,
+        instance: WorkflowInstance,
+    ) -> anyhow::Result<()> {
+        self.storage
+            .save_workflow_instance(namespace_id, instance)
+            .await
     }
 
     /// Adds a workflow instance to the execution queue.
-    pub async fn enqueue_workflow_instance(&self, instance_id: String) -> anyhow::Result<()> {
-        self.workflow_queue.enqueue(instance_id).await
+    pub async fn enqueue_workflow_instance(
+        &self,
+        namespace_id: String,
+        instance_id: String,
+    ) -> anyhow::Result<()> {
+        self.workflow_queue.enqueue(namespace_id, instance_id).await
     }
 
     /// Returns queued and currently running workflow instance IDs.
-    pub async fn get_queue_status(&self) -> anyhow::Result<WorkflowQueueStatus> {
-        let pending = self.workflow_queue.pending_ids().await?;
+    pub async fn get_queue_status(
+        &self,
+        namespace_id: &str,
+    ) -> anyhow::Result<WorkflowQueueStatus> {
+        let pending = self.workflow_queue.pending_ids(namespace_id).await?;
 
         Ok(WorkflowQueueStatus { pending })
     }
 
     /// Removes a pending workflow instance from the queue.
-    pub async fn remove_queued_workflow_instance(&self, instance_id: &str) -> anyhow::Result<bool> {
-        self.workflow_queue.remove(instance_id).await
+    pub async fn remove_queued_workflow_instance(
+        &self,
+        namespace_id: &str,
+        instance_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.workflow_queue.remove(namespace_id, instance_id).await
     }
 
     /// Removes all pending workflow instances from the queue.
-    pub async fn purge_queued_workflow_instances(&self) -> anyhow::Result<Vec<String>> {
-        self.workflow_queue.purge().await
+    pub async fn purge_queued_workflow_instances(
+        &self,
+        namespace_id: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        self.workflow_queue.purge(namespace_id).await
     }
 
     /// Returns a status report for a workflow instance.
     pub async fn get_workflow_status(
         &self,
+        namespace_id: &str,
         id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
-        self.engine.get_workflow_status(id).await
+        self.engine.get_workflow_status(namespace_id, id).await
     }
 
     pub async fn list_workflows(
         &self,
+        namespace_id: &str,
         status: Option<WorkflowStatus>,
     ) -> anyhow::Result<WorkflowList> {
         let mut workflows: Vec<WorkflowSummary> = self
             .storage
-            .list_workflow_instances()
+            .list_workflow_instances(namespace_id)
             .await?
             .into_iter()
             .filter(|instance| {
@@ -136,17 +177,24 @@ impl Orchestrator {
 
     pub async fn get_task_result(
         &self,
+        namespace_id: &str,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<TaskResult> {
         self.storage
-            .get_task_result(workflow_instance_id, task_id)
+            .get_task_result(namespace_id, workflow_instance_id, task_id)
             .await
     }
 
     /// Starts or resumes execution of a workflow instance.
-    pub async fn run_workflow(&self, instance_id: String) -> anyhow::Result<()> {
-        self.engine.run_workflow_instance(instance_id).await
+    pub async fn run_workflow(
+        &self,
+        namespace_id: String,
+        instance_id: String,
+    ) -> anyhow::Result<()> {
+        self.engine
+            .run_workflow_instance(namespace_id, instance_id)
+            .await
     }
 
     /// Continuously consumes queued workflow instances and runs up to `max_concurrent_workflows`.
@@ -164,8 +212,8 @@ impl Orchestrator {
                 }
             };
 
-            let instance_id = match self.workflow_queue.dequeue().await {
-                Ok(instance_id) => instance_id,
+            let queued = match self.workflow_queue.dequeue().await {
+                Ok(queued) => queued,
                 Err(error) => {
                     error!(%error, "workflow scheduler failed to dequeue workflow instance");
                     drop(permit);
@@ -175,9 +223,14 @@ impl Orchestrator {
 
             let orchestrator = Arc::clone(&self);
             tokio::spawn(async move {
-                let workflow_instance_id = instance_id.clone();
-                if let Err(error) = orchestrator.run_workflow(instance_id).await {
+                let namespace_id = queued.namespace_id.clone();
+                let workflow_instance_id = queued.workflow_instance_id.clone();
+                if let Err(error) = orchestrator
+                    .run_workflow(queued.namespace_id, queued.workflow_instance_id)
+                    .await
+                {
                     error!(
+                        %namespace_id,
                         %workflow_instance_id,
                         %error,
                         "workflow execution failed"
@@ -195,7 +248,9 @@ impl Orchestrator {
     pub async fn synchronize_startup_tasks(&self) -> anyhow::Result<usize> {
         let mut recovered = 0;
 
-        for mut instance in self.storage.list_active_workflow_instances().await? {
+        for mut item in self.storage.list_active_workflow_instances().await? {
+            let namespace_id = item.namespace_id;
+            let instance = &mut item.instance;
             let mut changed = false;
 
             for task in instance.tasks.values_mut() {
@@ -211,7 +266,9 @@ impl Orchestrator {
             }
 
             if changed {
-                self.storage.save_workflow_instance(instance).await?;
+                self.storage
+                    .save_workflow_instance(&namespace_id, item.instance)
+                    .await?;
                 recovered += 1;
             }
         }
@@ -224,8 +281,9 @@ impl Orchestrator {
         let instances = self.storage.list_active_workflow_instances().await?;
         let count = instances.len();
 
-        for instance in instances {
-            self.enqueue_workflow_instance(instance.id).await?;
+        for item in instances {
+            self.enqueue_workflow_instance(item.namespace_id, item.instance.id)
+                .await?;
         }
 
         Ok(count)
@@ -235,15 +293,20 @@ impl Orchestrator {
     /// Useful for testing individual task types or executors.
     pub async fn execute_task_isolated(
         &self,
+        namespace_id: &str,
         task: &TaskDef,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
-        let task = self.resolve_task_function_ref(task).await?;
+        let task = self.resolve_task_function_ref(namespace_id, task).await?;
         self.executor.execute(&task, inputs).await
     }
 
-    async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
-        resolve_task_function_ref(self.storage.as_ref(), task).await
+    async fn resolve_task_function_ref(
+        &self,
+        namespace_id: &str,
+        task: &TaskDef,
+    ) -> anyhow::Result<TaskDef> {
+        resolve_task_function_ref(self.storage.as_ref(), namespace_id, task).await
     }
 }
 
@@ -366,12 +429,12 @@ mod tests {
     async fn execute_workflow_task_isolated_finds_registered_task() {
         let orchestrator = orchestrator();
         orchestrator
-            .create_workflow_def(workflow("workflow-1", vec![task("task-a")]))
+            .create_workflow_def("default", workflow("workflow-1", vec![task("task-a")]))
             .await
             .unwrap();
 
         let result = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
+            .execute_workflow_task_isolated("default", "workflow-1", "task-a", &[])
             .await
             .unwrap();
 
@@ -385,16 +448,16 @@ mod tests {
     async fn execute_workflow_task_isolated_scopes_task_lookup_to_workflow_def() {
         let orchestrator = orchestrator();
         orchestrator
-            .create_workflow_def(workflow("workflow-1", vec![task("task-a")]))
+            .create_workflow_def("default", workflow("workflow-1", vec![task("task-a")]))
             .await
             .unwrap();
         orchestrator
-            .create_workflow_def(workflow("workflow-2", vec![task("task-a")]))
+            .create_workflow_def("default", workflow("workflow-2", vec![task("task-a")]))
             .await
             .unwrap();
 
         let result = orchestrator
-            .execute_workflow_task_isolated("workflow-2", "task-a", &[])
+            .execute_workflow_task_isolated("default", "workflow-2", "task-a", &[])
             .await
             .unwrap();
 
@@ -408,23 +471,29 @@ mod tests {
     async fn execute_workflow_task_isolated_resolves_registered_function_ref() {
         let orchestrator = orchestrator();
         orchestrator
-            .create_function_def(FunctionDef {
-                id: "function-a".to_string(),
-                dependencies: vec![],
-                code: "export default async function run() { return {}; }".to_string(),
-            })
+            .create_function_def(
+                "default",
+                FunctionDef {
+                    id: "function-a".to_string(),
+                    dependencies: vec![],
+                    code: "export default async function run() { return {}; }".to_string(),
+                },
+            )
             .await
             .unwrap();
         orchestrator
-            .create_workflow_def(workflow(
-                "workflow-1",
-                vec![function_ref_task("task-a", "function-a")],
-            ))
+            .create_workflow_def(
+                "default",
+                workflow(
+                    "workflow-1",
+                    vec![function_ref_task("task-a", "function-a")],
+                ),
+            )
             .await
             .unwrap();
 
         let result = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
+            .execute_workflow_task_isolated("default", "workflow-1", "task-a", &[])
             .await
             .unwrap();
 
@@ -438,15 +507,18 @@ mod tests {
     async fn execute_workflow_task_isolated_errors_for_missing_function_ref() {
         let orchestrator = orchestrator();
         orchestrator
-            .create_workflow_def(workflow(
-                "workflow-1",
-                vec![function_ref_task("task-a", "missing-function")],
-            ))
+            .create_workflow_def(
+                "default",
+                workflow(
+                    "workflow-1",
+                    vec![function_ref_task("task-a", "missing-function")],
+                ),
+            )
             .await
             .unwrap();
 
         let error = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
+            .execute_workflow_task_isolated("default", "workflow-1", "task-a", &[])
             .await
             .unwrap_err();
 
@@ -454,6 +526,43 @@ mod tests {
             error
                 .to_string()
                 .contains("Function definition not found: missing-function")
+        );
+    }
+
+    #[tokio::test]
+    async fn function_refs_do_not_cross_namespaces() {
+        let orchestrator = orchestrator();
+        orchestrator
+            .create_function_def(
+                "namespace-b",
+                FunctionDef {
+                    id: "function-a".to_string(),
+                    dependencies: vec![],
+                    code: "export default async function run() { return {}; }".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        orchestrator
+            .create_workflow_def(
+                "namespace-a",
+                workflow(
+                    "workflow-1",
+                    vec![function_ref_task("task-a", "function-a")],
+                ),
+            )
+            .await
+            .unwrap();
+
+        let error = orchestrator
+            .execute_workflow_task_isolated("namespace-a", "workflow-1", "task-a", &[])
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Function definition not found: function-a")
         );
     }
 
@@ -467,21 +576,24 @@ mod tests {
 
         for id in ["workflow-1", "workflow-2", "workflow-3"] {
             storage
-                .save_workflow_def(workflow(
-                    id,
-                    vec![TaskDef {
-                        output_schema: None,
-                        ..task("task-a")
-                    }],
-                ))
+                .save_workflow_def(
+                    "default",
+                    workflow(
+                        id,
+                        vec![TaskDef {
+                            output_schema: None,
+                            ..task("task-a")
+                        }],
+                    ),
+                )
                 .await
                 .unwrap();
             storage
-                .save_workflow_instance(workflow_instance(id, id))
+                .save_workflow_instance("default", workflow_instance(id, id))
                 .await
                 .unwrap();
             orchestrator
-                .enqueue_workflow_instance(id.to_string())
+                .enqueue_workflow_instance("default".to_string(), id.to_string())
                 .await
                 .unwrap();
         }
@@ -489,7 +601,11 @@ mod tests {
         for _ in 0..20 {
             let mut completed = 0;
             for id in ["workflow-1", "workflow-2", "workflow-3"] {
-                let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
+                let instance = storage
+                    .get_workflow_instance("default", id)
+                    .await
+                    .unwrap()
+                    .unwrap();
                 if instance.status == WorkflowStatus::Completed {
                     completed += 1;
                 }
@@ -508,12 +624,12 @@ mod tests {
     async fn isolated_workflow_task_execution_does_not_require_scheduler() {
         let orchestrator = orchestrator();
         orchestrator
-            .create_workflow_def(workflow("workflow-1", vec![task("task-a")]))
+            .create_workflow_def("default", workflow("workflow-1", vec![task("task-a")]))
             .await
             .unwrap();
 
         let result = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
+            .execute_workflow_task_isolated("default", "workflow-1", "task-a", &[])
             .await
             .unwrap();
 
@@ -528,18 +644,59 @@ mod tests {
 
         let mut running = workflow_instance("running-workflow", "workflow-1");
         running.status = WorkflowStatus::Running;
-        storage.save_workflow_instance(running).await.unwrap();
+        storage
+            .save_workflow_instance("default", running)
+            .await
+            .unwrap();
 
         orchestrator
-            .enqueue_workflow_instance("pending-workflow".to_string())
+            .enqueue_workflow_instance("default".to_string(), "pending-workflow".to_string())
             .await
             .unwrap();
 
         assert_eq!(
-            orchestrator.get_queue_status().await.unwrap(),
+            orchestrator.get_queue_status("default").await.unwrap(),
             WorkflowQueueStatus {
                 pending: vec!["pending-workflow".to_string()],
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_active_workflow_instances_preserves_namespace() {
+        let storage = Arc::new(MemoryStorage::new());
+        let queue = Arc::new(MemoryWorkflowQueue::new(10));
+        let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+
+        let mut active = workflow_instance("active-workflow", "workflow-1");
+        active.status = WorkflowStatus::Running;
+        storage
+            .save_workflow_instance("namespace-a", active)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            orchestrator
+                .enqueue_active_workflow_instances()
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            orchestrator
+                .get_queue_status("namespace-a")
+                .await
+                .unwrap()
+                .pending,
+            vec!["active-workflow".to_string()]
+        );
+        assert!(
+            orchestrator
+                .get_queue_status("default")
+                .await
+                .unwrap()
+                .pending
+                .is_empty()
         );
     }
 
@@ -548,30 +705,30 @@ mod tests {
         let orchestrator = orchestrator();
 
         orchestrator
-            .enqueue_workflow_instance("workflow-1".to_string())
+            .enqueue_workflow_instance("default".to_string(), "workflow-1".to_string())
             .await
             .unwrap();
         orchestrator
-            .enqueue_workflow_instance("workflow-2".to_string())
+            .enqueue_workflow_instance("default".to_string(), "workflow-2".to_string())
             .await
             .unwrap();
 
         assert!(
             orchestrator
-                .remove_queued_workflow_instance("workflow-1")
+                .remove_queued_workflow_instance("default", "workflow-1")
                 .await
                 .unwrap()
         );
         assert_eq!(
             orchestrator
-                .purge_queued_workflow_instances()
+                .purge_queued_workflow_instances("default")
                 .await
                 .unwrap(),
             vec!["workflow-2".to_string()]
         );
         assert!(
             orchestrator
-                .get_queue_status()
+                .get_queue_status("default")
                 .await
                 .unwrap()
                 .pending
@@ -592,12 +749,18 @@ mod tests {
         completed.status = WorkflowStatus::Completed;
         let mut running = workflow_instance("running-workflow", "workflow-1");
         running.status = WorkflowStatus::Running;
-        storage.save_workflow_instance(completed).await.unwrap();
-        storage.save_workflow_instance(running).await.unwrap();
+        storage
+            .save_workflow_instance("default", completed)
+            .await
+            .unwrap();
+        storage
+            .save_workflow_instance("default", running)
+            .await
+            .unwrap();
 
         assert_eq!(
             orchestrator
-                .list_workflows(Some(WorkflowStatus::Running))
+                .list_workflows("default", Some(WorkflowStatus::Running))
                 .await
                 .unwrap(),
             WorkflowList {

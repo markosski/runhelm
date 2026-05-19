@@ -3,18 +3,20 @@ mod api;
 mod core;
 mod ports;
 
+use dirs;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use dirs;
 
 use crate::adapters::docker_executor::DockerExecutor;
+use crate::adapters::env_auth::EnvAuthAdapter;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::adapters::storage::sqlite_storage::SqliteStorage;
 use crate::adapters::worker_pool::WorkerPool;
 use crate::api::router;
 use crate::core::orchestrator::Orchestrator;
+use crate::ports::auth::AuthPort;
 use crate::ports::storage::StoragePort;
 
 #[tokio::main]
@@ -30,10 +32,12 @@ async fn main() -> anyhow::Result<()> {
     sqlitedb_path.push("sqlite");
     sqlitedb_path.push("db.sqlite");
 
-    let storage: Arc<dyn StoragePort + Send + Sync> = Arc::new(SqliteStorage::init(sqlitedb_path).unwrap());
+    let storage: Arc<dyn StoragePort + Send + Sync> =
+        Arc::new(SqliteStorage::init(sqlitedb_path).unwrap());
     let worker_pool = WorkerPool::new();
     let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
+    let auth: Arc<dyn AuthPort + Send + Sync> = Arc::new(EnvAuthAdapter::from_env()?);
 
     // Initialize Orchestrator (Application Layer)
     let orchestrator = Arc::new(Orchestrator::new(storage, executor, workflow_queue));
@@ -48,8 +52,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Setup API (Interface Layer)
-    let public_app = router::create_public_router(orchestrator.clone(), worker_pool.clone());
-    let worker_app = router::create_worker_router(orchestrator, worker_pool);
+    let public_app =
+        router::create_public_router(orchestrator.clone(), worker_pool.clone(), auth.clone());
+    let worker_app = router::create_worker_router(orchestrator, worker_pool, auth);
 
     let public_addr = resolve_public_http_addr();
     let worker_addr = resolve_worker_http_addr();

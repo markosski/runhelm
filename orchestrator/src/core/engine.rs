@@ -25,9 +25,14 @@ impl WorkflowEngine {
     /// including while `run_workflow_instance` is executing.
     pub async fn get_workflow_status(
         &self,
+        namespace_id: &str,
         instance_id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
-        let Some(instance) = self.storage.get_workflow_instance(instance_id).await? else {
+        let Some(instance) = self
+            .storage
+            .get_workflow_instance(namespace_id, instance_id)
+            .await?
+        else {
             return Ok(None);
         };
 
@@ -52,15 +57,23 @@ impl WorkflowEngine {
         }))
     }
 
-    pub async fn run_workflow_instance(&self, instance_id: String) -> anyhow::Result<()> {
-        let mut instance = match self.storage.get_workflow_instance(&instance_id).await? {
+    pub async fn run_workflow_instance(
+        &self,
+        namespace_id: String,
+        instance_id: String,
+    ) -> anyhow::Result<()> {
+        let mut instance = match self
+            .storage
+            .get_workflow_instance(&namespace_id, &instance_id)
+            .await?
+        {
             Some(i) => i,
             None => anyhow::bail!("Workflow instance not found"),
         };
 
         let def = match self
             .storage
-            .get_workflow_def(&instance.workflow_def_id)
+            .get_workflow_def(&namespace_id, &instance.workflow_def_id)
             .await?
         {
             Some(d) => d,
@@ -69,7 +82,7 @@ impl WorkflowEngine {
 
         instance.status = WorkflowStatus::Running;
         self.storage
-            .save_workflow_instance(instance.clone())
+            .save_workflow_instance(&namespace_id, instance.clone())
             .await?;
 
         // Initialize tasks if not already done
@@ -87,7 +100,7 @@ impl WorkflowEngine {
                 );
             }
             self.storage
-                .save_workflow_instance(instance.clone())
+                .save_workflow_instance(&namespace_id, instance.clone())
                 .await?;
         }
 
@@ -125,7 +138,9 @@ impl WorkflowEngine {
                     .unwrap_or_default();
 
                 let execution_result =
-                    match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
+                    match resolve_task_function_ref(self.storage.as_ref(), &namespace_id, task_def)
+                        .await
+                    {
                         Ok(resolved_task_def) => {
                             self.executor.execute(&resolved_task_def, &inputs).await
                         }
@@ -158,7 +173,7 @@ impl WorkflowEngine {
                             }
                             instance.status = WorkflowStatus::Failed;
                             self.storage
-                                .save_workflow_instance(instance.clone())
+                                .save_workflow_instance(&namespace_id, instance.clone())
                                 .await?;
                             anyhow::bail!("Task output failed schema validation");
                         }
@@ -175,7 +190,7 @@ impl WorkflowEngine {
                         }
                         instance.status = WorkflowStatus::Failed;
                         self.storage
-                            .save_workflow_instance(instance.clone())
+                            .save_workflow_instance(&namespace_id, instance.clone())
                             .await?;
                         anyhow::bail!("Task execution failed: {}", reason);
                     }
@@ -185,7 +200,7 @@ impl WorkflowEngine {
                         }
                         instance.status = WorkflowStatus::Failed;
                         self.storage
-                            .save_workflow_instance(instance.clone())
+                            .save_workflow_instance(&namespace_id, instance.clone())
                             .await?;
                         return Err(e.context("Task execution failed"));
                     }
@@ -193,7 +208,7 @@ impl WorkflowEngine {
             }
 
             self.storage
-                .save_workflow_instance(instance.clone())
+                .save_workflow_instance(&namespace_id, instance.clone())
                 .await?;
         }
 
@@ -203,7 +218,9 @@ impl WorkflowEngine {
             .all(|t| t.status == TaskStatus::Completed);
         if all_completed {
             instance.status = WorkflowStatus::Completed;
-            self.storage.save_workflow_instance(instance).await?;
+            self.storage
+                .save_workflow_instance(&namespace_id, instance)
+                .await?;
         }
 
         Ok(())
@@ -334,10 +351,14 @@ mod tests {
             status: WorkflowStatus::Pending,
             tasks: HashMap::new(),
         };
-        engine.storage.save_workflow_def(def).await.unwrap();
         engine
             .storage
-            .save_workflow_instance(instance)
+            .save_workflow_def("default", def)
+            .await
+            .unwrap();
+        engine
+            .storage
+            .save_workflow_instance("default", instance)
             .await
             .unwrap();
         instance_id
@@ -356,13 +377,13 @@ mod tests {
 
         let instance_id = setup(&engine, def).await;
         engine
-            .run_workflow_instance(instance_id.clone())
+            .run_workflow_instance("default".to_string(), instance_id.clone())
             .await
             .unwrap();
 
         let result = engine
             .storage
-            .get_workflow_instance(&instance_id)
+            .get_workflow_instance("default", &instance_id)
             .await
             .unwrap()
             .unwrap();
@@ -413,13 +434,13 @@ mod tests {
 
         let instance_id = setup(&engine, def).await;
         engine
-            .run_workflow_instance(instance_id.clone())
+            .run_workflow_instance("default".to_string(), instance_id.clone())
             .await
             .unwrap();
 
         let result = engine
             .storage
-            .get_workflow_instance(&instance_id)
+            .get_workflow_instance("default", &instance_id)
             .await
             .unwrap()
             .unwrap();
@@ -451,12 +472,14 @@ mod tests {
         };
 
         let instance_id = setup(&engine, def).await;
-        let run_result = engine.run_workflow_instance(instance_id.clone()).await;
+        let run_result = engine
+            .run_workflow_instance("default".to_string(), instance_id.clone())
+            .await;
         assert!(run_result.is_err());
 
         let instance = engine
             .storage
-            .get_workflow_instance(&instance_id)
+            .get_workflow_instance("default", &instance_id)
             .await
             .unwrap()
             .unwrap();
@@ -481,12 +504,12 @@ mod tests {
 
         let instance_id = setup(&engine, def).await;
         engine
-            .run_workflow_instance(instance_id.clone())
+            .run_workflow_instance("default".to_string(), instance_id.clone())
             .await
             .unwrap();
 
         let report = engine
-            .get_workflow_status(&instance_id)
+            .get_workflow_status("default", &instance_id)
             .await
             .unwrap()
             .expect("report should be present");
@@ -509,7 +532,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_workflow_status_unknown_instance() {
         let engine = make_engine();
-        let report = engine.get_workflow_status("does-not-exist").await.unwrap();
+        let report = engine
+            .get_workflow_status("default", "does-not-exist")
+            .await
+            .unwrap();
         assert!(report.is_none());
     }
 }

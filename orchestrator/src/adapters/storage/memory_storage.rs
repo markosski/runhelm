@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 use crate::core::models::{FunctionDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowStatus};
-use crate::ports::storage::{StoragePort, TaskResult};
+use crate::ports::storage::{NamespacedWorkflowInstance, StoragePort, TaskResult};
 
 pub struct MemoryStorage {
-    workflow_defs: RwLock<HashMap<String, WorkflowDef>>,
-    function_defs: RwLock<HashMap<String, FunctionDef>>,
-    workflow_instances: RwLock<HashMap<String, WorkflowInstance>>,
+    workflow_defs: RwLock<HashMap<(String, String), WorkflowDef>>,
+    function_defs: RwLock<HashMap<(String, String), FunctionDef>>,
+    workflow_instances: RwLock<HashMap<(String, String), WorkflowInstance>>,
 }
 
 impl MemoryStorage {
@@ -23,41 +23,56 @@ impl MemoryStorage {
 
 #[async_trait]
 impl StoragePort for MemoryStorage {
-    async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
+    async fn save_workflow_def(&self, namespace_id: &str, def: WorkflowDef) -> anyhow::Result<()> {
         let mut map = self.workflow_defs.write().await;
-        map.insert(def.id.clone(), def);
+        map.insert((namespace_id.to_string(), def.id.clone()), def);
         Ok(())
     }
 
-    async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
+    async fn get_workflow_def(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowDef>> {
         let map = self.workflow_defs.read().await;
-        Ok(map.get(id).cloned())
+        Ok(map
+            .get(&(namespace_id.to_string(), id.to_string()))
+            .cloned())
     }
 
-    async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
+    async fn save_function_def(&self, namespace_id: &str, def: FunctionDef) -> anyhow::Result<()> {
         let mut map = self.function_defs.write().await;
-        map.insert(def.id.clone(), def);
+        map.insert((namespace_id.to_string(), def.id.clone()), def);
         Ok(())
     }
 
-    async fn get_function_def(&self, id: &str) -> anyhow::Result<Option<FunctionDef>> {
+    async fn get_function_def(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<FunctionDef>> {
         let map = self.function_defs.read().await;
-        Ok(map.get(id).cloned())
+        Ok(map
+            .get(&(namespace_id.to_string(), id.to_string()))
+            .cloned())
     }
 
-    async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
+    async fn delete_function_def(&self, namespace_id: &str, id: &str) -> anyhow::Result<bool> {
         let mut map = self.function_defs.write().await;
-        Ok(map.remove(id).is_some())
+        Ok(map
+            .remove(&(namespace_id.to_string(), id.to_string()))
+            .is_some())
     }
 
     async fn get_task_result(
         &self,
+        namespace_id: &str,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<TaskResult> {
         let map = self.workflow_instances.read().await;
         let instance = map
-            .get(workflow_instance_id)
+            .get(&(namespace_id.to_string(), workflow_instance_id.to_string()))
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
         let task = instance
             .tasks
@@ -76,27 +91,46 @@ impl StoragePort for MemoryStorage {
         }
     }
 
-    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()> {
+    async fn save_workflow_instance(
+        &self,
+        namespace_id: &str,
+        instance: WorkflowInstance,
+    ) -> anyhow::Result<()> {
         let mut map = self.workflow_instances.write().await;
-        map.insert(instance.id.clone(), instance);
+        map.insert((namespace_id.to_string(), instance.id.clone()), instance);
         Ok(())
     }
 
-    async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>> {
-        let map = self.workflow_instances.read().await;
-        Ok(map.get(id).cloned())
-    }
-
-    async fn list_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>> {
-        let map = self.workflow_instances.read().await;
-        Ok(map.values().cloned().collect())
-    }
-
-    async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>> {
+    async fn get_workflow_instance(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowInstance>> {
         let map = self.workflow_instances.read().await;
         Ok(map
-            .values()
-            .filter(|instance| {
+            .get(&(namespace_id.to_string(), id.to_string()))
+            .cloned())
+    }
+
+    async fn list_workflow_instances(
+        &self,
+        namespace_id: &str,
+    ) -> anyhow::Result<Vec<WorkflowInstance>> {
+        let map = self.workflow_instances.read().await;
+        Ok(map
+            .iter()
+            .filter(|((item_namespace_id, _), _)| item_namespace_id == namespace_id)
+            .map(|(_, instance)| instance.clone())
+            .collect())
+    }
+
+    async fn list_active_workflow_instances(
+        &self,
+    ) -> anyhow::Result<Vec<NamespacedWorkflowInstance>> {
+        let map = self.workflow_instances.read().await;
+        Ok(map
+            .iter()
+            .filter(|(_, instance)| {
                 matches!(
                     instance.status,
                     WorkflowStatus::Pending | WorkflowStatus::Running
@@ -105,7 +139,10 @@ impl StoragePort for MemoryStorage {
                     .values()
                     .any(|task| matches!(task.status, TaskStatus::Pending | TaskStatus::Running))
             })
-            .cloned()
+            .map(|((namespace_id, _), instance)| NamespacedWorkflowInstance {
+                namespace_id: namespace_id.clone(),
+                instance: instance.clone(),
+            })
             .collect())
     }
 }
@@ -152,32 +189,35 @@ mod tests {
                 ),
             ]),
         };
-        storage.save_workflow_instance(instance).await.unwrap();
+        storage
+            .save_workflow_instance("default", instance)
+            .await
+            .unwrap();
 
         assert_eq!(
             storage
-                .get_task_result("instance-1", "completed")
+                .get_task_result("default", "instance-1", "completed")
                 .await
                 .unwrap(),
             TaskResult::Success(json!({"ok": true}))
         );
         assert_eq!(
             storage
-                .get_task_result("instance-1", "pending")
+                .get_task_result("default", "instance-1", "pending")
                 .await
                 .unwrap(),
             TaskResult::Pending
         );
         assert_eq!(
             storage
-                .get_task_result("instance-1", "running")
+                .get_task_result("default", "instance-1", "running")
                 .await
                 .unwrap(),
             TaskResult::Running
         );
         assert_eq!(
             storage
-                .get_task_result("instance-1", "failed")
+                .get_task_result("default", "instance-1", "failed")
                 .await
                 .unwrap(),
             TaskResult::Failure {
@@ -202,11 +242,17 @@ mod tests {
             tasks: HashMap::new(),
         };
 
-        storage.save_workflow_instance(completed).await.unwrap();
-        storage.save_workflow_instance(running).await.unwrap();
+        storage
+            .save_workflow_instance("default", completed)
+            .await
+            .unwrap();
+        storage
+            .save_workflow_instance("default", running)
+            .await
+            .unwrap();
 
         let mut ids: Vec<String> = storage
-            .list_workflow_instances()
+            .list_workflow_instances("default")
             .await
             .unwrap()
             .into_iter()
@@ -220,6 +266,92 @@ mod tests {
                 "completed-instance".to_string(),
                 "running-instance".to_string()
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resources_are_scoped_by_namespace() {
+        let storage = MemoryStorage::new();
+        let workflow_def = WorkflowDef {
+            id: "same-id".to_string(),
+            tasks: vec![],
+            data_bindings: vec![],
+        };
+        storage
+            .save_workflow_def("namespace-a", workflow_def.clone())
+            .await
+            .unwrap();
+        storage
+            .save_workflow_def("namespace-b", workflow_def)
+            .await
+            .unwrap();
+
+        assert!(
+            storage
+                .get_workflow_def("namespace-a", "same-id")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            storage
+                .get_workflow_def("namespace-c", "same-id")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let function_def = FunctionDef {
+            id: "same-id".to_string(),
+            dependencies: vec![],
+            code: "export default async function run() { return {}; }".to_string(),
+        };
+        storage
+            .save_function_def("namespace-a", function_def.clone())
+            .await
+            .unwrap();
+        storage
+            .save_function_def("namespace-b", function_def)
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .get_function_def("namespace-b", "same-id")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let instance = WorkflowInstance {
+            id: "same-id".to_string(),
+            workflow_def_id: "workflow-1".to_string(),
+            status: WorkflowStatus::Pending,
+            tasks: HashMap::new(),
+        };
+        storage
+            .save_workflow_instance("namespace-a", instance.clone())
+            .await
+            .unwrap();
+        storage
+            .save_workflow_instance("namespace-b", instance)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .list_workflow_instances("namespace-a")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            storage
+                .list_workflow_instances("namespace-b")
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 }

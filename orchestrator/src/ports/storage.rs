@@ -3,6 +3,12 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
 
+#[derive(Debug, Clone)]
+pub struct NamespacedWorkflowInstance {
+    pub namespace_id: String,
+    pub instance: WorkflowInstance,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskResult {
     Success(serde_json::Value),
@@ -45,17 +51,39 @@ impl Serialize for TaskResult {
 
 #[async_trait]
 pub trait StoragePort {
-    async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()>;
-    async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>>;
-    async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()>;
-    async fn get_function_def(&self, id: &str) -> anyhow::Result<Option<FunctionDef>>;
-    async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool>;
-    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()>;
-    async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>>;
-    async fn list_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
-    async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
+    async fn save_workflow_def(&self, namespace_id: &str, def: WorkflowDef) -> anyhow::Result<()>;
+    async fn get_workflow_def(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowDef>>;
+    async fn save_function_def(&self, namespace_id: &str, def: FunctionDef) -> anyhow::Result<()>;
+    async fn get_function_def(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<FunctionDef>>;
+    async fn delete_function_def(&self, namespace_id: &str, id: &str) -> anyhow::Result<bool>;
+    async fn save_workflow_instance(
+        &self,
+        namespace_id: &str,
+        instance: WorkflowInstance,
+    ) -> anyhow::Result<()>;
+    async fn get_workflow_instance(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowInstance>>;
+    async fn list_workflow_instances(
+        &self,
+        namespace_id: &str,
+    ) -> anyhow::Result<Vec<WorkflowInstance>>;
+    async fn list_active_workflow_instances(
+        &self,
+    ) -> anyhow::Result<Vec<NamespacedWorkflowInstance>>;
     async fn get_task_result(
         &self,
+        namespace_id: &str,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<TaskResult>;

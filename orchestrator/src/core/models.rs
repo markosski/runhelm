@@ -155,3 +155,62 @@ pub struct TaskStatusReport {
     /// True when the task has produced output data.
     pub has_output: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn serialized_public_models_do_not_include_namespace_id() {
+        let workflow_def = WorkflowDef {
+            id: "workflow-1".to_string(),
+            tasks: vec![],
+            data_bindings: vec![],
+        };
+        let function_def = FunctionDef {
+            id: "function-1".to_string(),
+            dependencies: vec![],
+            code: "export default async function run() { return {}; }".to_string(),
+        };
+        let workflow_instance = WorkflowInstance {
+            id: "instance-1".to_string(),
+            workflow_def_id: "workflow-1".to_string(),
+            status: WorkflowStatus::Pending,
+            tasks: HashMap::new(),
+        };
+        let status_report = WorkflowStatusReport {
+            instance_id: "instance-1".to_string(),
+            workflow_def_id: "workflow-1".to_string(),
+            status: WorkflowStatus::Pending,
+            tasks: vec![],
+        };
+        let workflow_list = WorkflowList {
+            workflows: vec![WorkflowSummary {
+                id: "instance-1".to_string(),
+                workflow_def_id: "workflow-1".to_string(),
+                status: WorkflowStatus::Pending,
+            }],
+        };
+
+        for value in [
+            serde_json::to_value(workflow_def).unwrap(),
+            serde_json::to_value(function_def).unwrap(),
+            serde_json::to_value(workflow_instance).unwrap(),
+            serde_json::to_value(status_report).unwrap(),
+            serde_json::to_value(workflow_list).unwrap(),
+        ] {
+            assert_eq!(value.get("namespace_id"), None);
+            assert!(!value.to_string().contains("namespace_id"));
+        }
+
+        assert_eq!(
+            serde_json::to_value(WorkflowQueueStatus {
+                pending: vec!["instance-1".to_string()],
+            })
+            .unwrap(),
+            json!({ "pending": ["instance-1"] })
+        );
+    }
+}

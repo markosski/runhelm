@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::core::models::{FunctionDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowStatus};
-use crate::ports::storage::{StoragePort, TaskResult};
+use crate::ports::auth::DEFAULT_NAMESPACE_ID;
+use crate::ports::storage::{NamespacedWorkflowInstance, StoragePort, TaskResult};
 
 pub struct SqliteStorage {
     connection: Mutex<Connection>,
@@ -26,27 +27,146 @@ impl SqliteStorage {
 
         connection.execute_batch(
             r#"
-            CREATE TABLE IF NOT EXISTS workflow_defs (
+            CREATE TABLE IF NOT EXISTS namespaces (
                 id VARCHAR(255) PRIMARY KEY NOT NULL,
-                json TEXT NOT NULL,
-                created_at BIGINT NOT NULL,
-                updated_at BIGINT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS function_defs (
-                id VARCHAR(255) PRIMARY KEY NOT NULL,
-                json TEXT NOT NULL,
-                created_at BIGINT NOT NULL,
-                updated_at BIGINT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS workflow_instance (
-                id VARCHAR(255) PRIMARY KEY NOT NULL,
-                json TEXT NOT NULL,
                 created_at BIGINT NOT NULL,
                 updated_at BIGINT NOT NULL
             );
             "#,
+        )?;
+
+        let now = Self::unix_timestamp_secs();
+        Self::ensure_namespace(&connection, DEFAULT_NAMESPACE_ID, now)?;
+
+        Self::migrate_table_if_needed(
+            &connection,
+            "workflow_defs",
+            r#"
+            CREATE TABLE workflow_defs (
+                namespace_id VARCHAR(255) NOT NULL,
+                id VARCHAR(255) NOT NULL,
+                json TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                updated_at BIGINT NOT NULL,
+                PRIMARY KEY (namespace_id, id)
+            );
+            "#,
+            "INSERT INTO workflow_defs (namespace_id, id, json, created_at, updated_at)
+             SELECT 'default', id, json, created_at, updated_at FROM workflow_defs_legacy;",
+        )?;
+
+        Self::migrate_table_if_needed(
+            &connection,
+            "function_defs",
+            r#"
+            CREATE TABLE function_defs (
+                namespace_id VARCHAR(255) NOT NULL,
+                id VARCHAR(255) NOT NULL,
+                json TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                updated_at BIGINT NOT NULL,
+                PRIMARY KEY (namespace_id, id)
+            );
+            "#,
+            "INSERT INTO function_defs (namespace_id, id, json, created_at, updated_at)
+             SELECT 'default', id, json, created_at, updated_at FROM function_defs_legacy;",
+        )?;
+
+        Self::migrate_table_if_needed(
+            &connection,
+            "workflow_instance",
+            r#"
+            CREATE TABLE workflow_instance (
+                namespace_id VARCHAR(255) NOT NULL,
+                id VARCHAR(255) NOT NULL,
+                workflow_def_id VARCHAR(255) NOT NULL,
+                json TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                updated_at BIGINT NOT NULL,
+                PRIMARY KEY (namespace_id, id)
+            );
+            "#,
+            "INSERT INTO workflow_instance (namespace_id, id, workflow_def_id, json, created_at, updated_at)
+             SELECT 'default', id, json_extract(json, '$.workflow_def_id'), json, created_at, updated_at
+             FROM workflow_instance_legacy;",
+        )?;
+
+        connection.execute_batch(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_workflow_instance_namespace_updated_at
+                ON workflow_instance(namespace_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_workflow_instance_namespace_workflow_def_id
+                ON workflow_instance(namespace_id, workflow_def_id);
+            "#,
+        )?;
+
+        Ok(())
+    }
+
+    fn migrate_table_if_needed(
+        connection: &Connection,
+        table: &str,
+        create_sql: &str,
+        copy_sql: &str,
+    ) -> anyhow::Result<()> {
+        if !Self::table_exists(connection, table)? {
+            connection.execute_batch(create_sql)?;
+            return Ok(());
+        }
+
+        if Self::table_has_column(connection, table, "namespace_id")? {
+            return Ok(());
+        }
+
+        let legacy_table = format!("{table}_legacy");
+        connection.execute_batch(&format!("ALTER TABLE {table} RENAME TO {legacy_table};"))?;
+        connection.execute_batch(create_sql)?;
+        connection.execute_batch(copy_sql)?;
+        connection.execute_batch(&format!("DROP TABLE {legacy_table};"))?;
+        Ok(())
+    }
+
+    fn table_exists(connection: &Connection, table: &str) -> anyhow::Result<bool> {
+        let exists: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(exists.is_some())
+    }
+
+    fn table_has_column(
+        connection: &Connection,
+        table: &str,
+        column: &str,
+    ) -> anyhow::Result<bool> {
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+
+        for row in rows {
+            if row? == column {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn ensure_namespace(
+        connection: &Connection,
+        namespace_id: &str,
+        now: i64,
+    ) -> anyhow::Result<()> {
+        connection.execute(
+            r#"
+            INSERT INTO namespaces (id, created_at, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at;
+            "#,
+            params![namespace_id, now, now],
         )?;
 
         Ok(())
@@ -71,33 +191,38 @@ impl SqliteStorage {
 
 #[async_trait]
 impl StoragePort for SqliteStorage {
-    async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
+    async fn save_workflow_def(&self, namespace_id: &str, def: WorkflowDef) -> anyhow::Result<()> {
         let json = serde_json::to_string(&def)?;
         let now = SqliteStorage::unix_timestamp_secs();
 
         let connection = self.get_conn()?;
+        Self::ensure_namespace(&connection, namespace_id, now)?;
 
         connection.execute(
             r#"
-            INSERT INTO workflow_defs (id, json, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO workflow_defs (namespace_id, id, json, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(namespace_id, id) DO UPDATE SET
                 json = excluded.json,
-                updated_at = ?4
+                updated_at = excluded.updated_at
             ;"#,
-            params![def.id, json, now, now],
+            params![namespace_id, def.id, json, now, now],
         )?;
 
         Ok(())
     }
 
-    async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
+    async fn get_workflow_def(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowDef>> {
         let connection = self.get_conn()?;
 
         let json: Option<String> = connection
             .query_row(
-                "SELECT json FROM workflow_defs WHERE id = ?1",
-                params![id],
+                "SELECT json FROM workflow_defs WHERE namespace_id = ?1 AND id = ?2",
+                params![namespace_id, id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -107,33 +232,38 @@ impl StoragePort for SqliteStorage {
             .map_err(Into::into)
     }
 
-    async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
+    async fn save_function_def(&self, namespace_id: &str, def: FunctionDef) -> anyhow::Result<()> {
         let json = serde_json::to_string(&def)?;
         let now = SqliteStorage::unix_timestamp_secs();
 
         let connection = self.get_conn()?;
+        Self::ensure_namespace(&connection, namespace_id, now)?;
 
         connection.execute(
             r#"
-            INSERT INTO function_defs (id, json, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO function_defs (namespace_id, id, json, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(namespace_id, id) DO UPDATE SET
                 json = excluded.json,
-                updated_at = ?4
+                updated_at = excluded.updated_at
             ;"#,
-            params![def.id, json, now, now],
+            params![namespace_id, def.id, json, now, now],
         )?;
 
         Ok(())
     }
 
-    async fn get_function_def(&self, id: &str) -> anyhow::Result<Option<FunctionDef>> {
+    async fn get_function_def(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<FunctionDef>> {
         let connection = self.get_conn()?;
 
         let json: Option<String> = connection
             .query_row(
-                "SELECT json FROM function_defs WHERE id = ?1",
-                params![id],
+                "SELECT json FROM function_defs WHERE namespace_id = ?1 AND id = ?2",
+                params![namespace_id, id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -143,40 +273,60 @@ impl StoragePort for SqliteStorage {
             .map_err(Into::into)
     }
 
-    async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
+    async fn delete_function_def(&self, namespace_id: &str, id: &str) -> anyhow::Result<bool> {
         let connection = self.get_conn()?;
 
-        let deleted = connection.execute("DELETE FROM function_defs WHERE id = ?1", params![id])?;
+        let deleted = connection.execute(
+            "DELETE FROM function_defs WHERE namespace_id = ?1 AND id = ?2",
+            params![namespace_id, id],
+        )?;
 
         Ok(deleted > 0)
     }
 
-    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()> {
+    async fn save_workflow_instance(
+        &self,
+        namespace_id: &str,
+        instance: WorkflowInstance,
+    ) -> anyhow::Result<()> {
         let json = serde_json::to_string(&instance)?;
         let now = SqliteStorage::unix_timestamp_secs();
         let connection = self.get_conn()?;
+        Self::ensure_namespace(&connection, namespace_id, now)?;
 
         connection.execute(
             r#"
-            INSERT INTO workflow_instance (id, json, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO workflow_instance (namespace_id, id, workflow_def_id, json, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(namespace_id, id) DO UPDATE SET
+                workflow_def_id = excluded.workflow_def_id,
                 json = excluded.json,
-                updated_at = ?4
+                updated_at = excluded.updated_at
             ;"#,
-            params![instance.id, json, now, now],
+            params![
+                namespace_id,
+                instance.id,
+                instance.workflow_def_id,
+                json,
+                now,
+                now
+            ],
         )?;
 
         Ok(())
     }
 
-    async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>> {
+    async fn get_workflow_instance(
+        &self,
+        namespace_id: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowInstance>> {
         let connection = self.get_conn()?;
 
         let json: Option<String> = connection
             .query_row(
-                "SELECT json FROM workflow_instance WHERE id = ?1",
-                params![id],
+                "SELECT json FROM workflow_instance WHERE namespace_id = ?1 AND id = ?2",
+                params![namespace_id, id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -186,10 +336,14 @@ impl StoragePort for SqliteStorage {
             .map_err(Into::into)
     }
 
-    async fn list_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>> {
+    async fn list_workflow_instances(
+        &self,
+        namespace_id: &str,
+    ) -> anyhow::Result<Vec<WorkflowInstance>> {
         let connection = self.get_conn()?;
-        let mut statement = connection.prepare("SELECT json FROM workflow_instance")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut statement =
+            connection.prepare("SELECT json FROM workflow_instance WHERE namespace_id = ?1")?;
+        let rows = statement.query_map(params![namespace_id], |row| row.get::<_, String>(0))?;
 
         let mut instances = Vec::new();
         for row in rows {
@@ -200,16 +354,33 @@ impl StoragePort for SqliteStorage {
         Ok(instances)
     }
 
-    async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>> {
-        let instances = self.list_workflow_instances().await?;
+    async fn list_active_workflow_instances(
+        &self,
+    ) -> anyhow::Result<Vec<NamespacedWorkflowInstance>> {
+        let connection = self.get_conn()?;
+        let mut statement =
+            connection.prepare("SELECT namespace_id, json FROM workflow_instance")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut instances = Vec::new();
+        for row in rows {
+            let (namespace_id, json) = row?;
+            instances.push(NamespacedWorkflowInstance {
+                namespace_id,
+                instance: serde_json::from_str(&json)?,
+            });
+        }
 
         Ok(instances
             .into_iter()
-            .filter(|instance| {
+            .filter(|item| {
                 matches!(
-                    instance.status,
+                    item.instance.status,
                     WorkflowStatus::Pending | WorkflowStatus::Running
-                ) || instance
+                ) || item
+                    .instance
                     .tasks
                     .values()
                     .any(|task| matches!(task.status, TaskStatus::Pending | TaskStatus::Running))
@@ -219,11 +390,12 @@ impl StoragePort for SqliteStorage {
 
     async fn get_task_result(
         &self,
+        namespace_id: &str,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<TaskResult> {
         let instance = self
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace_id, workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
         let task = instance
@@ -274,12 +446,12 @@ mod tests {
         };
 
         storage
-            .save_workflow_def(workflow_def.clone())
+            .save_workflow_def("default", workflow_def.clone())
             .await
             .unwrap();
 
         let loaded = storage
-            .get_workflow_def("workflow-1")
+            .get_workflow_def("default", "workflow-1")
             .await
             .unwrap()
             .unwrap();
@@ -287,6 +459,177 @@ mod tests {
         assert_eq!(loaded.id, workflow_def.id);
         assert_eq!(loaded.tasks.len(), 1);
         assert_eq!(loaded.tasks[0].id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn resources_are_scoped_by_namespace() {
+        let storage = SqliteStorage::init(":memory:").unwrap();
+        let workflow_def = WorkflowDef {
+            id: "same-id".to_string(),
+            tasks: vec![],
+            data_bindings: vec![],
+        };
+        storage
+            .save_workflow_def("namespace-a", workflow_def.clone())
+            .await
+            .unwrap();
+        storage
+            .save_workflow_def("namespace-b", workflow_def)
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .get_workflow_def("namespace-a", "same-id")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            storage
+                .get_workflow_def("namespace-c", "same-id")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let function_def = FunctionDef {
+            id: "same-id".to_string(),
+            dependencies: vec![],
+            code: "export default async function run() { return {}; }".to_string(),
+        };
+        storage
+            .save_function_def("namespace-a", function_def.clone())
+            .await
+            .unwrap();
+        storage
+            .save_function_def("namespace-b", function_def)
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .get_function_def("namespace-b", "same-id")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let instance = workflow_instance("same-id", WorkflowStatus::Pending);
+        storage
+            .save_workflow_instance("namespace-a", instance.clone())
+            .await
+            .unwrap();
+        storage
+            .save_workflow_instance("namespace-b", instance)
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .list_workflow_instances("namespace-a")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            storage
+                .list_workflow_instances("namespace-b")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_rows_to_default_namespace_without_changing_json() {
+        let path = std::env::temp_dir().join(format!(
+            "runhelm-legacy-migration-{}-{}.sqlite",
+            std::process::id(),
+            SqliteStorage::unix_timestamp_secs()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let workflow_def = WorkflowDef {
+            id: "workflow-1".to_string(),
+            tasks: vec![],
+            data_bindings: vec![],
+        };
+        let workflow_json = serde_json::to_string(&workflow_def).unwrap();
+        let instance = workflow_instance("instance-1", WorkflowStatus::Pending);
+        let instance_json = serde_json::to_string(&instance).unwrap();
+
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE workflow_defs (
+                        id VARCHAR(255) PRIMARY KEY NOT NULL,
+                        json TEXT NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        updated_at BIGINT NOT NULL
+                    );
+                    CREATE TABLE function_defs (
+                        id VARCHAR(255) PRIMARY KEY NOT NULL,
+                        json TEXT NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        updated_at BIGINT NOT NULL
+                    );
+                    CREATE TABLE workflow_instance (
+                        id VARCHAR(255) PRIMARY KEY NOT NULL,
+                        json TEXT NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        updated_at BIGINT NOT NULL
+                    );
+                    "#,
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO workflow_defs (id, json, created_at, updated_at) VALUES (?1, ?2, 1, 1)",
+                    params!["workflow-1", workflow_json],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO workflow_instance (id, json, created_at, updated_at) VALUES (?1, ?2, 1, 1)",
+                    params!["instance-1", instance_json],
+                )
+                .unwrap();
+        }
+
+        let storage = SqliteStorage::init(&path).unwrap();
+        assert!(
+            storage
+                .get_workflow_def("default", "workflow-1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            storage
+                .get_workflow_instance("default", "instance-1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let connection = Connection::open(&path).unwrap();
+        let migrated_json: String = connection
+            .query_row(
+                "SELECT json FROM workflow_defs WHERE namespace_id = 'default' AND id = 'workflow-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&migrated_json)
+                .unwrap()
+                .get("namespace_id")
+                .is_none()
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
@@ -302,23 +645,33 @@ mod tests {
         };
 
         storage
-            .save_function_def(function_def.clone())
+            .save_function_def("default", function_def.clone())
             .await
             .unwrap();
 
         let loaded = storage
-            .get_function_def("function-1")
+            .get_function_def("default", "function-1")
             .await
             .unwrap()
             .unwrap();
 
         assert_eq!(loaded.id, function_def.id);
         assert_eq!(loaded.dependencies.len(), 1);
-        assert!(storage.delete_function_def("function-1").await.unwrap());
-        assert!(!storage.delete_function_def("function-1").await.unwrap());
         assert!(
             storage
-                .get_function_def("function-1")
+                .delete_function_def("default", "function-1")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .delete_function_def("default", "function-1")
+                .await
+                .unwrap()
+        );
+        assert!(
+            storage
+                .get_function_def("default", "function-1")
                 .await
                 .unwrap()
                 .is_none()
@@ -332,16 +685,16 @@ mod tests {
         let running = workflow_instance("running-instance", WorkflowStatus::Running);
 
         storage
-            .save_workflow_instance(completed.clone())
+            .save_workflow_instance("default", completed.clone())
             .await
             .unwrap();
         storage
-            .save_workflow_instance(running.clone())
+            .save_workflow_instance("default", running.clone())
             .await
             .unwrap();
 
         let loaded = storage
-            .get_workflow_instance("completed-instance")
+            .get_workflow_instance("default", "completed-instance")
             .await
             .unwrap()
             .unwrap();
@@ -349,7 +702,7 @@ mod tests {
         assert_eq!(loaded.status, WorkflowStatus::Completed);
 
         let mut ids: Vec<String> = storage
-            .list_workflow_instances()
+            .list_workflow_instances("default")
             .await
             .unwrap()
             .into_iter()
@@ -369,7 +722,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|instance| instance.id)
+            .map(|item| item.instance.id)
             .collect();
         assert_eq!(active_ids, vec!["running-instance".to_string()]);
     }
@@ -400,32 +753,35 @@ mod tests {
                 ),
             ]),
         };
-        storage.save_workflow_instance(instance).await.unwrap();
+        storage
+            .save_workflow_instance("default", instance)
+            .await
+            .unwrap();
 
         assert_eq!(
             storage
-                .get_task_result("instance-1", "completed")
+                .get_task_result("default", "instance-1", "completed")
                 .await
                 .unwrap(),
             TaskResult::Success(json!({"ok": true}))
         );
         assert_eq!(
             storage
-                .get_task_result("instance-1", "pending")
+                .get_task_result("default", "instance-1", "pending")
                 .await
                 .unwrap(),
             TaskResult::Pending
         );
         assert_eq!(
             storage
-                .get_task_result("instance-1", "running")
+                .get_task_result("default", "instance-1", "running")
                 .await
                 .unwrap(),
             TaskResult::Running
         );
         assert_eq!(
             storage
-                .get_task_result("instance-1", "failed")
+                .get_task_result("default", "instance-1", "failed")
                 .await
                 .unwrap(),
             TaskResult::Failure {
