@@ -1,29 +1,30 @@
 ## Why
 
-RunHelm needs a first-class way for unpredictable Agent tasks to refine their output through bounded verification feedback before downstream workflow tasks consume it. Modeling the verifier as a normal Function task is confusing because the orchestrator depends on special verifier semantics; the verifier should instead be an Agent task capability that gates task completion.
+RunHelm needs a first-class way for a workflow to revise a bounded slice of prior work when a verifier Agent decides the current result is not good enough. For example, a workflow may run `A -> B -> C -> D`, where `D` evaluates the result and asks RunHelm to rerun from `B`, producing `B[2] -> C[2] -> D[2]` before downstream tasks continue.
 
 ## What Changes
 
-- Add an Agent-only verifier block that runs immediately after each Agent attempt produces schema-valid output.
-- Materialize verified Agent attempts as distinct runtime attempts, such as `implementchange[1]` and `implementchange[2]`, while preserving ordinary task behavior for tasks without verifiers.
+- Add an Agent verifier block with `max_iterations`, `on_exhausted_continue`, `on_failure_rerun_task`, and dependency-free verifier `code`.
+- Treat verifier `continue` as a bounded backedge to the configured previous task instead of rerunning only the verifier Agent.
+- Materialize rerun-slice generations as distinct runtime attempts, such as `b[1]`, `c[1]`, `d[1]`, then `b[2]`, `c[2]`, `d[2]`.
 - Add a dependency-free verifier code contract returning `decision: "continue" | "complete"` and optional feedback.
-- Add orchestrator-owned loop context for repeated Agent attempts, including iteration metadata, latest feedback, and feedback history.
-- Add configurable exhaustion behavior so a verified Agent can either fail the workflow or continue with the highest available attempt when its iteration limit is reached.
-- Resolve downstream bindings from verified Agent tasks only after an attempt is accepted or finalized by exhaustion policy.
+- Add orchestrator-owned loop context for repeated generations, including iteration metadata, latest feedback, and feedback history.
+- Add configurable exhaustion behavior so a verifier can either fail the workflow or continue with the latest schema-valid generation.
+- Resolve downstream bindings after the verifier only after a generation is accepted or finalized by exhaustion policy.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `workflow-bounded-loops`: Defines Agent verifier blocks, verifier decisions, exhaustion policy, loop context, attempt materialization, accepted attempt binding, and observability.
+- `workflow-bounded-loops`: Defines Agent verifier blocks, verifier decisions, bounded backedges, exhaustion policy, loop context, generation materialization, selected-generation binding, and observability.
 
 ### Modified Capabilities
 
-- `workflow-dataflow-engine`: Extends workflow execution semantics from one task instance per task definition to support verified Agent generations whose accepted attempt satisfies downstream bindings.
+- `workflow-dataflow-engine`: Extends workflow execution semantics from one task instance per task definition to support verifier-controlled generations whose selected outputs satisfy downstream bindings.
 
 ## Impact
 
-- **Core Models:** Agent task definitions gain verifier configuration; workflow instances gain persisted verified attempt state and feedback history.
-- **Execution Engine:** Scheduling must execute Agent verifier code after Agent output, create new Agent attempts on `continue`, and expose only accepted/finalized attempts to downstream bindings.
-- **Status and Result APIs:** Workflow status and task result lookup must expose materialized Agent attempts while preserving normal task IDs for non-verified tasks.
+- **Core Models:** Agent task definitions gain verifier configuration; workflow instances gain persisted generation state and feedback history.
+- **Execution Engine:** Scheduling must execute Agent verifier code after verifier Agent output, create new rerun-slice generations on `continue`, and expose only accepted/finalized generations to downstream bindings.
+- **Status and Result APIs:** Workflow status and task result lookup must expose materialized generation attempts while preserving normal task IDs for non-rerun tasks.
 - **Compatibility:** Existing workflows without Agent verifier blocks remain valid and continue to execute as ordinary dataflow DAGs.

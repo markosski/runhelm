@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: Agent Verifier Definition
-The system SHALL allow Agent task definitions to declare a verifier block with a positive maximum iteration count, an exhaustion policy, a loop context input index, and inline dependency-free verifier code.
+### Requirement: Agent Backedge Verifier Definition
+The system SHALL allow Agent task definitions to declare a verifier block with `max_iterations`, `on_exhausted_continue`, `on_failure_rerun_task`, and inline dependency-free verifier `code`.
 
-#### Scenario: Agent declares verifier
-- **WHEN** an Agent task definition contains a verifier block with `max_iterations`, `on_exhausted`, `loop_context_input_index`, and verifier `code`
-- **THEN** the workflow definition is accepted as a verified Agent task definition
+#### Scenario: Agent declares bounded backedge verifier
+- **WHEN** an Agent task definition contains a verifier block with positive `max_iterations`, boolean `on_exhausted_continue`, `on_failure_rerun_task`, and verifier `code`
+- **THEN** the workflow definition is accepted as a verified backedge control point when the rerun task is a valid upstream ancestor
 
 #### Scenario: Non-Agent declares verifier
 - **WHEN** a non-Agent task definition contains a verifier block
@@ -15,31 +15,35 @@ The system SHALL allow Agent task definitions to declare a verifier block with a
 - **WHEN** a verifier block declares external dependencies
 - **THEN** the workflow definition is rejected
 
-#### Scenario: Agent omits verifier
-- **WHEN** an Agent task definition does not contain a verifier block
-- **THEN** the Agent task executes with the existing non-verified task behavior
+#### Scenario: Verifier rerun target is missing
+- **WHEN** a verifier block declares `on_failure_rerun_task` for a task ID that does not exist
+- **THEN** the workflow definition is rejected
+
+#### Scenario: Verifier rerun target is not upstream
+- **WHEN** a verifier block declares `on_failure_rerun_task` for a task that is not an upstream ancestor of the verifier task
+- **THEN** the workflow definition is rejected
 
 ### Requirement: Worker-Side Verifier Execution
-The system SHALL execute Agent verifier code in the worker after the Agent attempt output passes task output schema validation.
+The system SHALL execute Agent verifier code in the worker after the verifier Agent generation output passes task output schema validation.
 
-#### Scenario: Agent output is schema-valid
-- **WHEN** a verified Agent attempt produces output that satisfies the Agent task output schema
-- **THEN** the worker executes verifier code with the verifier context for that attempt
+#### Scenario: Verifier Agent output is schema-valid
+- **WHEN** a verifier Agent generation produces output that satisfies the Agent task output schema
+- **THEN** the worker executes verifier code with the verifier context for that generation
 
-#### Scenario: Agent output is schema-invalid
-- **WHEN** a verified Agent attempt produces output that does not satisfy the Agent task output schema
-- **THEN** the verifier code is not executed for that attempt
+#### Scenario: Verifier Agent output is schema-invalid
+- **WHEN** a verifier Agent generation produces output that does not satisfy the Agent task output schema
+- **THEN** verifier code is not executed for that generation
 
 ### Requirement: Verifier Decision Contract
 The system SHALL require verifier code to return either `{ "decision": "complete" }` or `{ "decision": "continue", "feedback": "<non-empty string>" }`.
 
-#### Scenario: Verifier accepts attempt
+#### Scenario: Verifier accepts generation
 - **WHEN** verifier code returns `decision` equal to `complete`
-- **THEN** the system marks the Agent attempt as accepted and allows the task to satisfy downstream bindings
+- **THEN** the system selects the current generation and allows downstream tasks after the verifier to run
 
-#### Scenario: Verifier rejects attempt with feedback
-- **WHEN** verifier code returns `decision` equal to `continue` and the Agent has remaining iterations
-- **THEN** the system records verifier feedback and creates the next Agent attempt
+#### Scenario: Verifier requests rerun with feedback
+- **WHEN** verifier code returns `decision` equal to `continue` and the generation has remaining iteration budget
+- **THEN** the system records verifier feedback and materializes a new generation beginning at `on_failure_rerun_task`
 
 #### Scenario: Continue omits feedback
 - **WHEN** verifier code returns `decision` equal to `continue` without non-empty `feedback`
@@ -49,107 +53,92 @@ The system SHALL require verifier code to return either `{ "decision": "complete
 - **WHEN** verifier code does not return a valid verifier decision
 - **THEN** the system marks the workflow as failed
 
-### Requirement: Verified Agent Attempt Materialization
-The system SHALL persist each verified Agent execution as a distinct materialized attempt with a stable attempt ID and the original task definition ID.
+### Requirement: Bounded Rerun Slice Materialization
+The system SHALL persist each execution of a verifier-controlled rerun slice as distinct materialized task attempts with stable attempt IDs and original task definition IDs.
 
-#### Scenario: First verified Agent attempt runs
-- **WHEN** verified Agent task `implementchange` runs for the first time
-- **THEN** the system persists an attempt such as `implementchange[1]` whose task definition ID is `implementchange`
+#### Scenario: First generation runs
+- **WHEN** workflow `A -> B -> C -> D` starts and verifier task `D` declares `on_failure_rerun_task: B`
+- **THEN** the first generation persists materialized attempts for `B[1]`, `C[1]`, and `D[1]` while preserving `A` outside the rerun slice
 
-#### Scenario: Later verified Agent attempt runs
-- **WHEN** verified Agent task `implementchange` runs for a second time after verifier feedback
-- **THEN** the system persists a separate attempt such as `implementchange[2]` without overwriting `implementchange[1]`
+#### Scenario: Later generation runs
+- **WHEN** verifier task `D[1]` returns `continue`
+- **THEN** the system persists a new generation containing `B[2]`, `C[2]`, and `D[2]` without overwriting generation 1
 
-#### Scenario: Rejected attempt remains observable
-- **WHEN** a verified Agent attempt is rejected by verifier decision `continue`
-- **THEN** the system retains the rejected attempt in workflow state without allowing it to satisfy downstream bindings
-
-#### Scenario: Successful rejected attempt remains completed
-- **WHEN** a verified Agent attempt produces schema-valid output and verifier decision `continue`
-- **THEN** the task attempt lifecycle status is `Completed` and verifier metadata records that the attempt was rejected
+#### Scenario: Rejected generation remains observable
+- **WHEN** verifier task `D[1]` rejects generation 1 with decision `continue`
+- **THEN** the system retains `B[1]`, `C[1]`, and `D[1]` in workflow state without allowing generation 1 to satisfy downstream bindings after `D`
 
 ### Requirement: Loop Context Injection
-The system SHALL provide orchestrator-owned loop context to repeated verified Agent attempts without requiring the workflow trigger payload to include that context.
+The system SHALL provide orchestrator-owned loop context to tasks in repeated verifier-controlled generations without requiring workflow trigger payload to include that context.
 
-#### Scenario: Repeated Agent receives feedback
-- **WHEN** a verifier returns feedback and creates a next Agent attempt
-- **THEN** the next Agent attempt receives loop context containing iteration number, maximum iteration count, latest feedback, and feedback history at the configured input index
+#### Scenario: Rerun generation receives feedback
+- **WHEN** a verifier returns feedback and creates a next generation
+- **THEN** tasks in the next generation receive dedicated loop context containing iteration number, maximum iteration count, latest feedback, and feedback history
 
-#### Scenario: First Agent attempt has no prior feedback
-- **WHEN** the first verified Agent attempt runs
+#### Scenario: First generation has no prior feedback
+- **WHEN** the first verifier-controlled generation runs
 - **THEN** the loop context contains no prior feedback
 
-#### Scenario: Verifier context excludes prior verifier result
-- **WHEN** verifier code is executed
-- **THEN** the verifier context contains `output`, `attempt`, `max_iterations`, and `feedback_history`, and does not contain prior verifier result
+#### Scenario: Loop context is not a task input
+- **WHEN** a materialized task execution request includes loop context
+- **THEN** the loop context is carried as dedicated execution metadata and does not consume a user-declared `input_schemas` slot
 
 ### Requirement: Verifier Exhaustion Policy
-The system SHALL apply the verified Agent's configured exhaustion policy when the verifier requests continuation after the maximum iteration count has been reached.
+The system SHALL apply the verifier's configured exhaustion policy when the verifier requests continuation after the maximum iteration count has been reached.
 
 #### Scenario: Exhausted verifier fails workflow
-- **WHEN** a verified Agent reaches `max_iterations`, the verifier decision is `continue`, and `on_exhausted` is `fail`
-- **THEN** the system marks the workflow as failed and records that the Agent exhausted its verifier iteration budget
+- **WHEN** a verifier reaches `max_iterations`, returns `continue`, and `on_exhausted_continue` is false
+- **THEN** the system marks the workflow as failed and records that the verifier exhausted its iteration budget
 
 #### Scenario: Exhausted verifier continues workflow
-- **WHEN** a verified Agent reaches `max_iterations`, the verifier decision is `continue`, and `on_exhausted` is `continue`
-- **THEN** the system finalizes the highest available Agent attempt and allows it to satisfy downstream bindings
+- **WHEN** a verifier reaches `max_iterations`, returns `continue`, and `on_exhausted_continue` is true
+- **THEN** the system finalizes the latest schema-valid generation and allows downstream bindings after the verifier to run
 
-#### Scenario: Exhausted verifier continue has no schema-valid output
-- **WHEN** a verified Agent reaches `max_iterations`, `on_exhausted` is `continue`, and there is no schema-valid latest attempt output
+#### Scenario: Exhausted verifier continue has no schema-valid generation
+- **WHEN** a verifier reaches `max_iterations`, `on_exhausted_continue` is true, and there is no schema-valid latest generation output
 - **THEN** the system marks the workflow as failed
 
-### Requirement: Verified Output Binding
-The system SHALL satisfy downstream bindings from a verified Agent task only with its accepted or exhaustion-finalized attempt output.
+### Requirement: Generation-Scoped Binding Resolution
+The system SHALL satisfy bindings inside a verifier-controlled rerun slice using outputs from the same generation and SHALL satisfy downstream bindings after the verifier only with the accepted or exhaustion-finalized generation.
 
-#### Scenario: Agent accepted after first attempt
-- **WHEN** a verified Agent attempt `implementchange[1]` is accepted by verifier decision `complete`
-- **THEN** downstream tasks bound to `implementchange` receive output from `implementchange[1]`
+#### Scenario: Sequential rerun propagation
+- **WHEN** `D[1]` rejects `B[1] -> C[1] -> D[1]`
+- **THEN** `C[2]` receives output from `B[2]` and `D[2]` receives output from `C[2]`
 
-#### Scenario: Agent accepted after later attempt
-- **WHEN** `implementchange[1]` is rejected and `implementchange[2]` is accepted
-- **THEN** downstream tasks bound to `implementchange` receive output from `implementchange[2]`
+#### Scenario: Inputs outside rerun slice remain selected
+- **WHEN** task `A` is outside the rerun slice and `B` depends on `A`
+- **THEN** each generation of `B` receives the selected output from `A`
 
-#### Scenario: Agent has no accepted attempt
-- **WHEN** a verified Agent has only rejected attempts and its exhaustion policy is `fail`
-- **THEN** downstream tasks bound to that Agent do not run
+#### Scenario: Accepted generation propagates downstream
+- **WHEN** verifier task `D[2]` returns `complete`
+- **THEN** downstream tasks bound to `D` receive output from `D[2]`
 
-### Requirement: Verified Agent Observability
-The system SHALL expose verified Agent attempts and verifier exit state through persisted workflow state and read APIs.
+#### Scenario: Rejected generation does not propagate downstream
+- **WHEN** verifier task `D[1]` returns `continue`
+- **THEN** downstream tasks after `D` do not receive output from `D[1]`
+
+### Requirement: Verified Backedge Observability
+The system SHALL expose verifier-controlled materialized generations and verifier exit state through persisted workflow state and read APIs.
 
 #### Scenario: Non-verified task has no verifier metadata
 - **WHEN** a task does not declare a verifier block
 - **THEN** the persisted task instance and read API response contain no verifier metadata
 
-#### Scenario: Status includes verified Agent attempts
-- **WHEN** a workflow status report is requested for a workflow with verified Agent attempts
-- **THEN** the report includes materialized attempts such as `implementchange[1]` and `implementchange[2]`
+#### Scenario: Status includes materialized generation attempts
+- **WHEN** a workflow status report is requested for a workflow with verifier-controlled reruns
+- **THEN** the report includes materialized attempts such as `B[1]`, `C[1]`, `D[1]`, `B[2]`, `C[2]`, and `D[2]`
 
 #### Scenario: Task result lookup uses attempt ID
-- **WHEN** a task result is requested for a materialized verified Agent attempt
+- **WHEN** a task result is requested for a materialized generation attempt
 - **THEN** the system returns the result for that specific attempt ID
 
-### Requirement: Verified Agent Persistence and Logical Lookup
-The system SHALL persist verified Agent attempts as task instances keyed by materialized attempt ID and SHALL persist a logical verified Agent state index keyed by the original task ID.
+#### Scenario: Logical task result lookup resolves selected generation
+- **WHEN** task result lookup requests logical task ID `D`
+- **THEN** the system returns the output of the accepted or exhaustion-finalized `D` attempt and includes the resolved attempt ID
 
-#### Scenario: Attempts are persisted as task instances
-- **WHEN** verified Agent task `implementchange` produces two attempts
-- **THEN** workflow state contains task instances keyed by `implementchange[1]` and `implementchange[2]`
+### Requirement: Verified Rerun Side Effects
+The system SHALL retain rejected generations as audit history and SHALL NOT automatically roll back side effects produced by rejected generations.
 
-#### Scenario: Logical verified Agent state tracks accepted attempt
-- **WHEN** verified Agent attempt `implementchange[2]` is accepted
-- **THEN** workflow state records `implementchange[2]` as the accepted attempt for logical task ID `implementchange`
-
-#### Scenario: Logical task result lookup resolves accepted attempt
-- **WHEN** task result lookup requests logical task ID `implementchange`
-- **THEN** the system returns the output of the accepted or exhaustion-finalized attempt and includes the resolved attempt ID
-
-#### Scenario: Exact attempt lookup returns historical attempt
-- **WHEN** task result lookup requests materialized attempt ID `implementchange[1]`
-- **THEN** the system returns the result and verifier metadata for that exact historical attempt
-
-### Requirement: Verified Agent Side Effects
-The system SHALL retain rejected Agent attempts as audit history and SHALL NOT automatically roll back side effects produced by rejected attempts.
-
-#### Scenario: Rejected attempt has side effects
-- **WHEN** a verified Agent attempt performs side effects and verifier decision is `continue`
-- **THEN** the system records the rejected attempt and does not roll back those side effects
+#### Scenario: Rejected generation has side effects
+- **WHEN** a task in a rejected generation performs side effects and the verifier decision is `continue`
+- **THEN** the system records the rejected generation and does not roll back those side effects

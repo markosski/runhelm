@@ -2,90 +2,107 @@
 
 RunHelm currently models a workflow definition as task definitions plus data bindings, and a workflow instance as a map from task definition ID to one `TaskInstance`. A task is considered complete once execution succeeds and output schema validation passes, so downstream bindings can consume that output immediately.
 
-The original bounded-loop design used workflow-level loop bodies and a separate verifier task. During design discussion, that proved less principled: a verifier represented as a normal Function task would have special orchestrator semantics hidden behind an ordinary task output. The cleaner model is to make verification a capability of Agent tasks, because Agent output is the unpredictable output that needs bounded refinement.
+Some workflows need bounded revision across more than one task. For example, a workflow may run `A -> B -> C -> D`, where `D` reviews the combined result and may decide that the workflow should go back to `B`. In that case RunHelm should re-execute `B -> C -> D` as a new bounded iteration while preserving `A`.
+
+The bounded-loop control point should be explicit in workflow definition, but it does not need a separate nested `Loop` body. A verifier block on an Agent task can define a bounded backedge to a previous task in the dependency chain.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Add an Agent-only verifier block that gates Agent task completion.
-- Let a verified Agent produce multiple materialized attempts before one attempt is accepted.
-- Persist enough attempt, verifier, and feedback state to resume, observe, and reconstruct each generation.
-- Make downstream bindings consume the highest accepted or exhaustion-finalized Agent attempt.
-- Preserve existing workflow behavior when Agent verifier blocks are absent.
+- Add an Agent verifier block that can gate progress after an Agent task runs.
+- Let a verifier rerun an arbitrary previous task in the current upstream chain, causing that task and the dependent path back to the verifier to execute again.
+- Persist materialized task attempts such as `b[1]`, `c[1]`, `d[1]`, then `b[2]`, `c[2]`, `d[2]`.
+- Preserve ordinary acyclic workflow behavior when verifier blocks are absent.
+- Keep verifier code inline, dependency-free, and executed by workers.
+- Make downstream bindings after the verifier consume only the verifier-accepted or exhaustion-finalized generation.
 
 **Non-Goals:**
 
-- Verifier blocks on Function or API tasks in v1.
+- General unbounded loops.
+- Arbitrary graph cycles outside explicit verifier-controlled bounded reruns.
 - Dependency installation or external package use inside verifier code.
-- Separate verifier tasks with special orchestrator interpretation.
-- General conditional branching or workflow-level loop bodies.
-- Provider-specific Agent session continuation as the primary memory model.
+- Automatically rolling back side effects from rejected generations.
+
+## Verifier Shape
+
+An Agent task may declare:
+
+```yaml
+verifier:
+  max_iterations: 3
+  on_exhausted_continue: true
+  on_failure_rerun_task: bar
+  code: |
+    export default async function verify(ctx) {
+      if (ctx.output.quality >= 0.9) {
+        return { decision: "complete" };
+      }
+      return {
+        decision: "continue",
+        feedback: "Improve the evidence and tighten the final recommendation."
+      };
+    }
+```
+
+`on_exhausted_continue: true` means that if the verifier asks to continue after `max_iterations` is reached, RunHelm finalizes the latest schema-valid generation and proceeds through normal downstream bindings.
+
+`on_exhausted_continue: false` means exhaustion fails the workflow.
+
+`on_failure_rerun_task` identifies the task where the next generation starts. In `A -> B -> C -> D`, if task `D` declares `on_failure_rerun_task: B`, verifier `continue` creates a new generation for `B`, `C`, and `D`.
 
 ## Decisions
 
-**1. Put verifier configuration on Agent tasks**
+**1. Use verifier-controlled bounded backedges**
 
-The Agent task definition should support a `verifier` block with `max_iterations`, `on_exhausted`, `loop_context_input_index`, and inline verifier `code`. The block is only valid for `Agent` tasks.
+The verifier does not merely rerun its own Agent task. It declares the first task in the rerun slice. The orchestrator derives the affected slice from data bindings and only allows rerun targets that are upstream ancestors of the verifier task.
 
-Alternative considered: keep a separate verifier Function task. This was rejected because the orchestrator would treat that task's output as control flow, making it not truly an ordinary Function task.
+Alternative considered: introduce a nested `Loop` task kind. This is more explicit for loop bodies, but it adds a second workflow-definition language inside task definitions. A bounded backedge keeps workflows flat and reuses existing data bindings.
 
-**2. Run verifier code in workers and keep it dependency-free**
+**2. Keep ordinary data bindings acyclic**
 
-Verifier code should be inline, dependency-free, and executed by the worker after Agent output schema validation succeeds. The worker already owns task execution and the TypeScript runtime, so the Rust orchestrator should not gain a JavaScript execution surface for verifier code.
+Workflow definitions still use acyclic data bindings. The verifier backedge is not represented as a normal `DataBinding`; it is a bounded control edge with explicit `max_iterations`. This preserves existing cycle validation while allowing bounded reruns.
 
-The verifier context should contain only `output`, `attempt`, `max_iterations`, and `feedback_history`. It intentionally omits prior verifier result to keep the verifier contract small. The verifier must return `{ decision: "complete" }` or `{ decision: "continue", feedback: "<non-empty string>" }`.
+**3. Materialize generation attempts for every task in the rerun slice**
 
-Alternative considered: support Function-style dependencies in verifier code. This was rejected to keep verification fast, local, and simple; complex verification can still be modeled as normal workflow tasks.
+Tasks in a rerun slice are persisted with stable generation IDs such as `b[2]`, `c[2]`, and `d[2]`. Each materialized instance retains its original task definition ID and generation index. Tasks outside the rerun slice keep their selected output from the previous workflow state.
 
-**3. Materialize Agent attempts with stable generation IDs**
+**4. Resolve bindings by generation scope**
 
-A verified Agent attempt should be stored as `task_id[1]`, `task_id[2]`, and so on, while retaining the original task definition ID. Rejected attempts remain observable but do not satisfy downstream bindings. A schema-valid rejected attempt still has lifecycle status `Completed`; verifier status such as accepted, rejected, finalized, or exhausted is separate metadata. Tasks without verifiers should have no verifier metadata.
+Within a rerun generation, bindings between tasks in the rerun slice consume outputs from the same generation. Bindings from outside the slice consume the latest selected output outside the slice. Downstream tasks after the verifier do not run until the verifier completes or exhaustion-finalizes a generation.
 
-Alternative considered: overwrite the same `TaskInstance` on retry. This was rejected because it loses history and weakens auditability for agentic workflows.
+**5. Carry rerun feedback as dedicated execution metadata**
 
-**4. Persist logical verified Agent state beside materialized attempts**
+When a verifier returns `continue`, RunHelm persists the feedback and creates the next generation with orchestrator-owned loop context containing iteration, max iterations, latest feedback, and feedback history. This context is passed as dedicated execution metadata, not as an extra user-declared input.
 
-Verified Agent attempts should remain in `WorkflowInstance.tasks` keyed by materialized attempt ID. A separate verified Agent state index keyed by logical task ID should track attempt IDs, latest attempt, accepted or finalized attempt, feedback history, verifier status, and exit reason.
+Agent workers append the loop context to the prompt. Function and API tasks receive the execution request unchanged unless their executors explicitly support loop context later.
 
-Task result lookup should support both identities. Looking up `implementchange[1]` returns that exact historical attempt. Looking up `implementchange` resolves to the accepted or exhaustion-finalized attempt and includes the resolved attempt ID in the response.
+**6. Run verifier code in workers**
 
-Alternative considered: store attempts nested under one logical task instance. This was rejected because existing status and task result APIs already operate on task-instance IDs, and first-class attempts preserve direct observability.
+Verifier code should be inline, dependency-free, and executed by the worker after the verifier Agent output passes output schema validation. The verifier context should contain the verifier Agent output, generation index, max iterations, feedback history, and the selected upstream outputs needed by the verifier task.
 
-**5. Treat accepted/finalized attempt output as the binding source**
+The verifier must return `{ decision: "complete" }` or `{ decision: "continue", feedback: "<non-empty string>" }`.
 
-For a source task with verified attempts, data binding resolution should use the highest accepted attempt. If exhaustion policy is `continue`, the highest available attempt is finalized and becomes the binding source. If exhaustion policy is `fail`, no downstream binding is released.
+**7. Preserve observability**
 
-Alternative considered: propagate each attempt output immediately. This was rejected because downstream tasks could consume rejected Agent output.
-
-**6. Use explicit replay loop context for Agent memory**
-
-When the verifier returns `continue`, the next Agent attempt receives orchestrator-owned loop context at the configured input index. The context includes iteration, max iterations, latest feedback, and feedback history. This state is derived from persisted workflow state, not user-provided trigger input.
-
-Alternative considered: persist and resume provider-specific Agent sessions. This can be added later as an execution optimization, but it should not be required for correctness or reproducibility.
-
-**7. Keep non-verified workflows backward compatible**
-
-Agent tasks without verifiers and all non-Agent task kinds should retain current lifecycle and binding behavior. Existing status clients should continue to see ordinary task IDs for tasks without verified attempts.
+Rejected generations remain observable. A schema-valid task attempt in a rejected generation still has lifecycle status `Completed`; verifier status and generation selection are separate metadata. RunHelm does not roll back side effects from rejected generations.
 
 **8. Normalize workflow and task IDs before persistence**
 
-Workflow IDs and task IDs should be normalized to lowercase during registration and rejected unless they contain only ASCII alphanumeric characters. This reserves bracket syntax for generated attempt IDs such as `implementchange[1]` and avoids escaping rules in storage, binding resolution, and API lookup.
+Workflow IDs and task IDs should be normalized to lowercase during registration and rejected unless they contain only ASCII alphanumeric characters. This reserves bracket syntax for generated attempt IDs such as `task[2]`.
 
 ## Risks / Trade-offs
 
-- **Risk:** Attempt IDs introduce a second identifier shape for verified Agent tasks. -> Mitigate by documenting materialized IDs and retaining the original task definition ID on each attempt.
-- **Risk:** Verifier code can become a hidden place for complex business logic. -> Mitigate by disallowing dependencies and positioning verifier code as simple accept/continue logic.
-- **Risk:** Exhaustion with `continue` may allow lower-quality outputs through a verifier gate. -> Mitigate by making exhaustion policy explicit and recording the exit reason.
-- **Risk:** Loop context input can conflict with existing Agent schemas. -> Mitigate by making `loop_context_input_index` explicit and requiring matching input schema when used.
-- **Risk:** Startup recovery must handle materialized Agent attempts left `Running` or verifying. -> Mitigate by applying recovery to all non-terminal materialized attempts.
-- **Risk:** Rejected Agent attempts may have already produced side effects. -> Mitigate by documenting that RunHelm does not roll back side effects; workflow authors must account for side-effect safety.
+- **Risk:** Rerun slices can be ambiguous in branching graphs. -> Mitigate by validating that `on_failure_rerun_task` is an upstream ancestor of the verifier and by defining generation scoping for all tasks reachable from the rerun task to the verifier.
+- **Risk:** Re-executing tasks can repeat side effects. -> Mitigate by retaining rejected generations as audit history and documenting that workflow authors must make rerun slices side-effect-safe.
+- **Risk:** Bounded backedges are less visually obvious than an explicit loop body. -> Mitigate with status/read APIs that expose generations and verifier decisions.
+- **Risk:** Exhaustion with continue can allow lower-quality outputs through. -> Mitigate by requiring explicit `on_exhausted_continue: true` and recording the exit reason.
 
 ## Migration Plan
 
 - Add verifier fields with serde defaults so existing serialized workflow definitions remain valid.
 - Normalize workflow and task IDs at registration and reject non-alphanumeric IDs.
-- Preserve current task instance keys for tasks without verifier-generated attempts.
-- Introduce materialized attempt IDs only for Agent tasks with verifier blocks.
-- Add logical verified Agent state with defaults so older workflow instances without that map remain readable.
+- Preserve current task instance keys for tasks outside verifier-controlled generation slices.
+- Introduce materialized generation IDs only for tasks participating in a bounded rerun slice.
+- Add generation state with defaults so older workflow instances remain readable.
 - Roll back by rejecting workflows with verifier blocks while leaving existing workflows unaffected.
