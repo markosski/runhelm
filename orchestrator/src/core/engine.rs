@@ -594,11 +594,27 @@ impl WorkflowEngine {
             })
             .unwrap_or_default();
         let latest_feedback = feedback_history.last().cloned();
+
+        let previous_output =
+            generation
+                .generation_index
+                .checked_sub(1)
+                .and_then(|previous_generation| {
+                    let previous_attempt_id = Self::generation_attempt_id(
+                        &generation.original_task_def_id,
+                        previous_generation,
+                    );
+                    instance
+                        .tasks
+                        .get(&previous_attempt_id)
+                        .and_then(|task| task.output_data.clone())
+                });
+
         let loop_context = LoopExecutionContext {
             generation: generation.generation_index,
             max_iterations: verifier.max_iterations,
             latest_feedback,
-            feedback_history: feedback_history.clone(),
+            previous_output,
         };
 
         let verifier_context = task_def.verifier.as_ref().map(|_| {

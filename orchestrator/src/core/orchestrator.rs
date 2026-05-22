@@ -468,9 +468,6 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
             if verifier.max_iterations == 0 {
                 anyhow::bail!("task {} verifier max_iterations must be positive", task.id);
             }
-            if !verifier.dependencies.is_empty() {
-                anyhow::bail!("task {} verifier dependencies are not supported", task.id);
-            }
             if verifier.code.trim().is_empty() {
                 anyhow::bail!(
                     "task {} verifier code must be inline and non-empty",

@@ -157,9 +157,17 @@ export class AgentExecutor implements TaskExecutor {
             }
         }
 
-        if (payload.execution_metadata?.loop_context) {
+        const loopContext = payload.execution_metadata?.loop_context;
+        if (loopContext?.latest_feedback || loopContext?.previous_output !== undefined) {
             logger.info('[AgentExecutor] Verifier feedback provided')
-            contextPrompt += `\n\nADDITIONAL CONTEXT FROM TASK VERIFIER:\n${JSON.stringify(payload.execution_metadata.loop_context, null, 2)}\n`;
+            contextPrompt += `\n\nVERIFIER-GUIDED RETRY CONTEXT:\n`;
+            contextPrompt += `This task is being re-executed because a downstream verifier rejected the previous generation. Use the verifier feedback to revise the result, and use the previous output as the most recent version produced by this same task.\n`;
+            if (loopContext.latest_feedback) {
+                contextPrompt += `\nMost recent verifier feedback:\n${loopContext.latest_feedback}\n`;
+            }
+            if (loopContext.previous_output !== undefined) {
+                contextPrompt += `\nMost recent previous output from this same task:\n${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
+            }
         }
 
         if (payload.input_provided) {
@@ -248,7 +256,6 @@ export class AgentExecutor implements TaskExecutor {
             `;
 
         if (payload.task.output_schema) {
-            const retryTimes = parseRetryTimes(agentDef.schema_failure_retry_times);
             agent.state.systemPrompt += `
             \n\n
             IMPORTANT: Your FINAL response must be valid JSON that adheres to the following schema:
@@ -260,8 +267,8 @@ export class AgentExecutor implements TaskExecutor {
             - Do NOT include any preamble like "Here is the result".
             - Do NOT wrap the JSON in markdown code blocks (e.g., no \`\`\`json).
             - The entire response must be parseable by JSON.parse().
-            If output_schema validation fails, you will be asked to correct the JSON. Retry up to ${retryTimes} time${retryTimes === 1 ? '' : 's'} and only return corrected raw JSON.
-            ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool instead of returning JSON." : ""}`;
+            If output_schema validation fails, you will be asked to correct the JSON.
+            ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool (if enabled) instead of returning JSON." : ""}`;
         }
 
         agent.state.systemPrompt += `
@@ -269,7 +276,13 @@ export class AgentExecutor implements TaskExecutor {
             NOTE: You are allowed and encouraged to use approved tools to gather information FIRST before producing the final response. 
         `;
 
-        logger.info(`Final prompt: \n ${agent.state.systemPrompt}`);
+        logger.info(
+            {
+                userPrompt: finalPrompt,
+                systemPromptLength: agent.state.systemPrompt.length,
+            },
+            "[AgentExecutor] Final agent prompt"
+        );
 
         agent.state.tools = approvedTools.map((approvedTool) => approvedTool.tool);
 
@@ -378,7 +391,7 @@ function buildVerifierContext(payload: TaskExecutionPayload, output: JsonValue):
         output,
         generation: metadataContext?.generation ?? payload.execution_metadata?.loop_context?.generation ?? 1,
         max_iterations: metadataContext?.max_iterations ?? payload.task.verifier?.max_iterations ?? 1,
-        feedback_history: metadataContext?.feedback_history ?? payload.execution_metadata?.loop_context?.feedback_history ?? [],
+        feedback_history: metadataContext?.feedback_history ?? [],
         upstream_context: metadataContext?.upstream_context ?? {},
     };
 }

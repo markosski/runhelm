@@ -40,7 +40,7 @@ export interface LoopExecutionContext {
     generation: number;
     max_iterations: number;
     latest_feedback?: string;
-    feedback_history: string[];
+    previous_output?: any;
 }
 
 export interface VerifierExecutionContext {

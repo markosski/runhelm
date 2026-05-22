@@ -50,8 +50,6 @@ pub struct AgentVerifierConfig {
     pub on_exhausted_continue: bool,
     pub on_failure_rerun_task: String,
     pub code: String,
-    #[serde(default)]
-    pub dependencies: Vec<FunctionDependency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,8 +212,8 @@ pub struct LoopExecutionContext {
     pub max_iterations: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_feedback: Option<String>,
-    #[serde(default)]
-    pub feedback_history: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

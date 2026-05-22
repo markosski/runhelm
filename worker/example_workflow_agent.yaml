@@ -1,35 +1,6 @@
 id: simpleagentworkflow
 
 tasks:
-  - id: test
-    kind:
-      Agent:
-        model_id: "google/gemini-3-flash-preview"
-        provider_url: ""
-        prompt: |
-          Perform the following actions:
-          - Use curl to access www.marcinkossakowski.com
-          - Download the content to /tmp/marcin.html
-          - Extract the title of the page and return as response
-
-          {
-            "response": "summary text including the close date, close price, trend direction, and source",
-          }
-        tools: ["read", "write", "edit"]
-        skills: []
-        ask: false
-        schema_failure_retry_times: 2
-    input_schemas: []
-    output_schema:
-      type: object
-      required:
-        - response
-      properties:
-        response:
-          type: string
-    expected_side_effects: []
-    required_credentials:
-      - llm_api_key
   - id: pullstocks
     kind:
       Agent:
