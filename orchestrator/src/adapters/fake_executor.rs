@@ -96,6 +96,7 @@ mod tests {
                 url: "http://example.com".to_string(),
                 method: "GET".to_string(),
             },
+            verifier: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(schema),

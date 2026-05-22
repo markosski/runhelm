@@ -20,6 +20,7 @@ export interface FunctionDependency {
 export interface TaskDef {
     id: string;
     kind: TaskKind;
+    verifier?: AgentVerifierConfig;
     timeout_secs?: number;
     input_schemas: any[];
     output_schema?: any;
@@ -27,8 +28,43 @@ export interface TaskDef {
     required_credentials: string[];
 }
 
+export interface AgentVerifierConfig {
+    max_iterations: number;
+    on_exhausted_continue: boolean;
+    on_failure_rerun_task: string;
+    code: string;
+    dependencies?: FunctionDependency[];
+}
+
+export interface LoopExecutionContext {
+    generation: number;
+    max_iterations: number;
+    latest_feedback?: string;
+    feedback_history: string[];
+}
+
+export interface VerifierExecutionContext {
+    output: any;
+    generation: number;
+    max_iterations: number;
+    feedback_history: string[];
+    upstream_context: Record<string, any>;
+}
+
+export interface ExecutionMetadata {
+    loop_context?: LoopExecutionContext;
+    verifier_context?: VerifierExecutionContext;
+}
+
+export interface VerifierExecutionResult {
+    decision: 'continue' | 'complete';
+    feedback?: string;
+    output: any;
+}
+
 export interface TaskExecutionPayload {
     task: TaskDef;
     inputs: any[];
+    execution_metadata?: ExecutionMetadata;
     input_provided?: string;
 }

@@ -104,6 +104,7 @@ pub async fn trigger_workflow_instance(
         workflow_def_id,
         status: WorkflowStatus::Pending,
         tasks: HashMap::new(),
+        verifier_states: HashMap::new(),
     };
 
     state
@@ -229,6 +230,24 @@ pub async fn get_task_result(
     }
 }
 
+pub async fn get_task_result_generation(
+    State(state): State<AppState>,
+    Path((workflow_instance_id, task_id, generation)): Path<(String, String, u32)>,
+) -> Result<Json<Value>, StatusCode> {
+    match state
+        .orchestrator
+        .get_task_result_for_generation(&workflow_instance_id, &task_id, Some(generation))
+        .await
+    {
+        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap())),
+        Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
+        Err(error) if error.to_string().contains("generation must be positive") => {
+            Err(StatusCode::BAD_REQUEST)
+        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct WorkerClaimRequest {
     worker_id: String,
@@ -295,6 +314,11 @@ fn execution_result_to_value(result: ExecutionResult) -> Value {
         ExecutionResult::Success(output) => json!({
             "status": "success",
             "output": output
+        }),
+        ExecutionResult::SuccessWithVerifier { output, verifier } => json!({
+            "status": "success",
+            "output": output,
+            "verifier": verifier
         }),
         ExecutionResult::InputNeeded(description) => json!({
             "status": "input_needed",

@@ -4,7 +4,7 @@ import type { JsonValue } from 'type-fest';
 export type { JsonValue };
 
 export type TaskExecutionResult =
-    | { status: 'ok'; output: JsonValue }
+    | { status: 'ok'; output: JsonValue; verifier?: import('../models/TaskDef.js').VerifierExecutionResult }
     | { status: 'error'; message: string; code?: string | null }
     | { status: 'input_needed'; description: string };
 

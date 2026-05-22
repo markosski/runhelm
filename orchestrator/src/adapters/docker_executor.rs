@@ -1,5 +1,5 @@
 use crate::adapters::worker_pool::WorkerPool;
-use crate::core::models::TaskDef;
+use crate::core::models::{ExecutionMetadata, TaskDef};
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -30,13 +30,23 @@ impl DockerExecutor {
 #[async_trait]
 impl ExecutorPort for DockerExecutor {
     async fn execute(&self, task: &TaskDef, inputs: &[Value]) -> anyhow::Result<ExecutionResult> {
+        self.execute_with_metadata(task, inputs, &ExecutionMetadata::default())
+            .await
+    }
+
+    async fn execute_with_metadata(
+        &self,
+        task: &TaskDef,
+        inputs: &[Value],
+        metadata: &ExecutionMetadata,
+    ) -> anyhow::Result<ExecutionResult> {
         let task_timeout = task
             .timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(self.task_timeout);
 
         self.worker_pool
-            .enqueue_task(task, inputs, task_timeout)
+            .enqueue_task_with_metadata(task, inputs, task_timeout, metadata.clone())
             .await
     }
 }
@@ -65,6 +75,7 @@ mod tests {
                     code: "return 1".to_string(),
                 },
             ),
+            verifier: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
@@ -97,6 +108,7 @@ mod tests {
                     code: "return 1".to_string(),
                 },
             ),
+            verifier: None,
             timeout_secs: Some(1),
             input_schemas: vec![],
             output_schema: None,

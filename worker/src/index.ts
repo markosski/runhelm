@@ -40,7 +40,7 @@ type ResultAckMessage = {
 };
 
 type WorkerExecutionResult =
-    | { kind: 'success'; output: unknown }
+    | { kind: 'success'; output: unknown; verifier?: unknown }
     | { kind: 'input_needed'; description: string }
     | { kind: 'failure'; reason: string };
 
@@ -67,7 +67,7 @@ function createWorkerId(): string {
 function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult {
     switch (result.status) {
         case 'ok':
-            return { kind: 'success', output: result.output };
+            return { kind: 'success', output: result.output, verifier: result.verifier };
         case 'input_needed':
             return { kind: 'input_needed', description: result.description };
         case 'error':

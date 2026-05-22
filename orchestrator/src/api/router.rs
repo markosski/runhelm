@@ -46,6 +46,10 @@ pub fn create_public_router(orchestrator: Arc<Orchestrator>, worker_pool: Worker
         .route("/workflows", get(handlers::list_workflows))
         .route("/workflows/{id}", get(handlers::get_workflow_instance))
         .route(
+            "/workflows/{workflow_instance_id}/tasks/{task_id}/{generation}",
+            get(handlers::get_task_result_generation),
+        )
+        .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
         )

@@ -1,4 +1,6 @@
-use crate::core::models::{FunctionDef, WorkflowDef, WorkflowInstance};
+use crate::core::models::{
+    FunctionDef, TaskGenerationMetadata, VerifierAttemptMetadata, WorkflowDef, WorkflowInstance,
+};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
@@ -6,9 +8,51 @@ use serde::ser::{SerializeMap, Serializer};
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskResult {
     Success(serde_json::Value),
-    Failure { error_message: String },
+    SuccessWithMetadata {
+        output: serde_json::Value,
+        metadata: TaskResultMetadata,
+    },
+    Failure {
+        error_message: String,
+    },
+    FailureWithMetadata {
+        error_message: String,
+        metadata: TaskResultMetadata,
+    },
     Pending,
+    PendingWithMetadata {
+        metadata: TaskResultMetadata,
+    },
     Running,
+    RunningWithMetadata {
+        metadata: TaskResultMetadata,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskResultMetadata {
+    pub requested_task_id: String,
+    pub resolved_attempt_id: String,
+    pub generation: Option<TaskGenerationMetadata>,
+    pub verifier_metadata: Option<VerifierAttemptMetadata>,
+}
+
+fn serialize_metadata<S>(
+    map: &mut S,
+    metadata: &TaskResultMetadata,
+) -> Result<(), <S as SerializeMap>::Error>
+where
+    S: SerializeMap,
+{
+    map.serialize_entry("requested_task_id", &metadata.requested_task_id)?;
+    map.serialize_entry("resolved_attempt_id", &metadata.resolved_attempt_id)?;
+    if let Some(generation) = &metadata.generation {
+        map.serialize_entry("generation", generation)?;
+    }
+    if let Some(verifier_metadata) = &metadata.verifier_metadata {
+        map.serialize_entry("verifier_metadata", verifier_metadata)?;
+    }
+    Ok(())
 }
 
 impl Serialize for TaskResult {
@@ -23,10 +67,27 @@ impl Serialize for TaskResult {
                 map.serialize_entry("output", output)?;
                 map.end()
             }
+            TaskResult::SuccessWithMetadata { output, metadata } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "success")?;
+                map.serialize_entry("output", output)?;
+                serialize_metadata(&mut map, metadata)?;
+                map.end()
+            }
             TaskResult::Failure { error_message } => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("status", "failure")?;
                 map.serialize_entry("error_message", error_message)?;
+                map.end()
+            }
+            TaskResult::FailureWithMetadata {
+                error_message,
+                metadata,
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "failure")?;
+                map.serialize_entry("error_message", error_message)?;
+                serialize_metadata(&mut map, metadata)?;
                 map.end()
             }
             TaskResult::Pending => {
@@ -34,9 +95,21 @@ impl Serialize for TaskResult {
                 map.serialize_entry("status", "pending")?;
                 map.end()
             }
+            TaskResult::PendingWithMetadata { metadata } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "pending")?;
+                serialize_metadata(&mut map, metadata)?;
+                map.end()
+            }
             TaskResult::Running => {
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry("status", "running")?;
+                map.end()
+            }
+            TaskResult::RunningWithMetadata { metadata } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "running")?;
+                serialize_metadata(&mut map, metadata)?;
                 map.end()
             }
         }

@@ -2,8 +2,10 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
-use crate::core::models::{FunctionDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowStatus};
-use crate::ports::storage::{StoragePort, TaskResult};
+use crate::core::models::{
+    FunctionDef, TaskStatus, VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus,
+};
+use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata};
 
 pub struct MemoryStorage {
     workflow_defs: RwLock<HashMap<String, WorkflowDef>>,
@@ -63,16 +65,38 @@ impl StoragePort for MemoryStorage {
             .tasks
             .get(task_id)
             .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
+        let metadata = (task.generation.is_some() || task.verifier_metadata.is_some()).then(|| {
+            TaskResultMetadata {
+                requested_task_id: task_id.to_string(),
+                resolved_attempt_id: task_id.to_string(),
+                generation: task.generation.clone(),
+                verifier_metadata: task.verifier_metadata.clone(),
+            }
+        });
 
-        match &task.status {
-            TaskStatus::Completed => Ok(TaskResult::Success(
+        match (&task.status, metadata) {
+            (TaskStatus::Completed, Some(metadata)) => Ok(TaskResult::SuccessWithMetadata {
+                output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
+                metadata,
+            }),
+            (TaskStatus::Completed, None) => Ok(TaskResult::Success(
                 task.output_data.clone().unwrap_or(serde_json::Value::Null),
             )),
-            TaskStatus::Failed => Ok(TaskResult::Failure {
+            (TaskStatus::Failed, Some(metadata)) => Ok(TaskResult::FailureWithMetadata {
+                error_message: "task failed".to_string(),
+                metadata,
+            }),
+            (TaskStatus::Failed, None) => Ok(TaskResult::Failure {
                 error_message: "task failed".to_string(),
             }),
-            TaskStatus::Pending => Ok(TaskResult::Pending),
-            TaskStatus::Running | TaskStatus::InputNeeded { .. } => Ok(TaskResult::Running),
+            (TaskStatus::Pending, Some(metadata)) => {
+                Ok(TaskResult::PendingWithMetadata { metadata })
+            }
+            (TaskStatus::Pending, None) => Ok(TaskResult::Pending),
+            (TaskStatus::Running | TaskStatus::InputNeeded { .. }, Some(metadata)) => {
+                Ok(TaskResult::RunningWithMetadata { metadata })
+            }
+            (TaskStatus::Running | TaskStatus::InputNeeded { .. }, None) => Ok(TaskResult::Running),
         }
     }
 
@@ -104,6 +128,10 @@ impl StoragePort for MemoryStorage {
                     .tasks
                     .values()
                     .any(|task| matches!(task.status, TaskStatus::Pending | TaskStatus::Running))
+                    || instance
+                        .verifier_states
+                        .values()
+                        .any(|state| state.status == VerifierStateStatus::Running)
             })
             .cloned()
             .collect())
@@ -123,6 +151,8 @@ mod tests {
             input_data: vec![],
             output_data,
             recorded_side_effects: vec![],
+            generation: None,
+            verifier_metadata: None,
         }
     }
 
@@ -151,6 +181,7 @@ mod tests {
                     task_instance(TaskStatus::Failed, None),
                 ),
             ]),
+            verifier_states: HashMap::new(),
         };
         storage.save_workflow_instance(instance).await.unwrap();
 
@@ -194,12 +225,14 @@ mod tests {
             workflow_def_id: "workflow-1".to_string(),
             status: WorkflowStatus::Completed,
             tasks: HashMap::new(),
+            verifier_states: HashMap::new(),
         };
         let running = WorkflowInstance {
             id: "running-instance".to_string(),
             workflow_def_id: "workflow-1".to_string(),
             status: WorkflowStatus::Running,
             tasks: HashMap::new(),
+            verifier_states: HashMap::new(),
         };
 
         storage.save_workflow_instance(completed).await.unwrap();

@@ -1,4 +1,4 @@
-use crate::core::models::TaskDef;
+use crate::core::models::{ExecutionMetadata, TaskDef, VerifierExecutionResult};
 use crate::ports::executor::ExecutionResult;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,8 @@ pub struct TaskDispatch {
     pub task: TaskDef,
     #[serde(default)]
     pub inputs: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub execution_metadata: ExecutionMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,15 +36,30 @@ pub struct TaskResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerExecutionResult {
-    Success { output: serde_json::Value },
-    InputNeeded { description: String },
-    Failure { reason: String },
+    Success {
+        output: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verifier: Option<VerifierExecutionResult>,
+    },
+    InputNeeded {
+        description: String,
+    },
+    Failure {
+        reason: String,
+    },
 }
 
 impl From<ExecutionResult> for WorkerExecutionResult {
     fn from(value: ExecutionResult) -> Self {
         match value {
-            ExecutionResult::Success(output) => Self::Success { output },
+            ExecutionResult::Success(output) => Self::Success {
+                output,
+                verifier: None,
+            },
+            ExecutionResult::SuccessWithVerifier { output, verifier } => Self::Success {
+                output,
+                verifier: Some(verifier),
+            },
             ExecutionResult::InputNeeded(description) => Self::InputNeeded { description },
             ExecutionResult::Failure(reason) => Self::Failure { reason },
         }
@@ -52,7 +69,13 @@ impl From<ExecutionResult> for WorkerExecutionResult {
 impl From<WorkerExecutionResult> for ExecutionResult {
     fn from(value: WorkerExecutionResult) -> Self {
         match value {
-            WorkerExecutionResult::Success { output } => Self::Success(output),
+            WorkerExecutionResult::Success { output, verifier } => {
+                if let Some(verifier) = verifier {
+                    Self::SuccessWithVerifier { output, verifier }
+                } else {
+                    Self::Success(output)
+                }
+            }
             WorkerExecutionResult::InputNeeded { description } => Self::InputNeeded(description),
             WorkerExecutionResult::Failure { reason } => Self::Failure(reason),
         }
@@ -150,6 +173,17 @@ impl WorkerPool {
         inputs: &[serde_json::Value],
         timeout: Duration,
     ) -> anyhow::Result<ExecutionResult> {
+        self.enqueue_task_with_metadata(task, inputs, timeout, ExecutionMetadata::default())
+            .await
+    }
+
+    pub async fn enqueue_task_with_metadata(
+        &self,
+        task: &TaskDef,
+        inputs: &[serde_json::Value],
+        timeout: Duration,
+        execution_metadata: ExecutionMetadata,
+    ) -> anyhow::Result<ExecutionResult> {
         let task_id = format!(
             "{}-{}",
             task.id,
@@ -164,6 +198,7 @@ impl WorkerPool {
                 task_id: task_id.clone(),
                 task: task.clone(),
                 inputs: inputs.to_vec(),
+                execution_metadata,
             },
             result_tx,
             claimed_tx,
@@ -361,6 +396,7 @@ mod tests {
                 task_id: claimed.task_id,
                 result: WorkerExecutionResult::Success {
                     output: json!({"worker": "worker-1"}),
+                    verifier: None,
                 },
             },
         )
@@ -404,6 +440,7 @@ mod tests {
                 task_id: claimed.task_id,
                 result: WorkerExecutionResult::Success {
                     output: json!({"worker": "worker-1"}),
+                    verifier: None,
                 },
             },
         )
@@ -493,6 +530,7 @@ mod tests {
                 dependencies: vec![],
                 code: "return 1".to_string(),
             }),
+            verifier: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,

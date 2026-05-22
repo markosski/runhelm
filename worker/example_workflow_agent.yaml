@@ -1,4 +1,4 @@
-id: simple-agent-workflow
+id: simpleagentworkflow
 
 tasks:
   - id: test
@@ -30,7 +30,7 @@ tasks:
     expected_side_effects: []
     required_credentials:
       - llm_api_key
-  - id: pull_stocks
+  - id: pullstocks
     kind:
       Agent:
         model_id: "google/gemini-3-flash-preview"
@@ -77,8 +77,52 @@ tasks:
     expected_side_effects: []
     required_credentials:
       - llm_api_key
+  - id: verify
+    kind:
+      Agent:
+        model_id: "google/gemini-3-flash-preview"
+        provider_url: ""
+        prompt: |
+          Verify provided information ensuring proper format, currency, date formatting etc.
+          - ensure currency fields are in dollars, e.g. $150.00
+          - ensure date fields are in YYYY-MM-DD format, e.g. 2026-10-02
+          - return a JSON response string starting with "VALID:" when the input is acceptable
+          - return a JSON response string starting with "INVALID:" followed by concrete correction feedback when the input needs to be regenerated
+        tools: []
+        skills: []
+        ask: false
+        schema_failure_retry_times: 2
+    verifier:
+      max_iterations: 3
+      on_exhausted_continue: false
+      on_failure_rerun_task: pullstocks
+      code: |
+        export default async function verify(ctx) {
+          const response = String(ctx.output?.response ?? "").trim();
+
+          if (/^VALID:/i.test(response)) {
+            return { decision: "complete" };
+          }
+
+          const feedback = response.replace(/^INVALID:\s*/i, "").trim();
+          return {
+            decision: "continue",
+            feedback: feedback || "Regenerate the stock summary with dollar-formatted prices and YYYY-MM-DD dates."
+          };
+        }
+    input_schemas: []
+    output_schema:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: string
+    expected_side_effects: []
+    required_credentials:
+      - llm_api_key
 
 data_bindings:
-  - source_task_id: fetch_user
-    target_task_id: summarize_user
+  - source_task_id: pullstocks
+    target_task_id: verify
     target_input_index: 0

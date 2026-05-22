@@ -1,10 +1,13 @@
 use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
-    TaskStatus, TaskStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus,
-    WorkflowStatusReport,
+    ExecutionMetadata, LoopExecutionContext, TaskGenerationMetadata, TaskInstance, TaskStatus,
+    TaskStatusReport, VerifierAttemptMetadata, VerifierAttemptStatus, VerifierDecision,
+    VerifierExecutionContext, VerifierGenerationState, VerifierStateStatus, VerifierStatusReport,
+    WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport,
 };
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub struct WorkflowEngine {
@@ -36,19 +39,37 @@ impl WorkflowEngine {
             .iter()
             .map(|(id, t)| TaskStatusReport {
                 task_id: id.clone(),
+                task_def_id: t.task_def_id.clone(),
                 status: t.status.clone(),
                 has_output: t.output_data.is_some(),
+                generation: t.generation.clone(),
+                verifier_metadata: t.verifier_metadata.clone(),
             })
             .collect();
 
         // Sort for deterministic ordering.
         tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+        let mut verifier_states: Vec<VerifierStatusReport> = instance
+            .verifier_states
+            .values()
+            .map(|state| VerifierStatusReport {
+                verifier_task_id: state.verifier_task_id.clone(),
+                rerun_start_task_id: state.rerun_start_task_id.clone(),
+                latest_generation: state.latest_generation,
+                selected_generation: state.selected_generation,
+                status: state.status.clone(),
+                feedback_count: state.feedback_history.len(),
+                exit_reason: state.exit_reason.clone(),
+            })
+            .collect();
+        verifier_states.sort_by(|a, b| a.verifier_task_id.cmp(&b.verifier_task_id));
 
         Ok(Some(WorkflowStatusReport {
             instance_id: instance.id,
             workflow_def_id: instance.workflow_def_id,
             status: instance.status,
             tasks,
+            verifier_states,
         }))
     }
 
@@ -72,17 +93,25 @@ impl WorkflowEngine {
             .save_workflow_instance(instance.clone())
             .await?;
 
+        let loop_slices = self.compute_loop_slices(&def);
+        let loop_task_to_verifier = self.loop_task_to_verifier(&loop_slices);
+
         // Initialize tasks if not already done
         if instance.tasks.is_empty() {
             for task_def in &def.tasks {
+                if loop_task_to_verifier.contains_key(&task_def.id) {
+                    continue;
+                }
                 instance.tasks.insert(
                     task_def.id.clone(),
-                    crate::core::models::TaskInstance {
+                    TaskInstance {
                         task_def_id: task_def.id.clone(),
                         status: TaskStatus::Pending,
                         input_data: vec![], // Empty until upstream dependencies propagate data
                         output_data: None,
                         recorded_side_effects: vec![],
+                        generation: None,
+                        verifier_metadata: None,
                     },
                 );
             }
@@ -96,12 +125,22 @@ impl WorkflowEngine {
         while progress_made {
             progress_made = false;
 
+            if self.materialize_eligible_generations(&mut instance, &def, &loop_slices) {
+                progress_made = true;
+            }
+
             let mut tasks_to_run = Vec::new();
 
             for (task_id, task_instance) in instance.tasks.iter() {
                 if task_instance.status == TaskStatus::Pending {
-                    let task_def = def.tasks.iter().find(|t| t.id == *task_id).unwrap();
-                    let can_run = self.are_inputs_satisfied(&instance, &def, task_def);
+                    let task_def = def
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == task_instance.task_def_id)
+                        .unwrap();
+                    let can_run = self
+                        .resolve_inputs(&instance, &def, task_id, task_instance, task_def)
+                        .is_some();
                     if can_run {
                         tasks_to_run.push(task_id.clone());
                     }
@@ -115,25 +154,58 @@ impl WorkflowEngine {
                 }
                 progress_made = true;
 
-                let task_def = def.tasks.iter().find(|t| t.id == task_id).unwrap();
-
-                // Collect already-propagated inputs for this task (empty slice if none yet).
-                let inputs: Vec<serde_json::Value> = instance
+                let task_instance = instance.tasks.get(&task_id).cloned().unwrap();
+                let task_def = def
                     .tasks
-                    .get(&task_id)
-                    .map(|t| t.input_data.clone())
+                    .iter()
+                    .find(|t| t.id == task_instance.task_def_id)
+                    .unwrap();
+
+                let inputs = self
+                    .resolve_inputs(&instance, &def, &task_id, &task_instance, task_def)
                     .unwrap_or_default();
+                let metadata =
+                    self.execution_metadata(&instance, &def, &task_id, &task_instance, task_def);
+                if let Some(task) = instance.tasks.get_mut(&task_id) {
+                    task.input_data = inputs.clone();
+                }
 
                 let execution_result =
                     match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
                         Ok(resolved_task_def) => {
-                            self.executor.execute(&resolved_task_def, &inputs).await
+                            self.executor
+                                .execute_with_metadata(&resolved_task_def, &inputs, &metadata)
+                                .await
                         }
                         Err(error) => Err(error),
                     };
 
                 match execution_result {
-                    Ok(ExecutionResult::Success(output)) => {
+                    Ok(result) => {
+                        let (output, verifier_result) = match result {
+                            ExecutionResult::Success(output) => (output, None),
+                            ExecutionResult::SuccessWithVerifier { output, verifier } => {
+                                (output, Some(verifier))
+                            }
+                            ExecutionResult::InputNeeded(description) => {
+                                if let Some(task) = instance.tasks.get_mut(&task_id) {
+                                    task.status = TaskStatus::InputNeeded { description };
+                                }
+                                instance.status = WorkflowStatus::InputNeeded;
+                                continue;
+                            }
+                            ExecutionResult::Failure(reason) => {
+                                if let Some(task) = instance.tasks.get_mut(&task_id) {
+                                    task.status = TaskStatus::Failed;
+                                }
+                                instance.status = WorkflowStatus::Failed;
+                                self.storage
+                                    .save_workflow_instance(instance.clone())
+                                    .await?;
+                                anyhow::bail!("Task execution failed: {}", reason);
+                            }
+                        };
+
                         // Validate against output_schema if one is defined; skip for side-effect-only tasks.
                         let schema_ok = match &task_def.output_schema {
                             Some(schema) => match jsonschema::validator_for(schema) {
@@ -151,7 +223,43 @@ impl WorkflowEngine {
                                     task.output_data = Some(output.clone());
                                 }
                             }
-                            self.propagate_data(&mut instance, &def, &task_id, &output);
+                            if task_def.verifier.is_some() {
+                                let Some(verifier_result) = verifier_result else {
+                                    if let Some(task) = instance.tasks.get_mut(&task_id) {
+                                        task.status = TaskStatus::Failed;
+                                        task.verifier_metadata = Some(VerifierAttemptMetadata {
+                                            status: VerifierAttemptStatus::Invalid,
+                                            decision: None,
+                                            feedback: None,
+                                            verifier_output: None,
+                                            exit_reason: Some(
+                                                "verifier task completed without verifier result"
+                                                    .to_string(),
+                                            ),
+                                        });
+                                    }
+                                    instance.status = WorkflowStatus::Failed;
+                                    self.storage
+                                        .save_workflow_instance(instance.clone())
+                                        .await?;
+                                    anyhow::bail!(
+                                        "Verifier task completed without verifier result"
+                                    );
+                                };
+                                if let Err(error) = self.apply_verifier_result(
+                                    &mut instance,
+                                    &def,
+                                    &loop_slices,
+                                    &task_id,
+                                    &output,
+                                    verifier_result,
+                                ) {
+                                    self.storage
+                                        .save_workflow_instance(instance.clone())
+                                        .await?;
+                                    return Err(error);
+                                }
+                            }
                         } else {
                             if let Some(task) = instance.tasks.get_mut(&task_id) {
                                 task.status = TaskStatus::Failed;
@@ -162,22 +270,6 @@ impl WorkflowEngine {
                                 .await?;
                             anyhow::bail!("Task output failed schema validation");
                         }
-                    }
-                    Ok(ExecutionResult::InputNeeded(description)) => {
-                        if let Some(task) = instance.tasks.get_mut(&task_id) {
-                            task.status = TaskStatus::InputNeeded { description };
-                        }
-                        instance.status = WorkflowStatus::InputNeeded;
-                    }
-                    Ok(ExecutionResult::Failure(reason)) => {
-                        if let Some(task) = instance.tasks.get_mut(&task_id) {
-                            task.status = TaskStatus::Failed;
-                        }
-                        instance.status = WorkflowStatus::Failed;
-                        self.storage
-                            .save_workflow_instance(instance.clone())
-                            .await?;
-                        anyhow::bail!("Task execution failed: {}", reason);
                     }
                     Err(e) => {
                         if let Some(task) = instance.tasks.get_mut(&task_id) {
@@ -200,7 +292,13 @@ impl WorkflowEngine {
         let all_completed = instance
             .tasks
             .values()
-            .all(|t| t.status == TaskStatus::Completed);
+            .all(|t| t.status == TaskStatus::Completed)
+            && instance.verifier_states.values().all(|state| {
+                matches!(
+                    state.status,
+                    VerifierStateStatus::Accepted | VerifierStateStatus::ExhaustedAccepted
+                )
+            });
         if all_completed {
             instance.status = WorkflowStatus::Completed;
             self.storage.save_workflow_instance(instance).await?;
@@ -209,88 +307,488 @@ impl WorkflowEngine {
         Ok(())
     }
 
-    fn are_inputs_satisfied(
+    fn compute_loop_slices(&self, def: &WorkflowDef) -> HashMap<String, Vec<String>> {
+        let mut slices = HashMap::new();
+        for verifier_task in def.tasks.iter().filter(|task| task.verifier.is_some()) {
+            let verifier = verifier_task.verifier.as_ref().unwrap();
+            let from_start = self.reachable_from(def, &verifier.on_failure_rerun_task);
+            let to_verifier = self.can_reach_target_set(def, &verifier_task.id);
+            let slice = def
+                .tasks
+                .iter()
+                .filter_map(|task| {
+                    (from_start.contains(&task.id) && to_verifier.contains(&task.id))
+                        .then_some(task.id.clone())
+                })
+                .collect::<Vec<_>>();
+            slices.insert(verifier_task.id.clone(), slice);
+        }
+        slices
+    }
+
+    fn loop_task_to_verifier(
+        &self,
+        loop_slices: &HashMap<String, Vec<String>>,
+    ) -> HashMap<String, String> {
+        let mut task_to_verifier = HashMap::new();
+        for (verifier_id, slice) in loop_slices {
+            for task_id in slice {
+                task_to_verifier.insert(task_id.clone(), verifier_id.clone());
+            }
+        }
+        task_to_verifier
+    }
+
+    fn reachable_from(&self, def: &WorkflowDef, start: &str) -> HashSet<String> {
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for binding in &def.data_bindings {
+            adjacency
+                .entry(binding.source_task_id.clone())
+                .or_default()
+                .push(binding.target_task_id.clone());
+        }
+        self.walk_graph(start, &adjacency)
+    }
+
+    fn can_reach_target_set(&self, def: &WorkflowDef, target: &str) -> HashSet<String> {
+        let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
+        for binding in &def.data_bindings {
+            reverse
+                .entry(binding.target_task_id.clone())
+                .or_default()
+                .push(binding.source_task_id.clone());
+        }
+        self.walk_graph(target, &reverse)
+    }
+
+    fn walk_graph(&self, start: &str, adjacency: &HashMap<String, Vec<String>>) -> HashSet<String> {
+        let mut seen = HashSet::new();
+        let mut stack = vec![start.to_string()];
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            if let Some(next) = adjacency.get(&current) {
+                stack.extend(next.iter().cloned());
+            }
+        }
+        seen
+    }
+
+    fn materialize_eligible_generations(
+        &self,
+        instance: &mut WorkflowInstance,
+        def: &WorkflowDef,
+        loop_slices: &HashMap<String, Vec<String>>,
+    ) -> bool {
+        let mut changed = false;
+        for (verifier_task_id, slice) in loop_slices {
+            if instance.verifier_states.contains_key(verifier_task_id) {
+                continue;
+            }
+            let Some(verifier_task) = def.tasks.iter().find(|task| task.id == *verifier_task_id)
+            else {
+                continue;
+            };
+            let Some(verifier) = verifier_task.verifier.as_ref() else {
+                continue;
+            };
+            let Some(start_task) = def
+                .tasks
+                .iter()
+                .find(|task| task.id == verifier.on_failure_rerun_task)
+            else {
+                continue;
+            };
+
+            if !self.logical_task_ready_outside_slice(
+                instance,
+                def,
+                start_task,
+                slice.as_slice(),
+                loop_slices,
+            ) {
+                continue;
+            }
+
+            instance.verifier_states.insert(
+                verifier_task_id.clone(),
+                VerifierGenerationState {
+                    verifier_task_id: verifier_task_id.clone(),
+                    rerun_start_task_id: verifier.on_failure_rerun_task.clone(),
+                    latest_generation: 1,
+                    selected_generation: None,
+                    feedback_history: vec![],
+                    status: VerifierStateStatus::Running,
+                    exit_reason: None,
+                },
+            );
+            self.materialize_generation(instance, slice, 1);
+            changed = true;
+        }
+        changed
+    }
+
+    fn logical_task_ready_outside_slice(
         &self,
         instance: &WorkflowInstance,
         def: &WorkflowDef,
         task_def: &crate::core::models::TaskDef,
+        slice: &[String],
+        loop_slices: &HashMap<String, Vec<String>>,
     ) -> bool {
-        // A task's inputs are satisfied if all of its upstream dependencies have Completed
-        for binding in &def.data_bindings {
-            if binding.target_task_id == task_def.id {
-                if let Some(source_task) = instance.tasks.get(&binding.source_task_id) {
-                    if source_task.status != TaskStatus::Completed {
-                        return false;
-                    }
+        def.data_bindings
+            .iter()
+            .filter(|binding| binding.target_task_id == task_def.id)
+            .all(|binding| {
+                if slice.contains(&binding.source_task_id) {
+                    return true;
                 }
-            }
-        }
-        true
+                self.resolve_source_attempt_id(instance, loop_slices, None, &binding.source_task_id)
+                    .and_then(|source_id| instance.tasks.get(&source_id))
+                    .is_some_and(|task| task.status == TaskStatus::Completed)
+            })
     }
 
-    fn propagate_data(
+    fn materialize_generation(
         &self,
         instance: &mut WorkflowInstance,
-        def: &WorkflowDef,
-        source_id: &str,
-        output: &serde_json::Value,
+        slice: &[String],
+        generation_index: u32,
     ) {
-        // Propagate output data to the inputs of downstream tasks
-        for binding in &def.data_bindings {
-            if binding.source_task_id == source_id {
-                let target_id = &binding.target_task_id;
-                if let Some(target_task) = instance.tasks.get_mut(target_id) {
-                    // Expand vec to fit the target index
-                    while target_task.input_data.len() <= binding.target_input_index {
-                        target_task.input_data.push(serde_json::Value::Null);
-                    }
-                    target_task.input_data[binding.target_input_index] = output.clone();
-                }
-            }
+        for task_def_id in slice {
+            let attempt_id = Self::generation_attempt_id(task_def_id, generation_index);
+            instance
+                .tasks
+                .entry(attempt_id.clone())
+                .or_insert_with(|| TaskInstance {
+                    task_def_id: task_def_id.clone(),
+                    status: TaskStatus::Pending,
+                    input_data: vec![],
+                    output_data: None,
+                    recorded_side_effects: vec![],
+                    generation: Some(TaskGenerationMetadata {
+                        attempt_id,
+                        original_task_def_id: task_def_id.clone(),
+                        generation_index,
+                    }),
+                    verifier_metadata: None,
+                });
         }
     }
 
-    fn detect_cycles(&self, def: &WorkflowDef) -> bool {
-        use std::collections::HashMap;
+    fn generation_attempt_id(task_def_id: &str, generation_index: u32) -> String {
+        format!("{task_def_id}[{generation_index}]")
+    }
 
-        let mut in_degree: HashMap<String, usize> = HashMap::new();
-        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    fn resolve_inputs(
+        &self,
+        instance: &WorkflowInstance,
+        def: &WorkflowDef,
+        _task_id: &str,
+        task_instance: &TaskInstance,
+        task_def: &crate::core::models::TaskDef,
+    ) -> Option<Vec<serde_json::Value>> {
+        let loop_slices = self.compute_loop_slices(def);
+        let target_generation = task_instance.generation.as_ref();
+        let mut inputs = Vec::new();
 
-        for task in &def.tasks {
-            in_degree.insert(task.id.clone(), 0);
-            adj.insert(task.id.clone(), Vec::new());
+        for binding in def
+            .data_bindings
+            .iter()
+            .filter(|binding| binding.target_task_id == task_def.id)
+        {
+            let source_id = self.resolve_source_attempt_id(
+                instance,
+                &loop_slices,
+                target_generation,
+                &binding.source_task_id,
+            )?;
+            let source_task = instance.tasks.get(&source_id)?;
+            if source_task.status != TaskStatus::Completed {
+                return None;
+            }
+            while inputs.len() <= binding.target_input_index {
+                inputs.push(serde_json::Value::Null);
+            }
+            inputs[binding.target_input_index] = source_task
+                .output_data
+                .clone()
+                .unwrap_or(serde_json::Value::Null);
         }
 
-        for binding in &def.data_bindings {
-            *in_degree.entry(binding.target_task_id.clone()).or_insert(0) += 1;
-            adj.entry(binding.source_task_id.clone())
-                .or_insert_with(Vec::new)
-                .push(binding.target_task_id.clone());
-        }
+        Some(inputs)
+    }
 
-        let mut queue: Vec<String> = Vec::new();
-        for (node, degree) in &in_degree {
-            if *degree == 0 {
-                queue.push(node.clone());
+    fn resolve_source_attempt_id(
+        &self,
+        instance: &WorkflowInstance,
+        loop_slices: &HashMap<String, Vec<String>>,
+        target_generation: Option<&TaskGenerationMetadata>,
+        source_task_id: &str,
+    ) -> Option<String> {
+        if let Some(generation) = target_generation {
+            if let Some((_, slice)) = loop_slices
+                .iter()
+                .find(|(_, slice)| slice.contains(&generation.original_task_def_id))
+            {
+                if slice.contains(&source_task_id.to_string()) {
+                    return Some(Self::generation_attempt_id(
+                        source_task_id,
+                        generation.generation_index,
+                    ));
+                }
             }
         }
 
-        let mut visited_count = 0;
-        while let Some(node) = queue.pop() {
-            visited_count += 1;
-            if let Some(neighbors) = adj.get(&node) {
-                for neighbor in neighbors {
-                    if let Some(degree) = in_degree.get_mut(neighbor) {
-                        *degree -= 1;
-                        if *degree == 0 {
-                            queue.push(neighbor.clone());
+        if let Some((verifier_id, _)) = loop_slices
+            .iter()
+            .find(|(_, slice)| slice.contains(&source_task_id.to_string()))
+        {
+            let selected_generation = instance
+                .verifier_states
+                .get(verifier_id)
+                .and_then(|state| state.selected_generation)?;
+            return Some(Self::generation_attempt_id(
+                source_task_id,
+                selected_generation,
+            ));
+        }
+
+        Some(source_task_id.to_string())
+    }
+
+    fn execution_metadata(
+        &self,
+        instance: &WorkflowInstance,
+        def: &WorkflowDef,
+        _task_id: &str,
+        task_instance: &TaskInstance,
+        task_def: &crate::core::models::TaskDef,
+    ) -> ExecutionMetadata {
+        let Some(generation) = task_instance.generation.as_ref() else {
+            return ExecutionMetadata::default();
+        };
+        let loop_slices = self.compute_loop_slices(def);
+        let Some((verifier_id, _)) = loop_slices
+            .iter()
+            .find(|(_, slice)| slice.contains(&generation.original_task_def_id))
+        else {
+            return ExecutionMetadata::default();
+        };
+        let Some(verifier_task) = def.tasks.iter().find(|task| task.id == *verifier_id) else {
+            return ExecutionMetadata::default();
+        };
+        let Some(verifier) = verifier_task.verifier.as_ref() else {
+            return ExecutionMetadata::default();
+        };
+        let feedback_history = instance
+            .verifier_states
+            .get(verifier_id)
+            .map(|state| {
+                state
+                    .feedback_history
+                    .iter()
+                    .map(|entry| entry.feedback.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let latest_feedback = feedback_history.last().cloned();
+        let loop_context = LoopExecutionContext {
+            generation: generation.generation_index,
+            max_iterations: verifier.max_iterations,
+            latest_feedback,
+            feedback_history: feedback_history.clone(),
+        };
+
+        let verifier_context = task_def.verifier.as_ref().map(|_| {
+            let mut upstream_context = HashMap::new();
+            for binding in def
+                .data_bindings
+                .iter()
+                .filter(|binding| binding.target_task_id == task_def.id)
+            {
+                if let Some(source_id) = self.resolve_source_attempt_id(
+                    instance,
+                    &loop_slices,
+                    Some(generation),
+                    &binding.source_task_id,
+                ) {
+                    if let Some(source_task) = instance.tasks.get(&source_id) {
+                        if source_task.status == TaskStatus::Completed {
+                            upstream_context.insert(
+                                binding.source_task_id.clone(),
+                                source_task
+                                    .output_data
+                                    .clone()
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
                         }
                     }
                 }
             }
+
+            VerifierExecutionContext {
+                output: serde_json::Value::Null,
+                generation: generation.generation_index,
+                max_iterations: verifier.max_iterations,
+                feedback_history,
+                upstream_context,
+            }
+        });
+
+        ExecutionMetadata {
+            loop_context: Some(loop_context),
+            verifier_context,
+        }
+    }
+
+    fn apply_verifier_result(
+        &self,
+        instance: &mut WorkflowInstance,
+        def: &WorkflowDef,
+        loop_slices: &HashMap<String, Vec<String>>,
+        task_id: &str,
+        task_output: &serde_json::Value,
+        verifier_result: crate::core::models::VerifierExecutionResult,
+    ) -> anyhow::Result<()> {
+        let task = instance
+            .tasks
+            .get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("verifier task attempt {task_id} not found"))?;
+        let generation = task
+            .generation
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("verifier task {task_id} is not materialized"))?
+            .generation_index;
+        let verifier_task_id = task.task_def_id.clone();
+        let verifier_task = def
+            .tasks
+            .iter()
+            .find(|task| task.id == verifier_task_id)
+            .ok_or_else(|| anyhow::anyhow!("verifier task definition missing"))?;
+        let verifier = verifier_task
+            .verifier
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("task {verifier_task_id} has no verifier config"))?;
+        let state = instance
+            .verifier_states
+            .get_mut(&verifier_task_id)
+            .ok_or_else(|| anyhow::anyhow!("verifier state {verifier_task_id} missing"))?;
+
+        match verifier_result.decision {
+            VerifierDecision::Complete => {
+                state.selected_generation = Some(generation);
+                state.status = VerifierStateStatus::Accepted;
+                state.exit_reason = Some("complete".to_string());
+                if let Some(task) = instance.tasks.get_mut(task_id) {
+                    task.verifier_metadata = Some(VerifierAttemptMetadata {
+                        status: VerifierAttemptStatus::Accepted,
+                        decision: Some(VerifierDecision::Complete),
+                        feedback: verifier_result.feedback,
+                        verifier_output: Some(verifier_result.output),
+                        exit_reason: Some("complete".to_string()),
+                    });
+                }
+            }
+            VerifierDecision::Continue => {
+                let feedback = verifier_result.feedback.clone().unwrap_or_default();
+                if feedback.trim().is_empty() {
+                    instance.status = WorkflowStatus::Failed;
+                    if let Some(task) = instance.tasks.get_mut(task_id) {
+                        task.status = TaskStatus::Failed;
+                        task.verifier_metadata = Some(VerifierAttemptMetadata {
+                            status: VerifierAttemptStatus::Invalid,
+                            decision: Some(VerifierDecision::Continue),
+                            feedback: verifier_result.feedback,
+                            verifier_output: Some(verifier_result.output),
+                            exit_reason: Some(
+                                "continue decision requires non-empty feedback".to_string(),
+                            ),
+                        });
+                    }
+                    anyhow::bail!("Verifier continue decision requires non-empty feedback");
+                }
+
+                state
+                    .feedback_history
+                    .push(crate::core::models::VerifierFeedbackEntry {
+                        generation_index: generation,
+                        feedback: feedback.clone(),
+                        verifier_output: verifier_result.output.clone(),
+                    });
+
+                if generation < verifier.max_iterations {
+                    state.latest_generation = generation + 1;
+                    state.status = VerifierStateStatus::Running;
+                    if let Some(task) = instance.tasks.get_mut(task_id) {
+                        task.verifier_metadata = Some(VerifierAttemptMetadata {
+                            status: VerifierAttemptStatus::Rejected,
+                            decision: Some(VerifierDecision::Continue),
+                            feedback: Some(feedback),
+                            verifier_output: Some(verifier_result.output),
+                            exit_reason: None,
+                        });
+                    }
+                    if let Some(slice) = loop_slices.get(&verifier_task_id) {
+                        self.materialize_generation(instance, slice, generation + 1);
+                    }
+                    return Ok(());
+                }
+
+                state.latest_generation = generation;
+                state.exit_reason = Some("max_iterations_exhausted".to_string());
+                if verifier.on_exhausted_continue {
+                    if task_output.is_null() && verifier_task.output_schema.is_none() {
+                        state.status = VerifierStateStatus::Failed;
+                        instance.status = WorkflowStatus::Failed;
+                        if let Some(task) = instance.tasks.get_mut(task_id) {
+                            task.status = TaskStatus::Failed;
+                            task.verifier_metadata = Some(VerifierAttemptMetadata {
+                                status: VerifierAttemptStatus::ExhaustedFailed,
+                                decision: Some(VerifierDecision::Continue),
+                                feedback: Some(feedback),
+                                verifier_output: Some(verifier_result.output),
+                                exit_reason: Some(
+                                    "no schema-valid latest generation output".to_string(),
+                                ),
+                            });
+                        }
+                        anyhow::bail!(
+                            "Verifier exhausted with continue policy but no schema-valid output"
+                        );
+                    }
+
+                    state.selected_generation = Some(generation);
+                    state.status = VerifierStateStatus::ExhaustedAccepted;
+                    if let Some(task) = instance.tasks.get_mut(task_id) {
+                        task.verifier_metadata = Some(VerifierAttemptMetadata {
+                            status: VerifierAttemptStatus::ExhaustedAccepted,
+                            decision: Some(VerifierDecision::Continue),
+                            feedback: Some(feedback),
+                            verifier_output: Some(verifier_result.output),
+                            exit_reason: Some("max_iterations_exhausted".to_string()),
+                        });
+                    }
+                } else {
+                    state.status = VerifierStateStatus::ExhaustedFailed;
+                    instance.status = WorkflowStatus::Failed;
+                    if let Some(task) = instance.tasks.get_mut(task_id) {
+                        task.status = TaskStatus::Failed;
+                        task.verifier_metadata = Some(VerifierAttemptMetadata {
+                            status: VerifierAttemptStatus::ExhaustedFailed,
+                            decision: Some(VerifierDecision::Continue),
+                            feedback: Some(feedback),
+                            verifier_output: Some(verifier_result.output),
+                            exit_reason: Some("max_iterations_exhausted".to_string()),
+                        });
+                    }
+                    anyhow::bail!("Verifier exhausted iteration budget");
+                }
+            }
         }
 
-        visited_count != def.tasks.len()
+        Ok(())
     }
 }
 
@@ -318,6 +816,7 @@ mod tests {
                 url: "http://example.com".to_string(),
                 method: "GET".to_string(),
             },
+            verifier: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(output_schema),
@@ -333,6 +832,7 @@ mod tests {
             workflow_def_id: def.id.clone(),
             status: WorkflowStatus::Pending,
             tasks: HashMap::new(),
+            verifier_states: HashMap::new(),
         };
         engine.storage.save_workflow_def(def).await.unwrap();
         engine
@@ -387,6 +887,7 @@ mod tests {
                         url: "http://example.com".to_string(),
                         method: "POST".to_string(),
                     },
+                    verifier: None,
                     timeout_secs: None,
                     input_schemas: vec![
                         json!({ "type": "object" }), // from task-a
