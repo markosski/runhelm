@@ -346,7 +346,7 @@ export class AgentExecutor implements TaskExecutor {
                         Your previous response failed output_schema validation:
                         ${validationMessage}
 
-                        Retry ${attempt + 1} of ${retryTimes}. Return ONLY a corrected raw JSON object that satisfies the schema.
+                        Return ONLY a corrected raw JSON object that satisfies the schema.
                     `);
                 } else {
                     if (attempt >= retryTimes) {
@@ -358,7 +358,7 @@ export class AgentExecutor implements TaskExecutor {
                         Your previous response was not valid parseable JSON:
                         ${parseErrorMessage}
 
-                        Retry ${attempt + 1} of ${retryTimes}. Return ONLY a corrected raw JSON object that satisfies the schema.
+                        Return ONLY a corrected raw JSON object that satisfies the schema.
                     `);
                 }
 
