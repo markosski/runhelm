@@ -45,16 +45,17 @@ pub struct FunctionDependency {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentVerifierConfig {
+pub struct VerifierControlConfig {
     pub max_iterations: u32,
     pub on_exhausted_continue: bool,
-    #[serde(
-        default,
-        alias = "on_failure_rerun_task",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerun_from_task_id: Option<String>,
-    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskControl {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<VerifierControlConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,12 +84,12 @@ pub struct TaskDef {
     pub id: String,
     pub kind: TaskTypeDef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verifier: Option<AgentVerifierConfig>,
+    pub control: Option<TaskControl>,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_schemas: Vec<JsonSchema>,
     pub output_schema: Option<JsonSchema>,
-    pub expected_side_effects: Vec<String>,
     pub required_credentials: Vec<String>,
 }
 
@@ -220,23 +221,10 @@ pub struct LoopExecutionContext {
     pub previous_output: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VerifierExecutionContext {
-    pub output: serde_json::Value,
-    pub generation: u32,
-    pub max_iterations: u32,
-    #[serde(default)]
-    pub feedback_history: Vec<String>,
-    #[serde(default)]
-    pub upstream_context: HashMap<String, serde_json::Value>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ExecutionMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<LoopExecutionContext>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verifier_context: Option<VerifierExecutionContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -245,6 +233,23 @@ pub struct VerifierExecutionResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feedback: Option<String>,
     pub output: serde_json::Value,
+}
+
+pub fn verifier_decision_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["decision"],
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["complete", "continue"]
+            },
+            "feedback": {
+                "type": "string"
+            }
+        },
+        "additionalProperties": true
+    })
 }
 
 /// A lightweight read model describing the current state of a workflow instance.

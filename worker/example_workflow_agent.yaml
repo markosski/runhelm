@@ -37,7 +37,6 @@ tasks:
         skills: ["brave-web-search"]
         ask: false
         schema_failure_retry_times: 2
-    input_schemas: []
     output_schema:
       type: object
       required:
@@ -45,7 +44,6 @@ tasks:
       properties:
         response:
           type: string
-    expected_side_effects: []
     required_credentials:
       - llm_api_key
   - id: verify
@@ -57,33 +55,17 @@ tasks:
           Verify provided information ensuring proper format, currency, date formatting etc.
           - ensure currency fields are in dollars, e.g. $150.00
           - ensure date fields are in YYYY-MM-DD format, e.g. 2026-10-02
-          - return a JSON response string starting with "VALID:" when the input is acceptable
-          - return a JSON response string starting with "INVALID:" followed by concrete correction feedback when the input needs to be regenerated
+          - return decision "complete" when the input is acceptable
+          - return decision "continue" with concrete feedback when the input needs to be regenerated
         tools: []
         skills: []
         ask: false
         schema_failure_retry_times: 2
-    verifier:
-      max_iterations: 3
-      on_exhausted_continue: false
-      rerun_from_task_id: pullstocks
-      code: |
-        export default async function verify(ctx) {
-          const response = String(ctx.output?.response ?? "").trim();
-
-          if (/^VALID:/i.test(response)) {
-            return { decision: "complete" };
-          }
-
-          const feedback = response.replace(/^INVALID:\s*/i, "").trim();
-          return {
-            decision: "continue",
-            feedback: feedback || "Regenerate the stock summary with dollar-formatted prices and YYYY-MM-DD dates."
-          };
-        }
-    input_schemas: []
-    output_schema: []
-    expected_side_effects: []
+    control:
+      verifier:
+        max_iterations: 3
+        on_exhausted_continue: false
+        rerun_from_task_id: pullstocks
     required_credentials:
       - llm_api_key
 

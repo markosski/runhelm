@@ -20,7 +20,6 @@ tasks:
     kind:
       Function:
         ref: mailgun.fetch_inbound_mail
-    input_schemas: []
     output_schema:
       type: object
       required:
@@ -34,7 +33,6 @@ tasks:
           type: array
         workflows:
           type: array
-    expected_side_effects: []
     required_credentials:
       - mailgun_api_key
       - mailgun_domain
@@ -128,7 +126,6 @@ tasks:
                 type:
                   - string
                   - "null"
-    expected_side_effects: []
     required_credentials:
       - llm_api_key
 
@@ -163,9 +160,6 @@ tasks:
           type: string
         results:
           type: array
-    expected_side_effects:
-      - Starts matched RunHelm workflows through the orchestrator HTTP API.
-      - Sends Mailgun replies to inbound email senders.
     required_credentials:
       - mailgun_api_key
       - mailgun_domain

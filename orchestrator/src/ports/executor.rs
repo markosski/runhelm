@@ -1,13 +1,9 @@
-use crate::core::models::{ExecutionMetadata, TaskDef, VerifierExecutionResult};
+use crate::core::models::{ExecutionMetadata, TaskDef};
 use async_trait::async_trait;
 
 #[derive(Debug, PartialEq)]
 pub enum ExecutionResult {
     Success(serde_json::Value),
-    SuccessWithVerifier {
-        output: serde_json::Value,
-        verifier: VerifierExecutionResult,
-    },
     InputNeeded(String),
     Failure(String),
 }

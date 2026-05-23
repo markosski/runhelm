@@ -20,13 +20,11 @@ task:
       tools: []
       skills: []
   ask: false
-  input_schemas: []
   output_schema:
     type: "object"
     properties:
       response:
         type: "string"
-  expected_side_effects: []
   required_credentials:
     - "llm_api_key"
 inputs: []

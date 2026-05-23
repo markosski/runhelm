@@ -1,9 +1,9 @@
 use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
     ExecutionMetadata, LoopExecutionContext, TaskGenerationMetadata, TaskInstance, TaskStatus,
-    TaskStatusReport, VerifierAttemptMetadata, VerifierAttemptStatus, VerifierDecision,
-    VerifierExecutionContext, VerifierGenerationState, VerifierStateStatus, VerifierStatusReport,
-    WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport,
+    TaskStatusReport, VerifierAttemptMetadata, VerifierAttemptStatus, VerifierControlConfig,
+    VerifierDecision, VerifierExecutionResult, VerifierGenerationState, VerifierStateStatus,
+    VerifierStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport,
 };
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
@@ -165,6 +165,19 @@ impl WorkflowEngine {
                 let inputs = self
                     .resolve_inputs(&instance, &def, &task_id, &task_instance, task_def)
                     .unwrap_or_default();
+
+                if let Err(error) = validate_inputs(task_def, &inputs) {
+                    if let Some(task) = instance.tasks.get_mut(&task_id) {
+                        task.status = TaskStatus::Failed;
+                        task.input_data = inputs.clone();
+                    }
+                    instance.status = WorkflowStatus::Failed;
+                    self.storage
+                        .save_workflow_instance(instance.clone())
+                        .await?;
+                    return Err(error);
+                }
+
                 let metadata =
                     self.execution_metadata(&instance, &def, &task_id, &task_instance, task_def);
                 if let Some(task) = instance.tasks.get_mut(&task_id) {
@@ -183,11 +196,8 @@ impl WorkflowEngine {
 
                 match execution_result {
                     Ok(result) => {
-                        let (output, verifier_result) = match result {
-                            ExecutionResult::Success(output) => (output, None),
-                            ExecutionResult::SuccessWithVerifier { output, verifier } => {
-                                (output, Some(verifier))
-                            }
+                        let output = match result {
+                            ExecutionResult::Success(output) => output,
                             ExecutionResult::InputNeeded(description) => {
                                 if let Some(task) = instance.tasks.get_mut(&task_id) {
                                     task.status = TaskStatus::InputNeeded { description };
@@ -208,7 +218,8 @@ impl WorkflowEngine {
                         };
 
                         // Validate against output_schema if one is defined; skip for side-effect-only tasks.
-                        let schema_ok = match &task_def.output_schema {
+                        let output_schema = effective_output_schema(task_def);
+                        let schema_ok = match output_schema {
                             Some(schema) => match jsonschema::validator_for(schema) {
                                 Ok(validator) => validator.is_valid(&output),
                                 Err(_) => false,
@@ -220,32 +231,31 @@ impl WorkflowEngine {
                             if let Some(task) = instance.tasks.get_mut(&task_id) {
                                 task.status = TaskStatus::Completed;
                                 // Only record output when a schema is declared.
-                                if task_def.output_schema.is_some() {
+                                if output_schema.is_some() {
                                     task.output_data = Some(output.clone());
                                 }
                             }
-                            if task_def.verifier.is_some() {
-                                let Some(verifier_result) = verifier_result else {
-                                    if let Some(task) = instance.tasks.get_mut(&task_id) {
-                                        task.status = TaskStatus::Failed;
-                                        task.verifier_metadata = Some(VerifierAttemptMetadata {
-                                            status: VerifierAttemptStatus::Invalid,
-                                            decision: None,
-                                            feedback: None,
-                                            verifier_output: None,
-                                            exit_reason: Some(
-                                                "verifier task completed without verifier result"
-                                                    .to_string(),
-                                            ),
-                                        });
+                            if task_verifier(task_def).is_some() {
+                                let verifier_result = match verifier_result_from_output(&output) {
+                                    Ok(verifier_result) => verifier_result,
+                                    Err(error) => {
+                                        if let Some(task) = instance.tasks.get_mut(&task_id) {
+                                            task.status = TaskStatus::Failed;
+                                            task.verifier_metadata =
+                                                Some(VerifierAttemptMetadata {
+                                                    status: VerifierAttemptStatus::Invalid,
+                                                    decision: None,
+                                                    feedback: None,
+                                                    verifier_output: Some(output.clone()),
+                                                    exit_reason: Some(error.to_string()),
+                                                });
+                                        }
+                                        instance.status = WorkflowStatus::Failed;
+                                        self.storage
+                                            .save_workflow_instance(instance.clone())
+                                            .await?;
+                                        return Err(error);
                                     }
-                                    instance.status = WorkflowStatus::Failed;
-                                    self.storage
-                                        .save_workflow_instance(instance.clone())
-                                        .await?;
-                                    anyhow::bail!(
-                                        "Verifier task completed without verifier result"
-                                    );
                                 };
                                 if let Err(error) = self.apply_verifier_result(
                                     &mut instance,
@@ -310,8 +320,12 @@ impl WorkflowEngine {
 
     fn compute_loop_slices(&self, def: &WorkflowDef) -> HashMap<String, Vec<String>> {
         let mut slices = HashMap::new();
-        for verifier_task in def.tasks.iter().filter(|task| task.verifier.is_some()) {
-            let verifier = verifier_task.verifier.as_ref().unwrap();
+        for verifier_task in def
+            .tasks
+            .iter()
+            .filter(|task| task_verifier(task).is_some())
+        {
+            let verifier = task_verifier(verifier_task).unwrap();
             let rerun_start_task_id = verifier_rerun_start_task_id(verifier, &verifier_task.id);
             let from_start = self.reachable_from(def, &rerun_start_task_id);
             let to_verifier = self.can_reach_target_set(def, &verifier_task.id);
@@ -379,7 +393,7 @@ impl WorkflowEngine {
             else {
                 continue;
             };
-            let Some(verifier) = verifier_task.verifier.as_ref() else {
+            let Some(verifier) = task_verifier(verifier_task) else {
                 continue;
             };
             let Some(start_task) = def
@@ -553,7 +567,7 @@ impl WorkflowEngine {
         def: &WorkflowDef,
         _task_id: &str,
         task_instance: &TaskInstance,
-        task_def: &crate::core::models::TaskDef,
+        _task_def: &crate::core::models::TaskDef,
     ) -> ExecutionMetadata {
         let generation = &task_instance.generation;
         let loop_slices = self.compute_loop_slices(def);
@@ -566,7 +580,7 @@ impl WorkflowEngine {
         let Some(verifier_task) = def.tasks.iter().find(|task| task.id == *verifier_id) else {
             return ExecutionMetadata::default();
         };
-        let Some(verifier) = verifier_task.verifier.as_ref() else {
+        let Some(verifier) = task_verifier(verifier_task) else {
             return ExecutionMetadata::default();
         };
         let feedback_history = instance
@@ -604,45 +618,8 @@ impl WorkflowEngine {
             previous_output,
         };
 
-        let verifier_context = task_def.verifier.as_ref().map(|_| {
-            let mut upstream_context = HashMap::new();
-            for binding in def
-                .data_bindings
-                .iter()
-                .filter(|binding| binding.target_task_id == task_def.id)
-            {
-                if let Some(source_id) = self.resolve_source_attempt_id(
-                    instance,
-                    &loop_slices,
-                    Some(generation),
-                    &binding.source_task_id,
-                ) {
-                    if let Some(source_task) = instance.tasks.get(&source_id) {
-                        if source_task.status == TaskStatus::Completed {
-                            upstream_context.insert(
-                                binding.source_task_id.clone(),
-                                source_task
-                                    .output_data
-                                    .clone()
-                                    .unwrap_or(serde_json::Value::Null),
-                            );
-                        }
-                    }
-                }
-            }
-
-            VerifierExecutionContext {
-                output: serde_json::Value::Null,
-                generation: generation.generation_index,
-                max_iterations: verifier.max_iterations,
-                feedback_history,
-                upstream_context,
-            }
-        });
-
         ExecutionMetadata {
             loop_context: Some(loop_context),
-            verifier_context,
         }
     }
 
@@ -666,9 +643,7 @@ impl WorkflowEngine {
             .iter()
             .find(|task| task.id == verifier_task_id)
             .ok_or_else(|| anyhow::anyhow!("verifier task definition missing"))?;
-        let verifier = verifier_task
-            .verifier
-            .as_ref()
+        let verifier = task_verifier(verifier_task)
             .ok_or_else(|| anyhow::anyhow!("task {verifier_task_id} has no verifier config"))?;
         let state = instance
             .verifier_states
@@ -791,14 +766,79 @@ impl WorkflowEngine {
     }
 }
 
+fn task_verifier(task: &crate::core::models::TaskDef) -> Option<&VerifierControlConfig> {
+    task.control.as_ref()?.verifier.as_ref()
+}
+
+fn effective_output_schema(
+    task: &crate::core::models::TaskDef,
+) -> Option<&crate::core::models::JsonSchema> {
+    task.output_schema.as_ref()
+}
+
+fn validate_inputs(
+    task: &crate::core::models::TaskDef,
+    inputs: &[serde_json::Value],
+) -> anyhow::Result<()> {
+    for (index, schema) in task.input_schemas.iter().enumerate() {
+        let Some(input) = inputs.get(index) else {
+            anyhow::bail!("Task {} missing input at index {}", task.id, index);
+        };
+        let validator = jsonschema::validator_for(schema).map_err(|error| {
+            anyhow::anyhow!(
+                "Task {} input schema {} is invalid: {}",
+                task.id,
+                index,
+                error
+            )
+        })?;
+        if !validator.is_valid(input) {
+            anyhow::bail!("Task {} input {} failed schema validation", task.id, index);
+        }
+    }
+
+    Ok(())
+}
+
 fn verifier_rerun_start_task_id(
-    verifier: &crate::core::models::AgentVerifierConfig,
+    verifier: &VerifierControlConfig,
     verifier_task_id: &str,
 ) -> String {
     verifier
         .rerun_from_task_id
         .clone()
         .unwrap_or_else(|| verifier_task_id.to_string())
+}
+
+fn verifier_result_from_output(
+    output: &serde_json::Value,
+) -> anyhow::Result<VerifierExecutionResult> {
+    let object = output
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("Verifier task output must be an object"))?;
+    let decision = match object.get("decision").and_then(|value| value.as_str()) {
+        Some("continue") => VerifierDecision::Continue,
+        Some("complete") => VerifierDecision::Complete,
+        _ => anyhow::bail!("Verifier task decision must be \"continue\" or \"complete\""),
+    };
+    let feedback = object
+        .get("feedback")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    if decision == VerifierDecision::Continue
+        && feedback
+            .as_deref()
+            .is_none_or(|feedback| feedback.trim().is_empty())
+    {
+        anyhow::bail!("Verifier continue decision requires non-empty feedback");
+    }
+
+    Ok(VerifierExecutionResult {
+        decision,
+        feedback,
+        output: output.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -826,11 +866,10 @@ mod tests {
                 url: "http://example.com".to_string(),
                 method: "GET".to_string(),
             },
-            verifier: None,
+            control: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(output_schema),
-            expected_side_effects: vec![],
             required_credentials: vec![],
         }
     }
@@ -864,13 +903,15 @@ mod tests {
             ask: false,
             schema_failure_retry_times: Number::from(0),
         };
-        task.verifier = Some(AgentVerifierConfig {
-            max_iterations: 2,
-            on_exhausted_continue: false,
-            rerun_from_task_id: rerun_from_task_id.map(str::to_string),
-            code: "export default async function verify() { return { decision: 'complete' }; }"
-                .to_string(),
+        task.output_schema = None;
+        task.control = Some(TaskControl {
+            verifier: Some(VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: rerun_from_task_id.map(str::to_string),
+            }),
         });
+        task.output_schema = Some(verifier_decision_schema());
         task
     }
 
@@ -975,14 +1016,13 @@ mod tests {
                         url: "http://example.com".to_string(),
                         method: "POST".to_string(),
                     },
-                    verifier: None,
+                    control: None,
                     timeout_secs: None,
                     input_schemas: vec![
                         json!({ "type": "object" }), // from task-a
                         json!({ "type": "object" }), // from task-b
                     ],
                     output_schema: Some(json!({ "type": "object" })),
-                    expected_side_effects: vec![],
                     required_credentials: vec![],
                 },
             ],
@@ -1027,10 +1067,10 @@ mod tests {
     async fn test_schema_validation_failure_marks_workflow_failed() {
         let engine = make_engine();
 
-        // FakeExecutor cannot satisfy an `enum` schema — it returns `{}` for unknown constructs,
-        // which will always fail a single-value enum constraint.
+        // FakeExecutor cannot satisfy a `const` schema — it returns `{}` for unknown constructs,
+        // which will always fail this constraint.
         let strict_schema = json!({
-            "enum": ["only-this-value"]
+            "const": "only-this-value"
         });
 
         let def = WorkflowDef {
@@ -1051,6 +1091,41 @@ mod tests {
             .unwrap();
         assert_eq!(instance.status, WorkflowStatus::Failed);
         assert_eq!(instance.tasks["task-strict[1]"].status, TaskStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn test_input_schema_failure_marks_workflow_failed() {
+        let engine = make_engine();
+        let mut downstream = task_def("task-b", json!({ "type": "object" }));
+        downstream.input_schemas = vec![json!({ "type": "string" })];
+        let def = WorkflowDef {
+            id: "def-input-schema".to_string(),
+            tasks: vec![task_def("task-a", json!({ "type": "object" })), downstream],
+            data_bindings: vec![DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "task-b".to_string(),
+                target_input_index: 0,
+            }],
+        };
+
+        let instance_id = setup(&engine, def).await;
+        let run_result = engine.run_workflow_instance(instance_id.clone()).await;
+        assert!(run_result.is_err());
+        assert!(
+            run_result
+                .unwrap_err()
+                .to_string()
+                .contains("input 0 failed schema validation")
+        );
+
+        let instance = engine
+            .storage
+            .get_workflow_instance(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(instance.status, WorkflowStatus::Failed);
+        assert_eq!(instance.tasks["task-b[1]"].status, TaskStatus::Failed);
     }
 
     /// After a successful run, get_workflow_status should return a report reflecting

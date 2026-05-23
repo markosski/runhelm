@@ -983,7 +983,7 @@
         <div class="checkpoint-strip" aria-label="Checkpointed execution states">
           <div class="checkpoint">
             <strong>Definition checkpoint</strong>
-            <span>Task graph, schemas, bindings, credentials, and expected side effects are stored.</span>
+            <span>Task graph, schemas, bindings, and credentials are stored.</span>
           </div>
           <div class="checkpoint">
             <strong>Dispatch checkpoint</strong>
@@ -1038,7 +1038,7 @@
       <div class="flow">
         <article class="step">
           <h3>Register definition</h3>
-          <p>Submit a workflow with tasks, JSON schemas, and data bindings.</p>
+          <p>Submit a workflow with tasks, optional JSON schemas, and data bindings.</p>
         </article>
         <article class="step">
           <h3>Create instance</h3>
@@ -1147,7 +1147,6 @@
       }
     }
   },
-  "expected_side_effects": [],
   "required_credentials": ["openai_api_key"]
 }</code></pre>
 
@@ -1178,7 +1177,6 @@
       "plan": { "type": "string" }
     }
   },
-  "expected_side_effects": ["http_request:api.example.com"],
   "required_credentials": ["customer_api_token"]
 }</code></pre>
 
@@ -1217,7 +1215,6 @@
       }
     }
   },
-  "expected_side_effects": [],
   "required_credentials": []
 }</code></pre>
       </div>
@@ -1242,7 +1239,7 @@
             <li>Workflow instances can be listed with <span class="inline-code">GET /workflows</span> and filtered with
               <span class="inline-code">?status=running</span> or other lifecycle states.</li>
             <li>Task status is reported separately for each task.</li>
-            <li>Task outputs can be fetched after completion.</li>
+            <li>Task outputs can be listed with <span class="inline-code">GET /workflows/{id}/tasks</span> or fetched individually after completion.</li>
           </ul>
         </article>
         <article class="panel">
@@ -1296,6 +1293,7 @@
             <li>List runs with <span class="inline-code">GET /workflows</span> or <span class="inline-code">GET
                 /workflows?status=completed</span>.</li>
             <li>Inspect the run with <span class="inline-code">GET /workflows/{id}</span>.</li>
+            <li>List task results with <span class="inline-code">GET /workflows/{workflow_instance_id}/tasks</span>.</li>
             <li>Fetch a task result with <span class="inline-code">GET
                 /workflows/{workflow_instance_id}/tasks/{task_id}</span>.</li>
           </ol>
@@ -1325,6 +1323,9 @@ curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow \
 
 # Check run status
 curl -sS http://localhost:3000/workflows/&lt;workflow-instance-id&gt;
+
+# List task results for a run
+curl -sS http://localhost:3000/workflows/&lt;workflow-instance-id&gt;/tasks
 
 # List workflow runs
 curl -sS 'http://localhost:3000/workflows?status=running'

@@ -75,11 +75,10 @@ mod tests {
                     code: "return 1".to_string(),
                 },
             ),
-            verifier: None,
+            control: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
-            expected_side_effects: vec![],
             required_credentials: vec![],
         };
 
@@ -108,11 +107,10 @@ mod tests {
                     code: "return 1".to_string(),
                 },
             ),
-            verifier: None,
+            control: None,
             timeout_secs: Some(1),
             input_schemas: vec![],
             output_schema: None,
-            expected_side_effects: vec![],
             required_credentials: vec![],
         };
 

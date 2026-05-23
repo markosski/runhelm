@@ -1,11 +1,12 @@
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
-    FunctionDef, TaskDef, TaskInstance, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowList,
-    WorkflowQueueStatus, WorkflowStatus, WorkflowStatusReport, WorkflowSummary,
+    FunctionDef, TaskDef, TaskInstance, TaskStatus, VerifierControlConfig, WorkflowDef,
+    WorkflowInstance, WorkflowList, WorkflowQueueStatus, WorkflowStatus, WorkflowStatusReport,
+    WorkflowSummary, verifier_decision_schema,
 };
 use crate::ports::executor::ExecutorPort;
-use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata};
+use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata, WorkflowTaskResult};
 use crate::ports::workflow_queue::WorkflowQueuePort;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -143,6 +144,34 @@ impl Orchestrator {
     ) -> anyhow::Result<TaskResult> {
         self.get_task_result_for_generation(workflow_instance_id, task_id, None)
             .await
+    }
+
+    pub async fn list_task_results(
+        &self,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<Vec<WorkflowTaskResult>> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        let mut tasks: Vec<WorkflowTaskResult> = instance
+            .tasks
+            .iter()
+            .map(|(task_id, task)| WorkflowTaskResult {
+                task_id: task_id.clone(),
+                result: task_result_for_instance(
+                    task_id,
+                    task_id,
+                    task,
+                    should_include_task_result_metadata(task_id, task_id, task, None),
+                ),
+            })
+            .collect();
+        tasks.sort_by(|left, right| left.task_id.cmp(&right.task_id));
+
+        Ok(tasks)
     }
 
     pub async fn get_task_result_for_generation(
@@ -346,33 +375,53 @@ fn task_result_for_instance(
 
     match (&task.status, metadata) {
         (TaskStatus::Completed, Some(metadata)) => TaskResult::SuccessWithMetadata {
+            input: task.input_data.clone(),
             output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
             metadata,
         },
-        (TaskStatus::Completed, None) => {
-            TaskResult::Success(task.output_data.clone().unwrap_or(serde_json::Value::Null))
-        }
+        (TaskStatus::Completed, None) => TaskResult::Success {
+            input: task.input_data.clone(),
+            output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
+        },
         (TaskStatus::Failed, Some(metadata)) => TaskResult::FailureWithMetadata {
+            input: task.input_data.clone(),
             error_message: "task failed".to_string(),
             metadata,
         },
         (TaskStatus::Failed, None) => TaskResult::Failure {
+            input: task.input_data.clone(),
             error_message: "task failed".to_string(),
         },
-        (TaskStatus::Pending, Some(metadata)) => TaskResult::PendingWithMetadata { metadata },
-        (TaskStatus::Pending, None) => TaskResult::Pending,
+        (TaskStatus::Pending, Some(metadata)) => TaskResult::PendingWithMetadata {
+            input: task.input_data.clone(),
+            metadata,
+        },
+        (TaskStatus::Pending, None) => TaskResult::Pending {
+            input: task.input_data.clone(),
+        },
         (TaskStatus::Running | TaskStatus::InputNeeded { .. }, Some(metadata)) => {
-            TaskResult::RunningWithMetadata { metadata }
+            TaskResult::RunningWithMetadata {
+                input: task.input_data.clone(),
+                metadata,
+            }
         }
-        (TaskStatus::Running | TaskStatus::InputNeeded { .. }, None) => TaskResult::Running,
+        (TaskStatus::Running | TaskStatus::InputNeeded { .. }, None) => TaskResult::Running {
+            input: task.input_data.clone(),
+        },
     }
 }
 
+// Returns a map of verifier task ID to the set of task IDs that are in its loop slice.
 fn compute_loop_slices(def: &WorkflowDef) -> HashMap<String, Vec<String>> {
     let mut slices = HashMap::new();
-    for verifier_task in def.tasks.iter().filter(|task| task.verifier.is_some()) {
-        let verifier = verifier_task.verifier.as_ref().unwrap();
-        let rerun_start_task_id = verifier_rerun_start_task_id(verifier, &verifier_task.id);
+
+    for verifier_task in def
+        .tasks
+        .iter()
+        .filter(|task| get_task_verifier_config(task).is_some())
+    {
+        let verifier_config = get_task_verifier_config(verifier_task).unwrap();
+        let rerun_start_task_id = verifier_rerun_start_task_id(verifier_config, &verifier_task.id);
         let from_start = reachable_from(def, &rerun_start_task_id);
         let to_verifier = can_reach_target_set(def, &verifier_task.id);
         let slice = def
@@ -428,8 +477,12 @@ fn generation_attempt_id(task_def_id: &str, generation_index: u32) -> String {
     format!("{task_def_id}[{generation_index}]")
 }
 
+fn get_task_verifier_config(task: &TaskDef) -> Option<&VerifierControlConfig> {
+    task.control.as_ref()?.verifier.as_ref()
+}
+
 fn verifier_rerun_start_task_id(
-    verifier: &crate::core::models::AgentVerifierConfig,
+    verifier: &VerifierControlConfig,
     verifier_task_id: &str,
 ) -> String {
     verifier
@@ -469,15 +522,19 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
     }
 
     for task in &mut def.tasks {
-        if let Some(verifier) = &mut task.verifier {
+        if get_task_verifier_config(task).is_some() && task.output_schema.is_some() {
+            anyhow::bail!(
+                "task {} declares control.verifier and must not declare output_schema",
+                task.id
+            );
+        }
+        if let Some(verifier) = task
+            .control
+            .as_mut()
+            .and_then(|control| control.verifier.as_mut())
+        {
             if verifier.max_iterations == 0 {
                 anyhow::bail!("task {} verifier max_iterations must be positive", task.id);
-            }
-            if verifier.code.trim().is_empty() {
-                anyhow::bail!(
-                    "task {} verifier code must be inline and non-empty",
-                    task.id
-                );
             }
             if let Some(rerun_from_task_id) = verifier.rerun_from_task_id.as_mut() {
                 *rerun_from_task_id = normalize_task_reference(
@@ -486,6 +543,7 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
                     "verifier rerun_from_task_id",
                 )?;
             }
+            task.output_schema = Some(verifier_decision_schema());
         }
     }
 
@@ -494,7 +552,7 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
     }
 
     for task in &def.tasks {
-        if let Some(verifier) = &task.verifier {
+        if let Some(verifier) = get_task_verifier_config(task) {
             let Some(rerun_from_task_id) = &verifier.rerun_from_task_id else {
                 continue;
             };
@@ -667,7 +725,7 @@ mod tests {
                 dependencies: vec![],
                 code: "export default async function run() { return {}; }".to_string(),
             }),
-            verifier: None,
+            control: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(json!({
@@ -677,7 +735,6 @@ mod tests {
                     "ok": { "type": "boolean" }
                 }
             })),
-            expected_side_effects: vec![],
             required_credentials: vec![],
         }
     }
@@ -688,7 +745,7 @@ mod tests {
             kind: TaskTypeDef::Function(FunctionTaskDef::Ref {
                 reference: reference.to_string(),
             }),
-            verifier: None,
+            control: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(json!({
@@ -698,7 +755,6 @@ mod tests {
                     "ok": { "type": "boolean" }
                 }
             })),
-            expected_side_effects: vec![],
             required_credentials: vec![],
         }
     }
@@ -880,6 +936,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_workflow_def_accepts_missing_input_schemas() {
+        let orchestrator = orchestrator();
+        let workflow_def: WorkflowDef = serde_json::from_value(json!({
+            "id": "workflow1",
+            "tasks": [
+                {
+                    "id": "taska",
+                    "kind": {
+                        "Function": {
+                            "dependencies": [],
+                            "code": "export default async function run() { return {}; }"
+                        }
+                    },
+                    "output_schema": {
+                        "type": "object"
+                    },
+                    "required_credentials": []
+                }
+            ],
+            "data_bindings": []
+        }))
+        .unwrap();
+
+        orchestrator
+            .create_workflow_def(workflow_def)
+            .await
+            .unwrap();
+
+        let stored = orchestrator
+            .get_workflow_def("workflow1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.tasks[0].input_schemas.is_empty());
+    }
+
+    #[tokio::test]
     async fn get_task_result_resolves_logical_task_id_to_generation_one() {
         let orchestrator = orchestrator();
         orchestrator
@@ -901,7 +994,12 @@ mod tests {
             .await
             .unwrap()
         {
-            TaskResult::SuccessWithMetadata { output, metadata } => {
+            TaskResult::SuccessWithMetadata {
+                input,
+                output,
+                metadata,
+            } => {
+                assert_eq!(input, Vec::<serde_json::Value>::new());
                 assert_eq!(output, json!({ "ok": false }));
                 assert_eq!(metadata.requested_task_id, "taska");
                 assert_eq!(metadata.resolved_attempt_id, "taska[1]");
@@ -909,6 +1007,96 @@ mod tests {
             }
             result => panic!("expected success with metadata, got {result:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn list_task_results_returns_materialized_attempts() {
+        let orchestrator = orchestrator();
+        orchestrator
+            .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+            .await
+            .unwrap();
+        orchestrator
+            .create_workflow_instance(workflow_instance("instance1", "workflow1"))
+            .await
+            .unwrap();
+
+        orchestrator
+            .run_workflow("instance1".to_string())
+            .await
+            .unwrap();
+
+        let tasks = orchestrator.list_task_results("instance1").await.unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, "taska[1]");
+        match &tasks[0].result {
+            TaskResult::SuccessWithMetadata {
+                input,
+                output,
+                metadata,
+            } => {
+                assert_eq!(input, &Vec::<serde_json::Value>::new());
+                assert_eq!(output, &json!({ "ok": false }));
+                assert_eq!(metadata.requested_task_id, "taska[1]");
+                assert_eq!(metadata.resolved_attempt_id, "taska[1]");
+                assert_eq!(
+                    metadata.generation.as_ref().unwrap().original_task_def_id,
+                    "taska"
+                );
+            }
+            result => panic!("expected success with metadata, got {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verifier_control_injects_decision_schema() {
+        let orchestrator = orchestrator();
+        let mut verifier = task("verify");
+        verifier.output_schema = None;
+        verifier.control = Some(crate::core::models::TaskControl {
+            verifier: Some(crate::core::models::VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: None,
+            }),
+        });
+
+        orchestrator
+            .create_workflow_def(workflow("workflow1", vec![verifier]))
+            .await
+            .unwrap();
+
+        let def = orchestrator
+            .get_workflow_def("workflow1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(def.tasks[0].output_schema, Some(verifier_decision_schema()));
+    }
+
+    #[tokio::test]
+    async fn verifier_control_rejects_user_output_schema() {
+        let orchestrator = orchestrator();
+        let mut verifier = task("verify");
+        verifier.control = Some(crate::core::models::TaskControl {
+            verifier: Some(crate::core::models::VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: None,
+            }),
+        });
+
+        let error = orchestrator
+            .create_workflow_def(workflow("workflow1", vec![verifier]))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("control.verifier and must not declare output_schema")
+        );
     }
 
     #[tokio::test]

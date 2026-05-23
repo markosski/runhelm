@@ -75,27 +75,41 @@ impl StoragePort for MemoryStorage {
 
         match (&task.status, metadata) {
             (TaskStatus::Completed, Some(metadata)) => Ok(TaskResult::SuccessWithMetadata {
+                input: task.input_data.clone(),
                 output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
                 metadata,
             }),
-            (TaskStatus::Completed, None) => Ok(TaskResult::Success(
-                task.output_data.clone().unwrap_or(serde_json::Value::Null),
-            )),
+            (TaskStatus::Completed, None) => Ok(TaskResult::Success {
+                input: task.input_data.clone(),
+                output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
+            }),
             (TaskStatus::Failed, Some(metadata)) => Ok(TaskResult::FailureWithMetadata {
+                input: task.input_data.clone(),
                 error_message: "task failed".to_string(),
                 metadata,
             }),
             (TaskStatus::Failed, None) => Ok(TaskResult::Failure {
+                input: task.input_data.clone(),
                 error_message: "task failed".to_string(),
             }),
-            (TaskStatus::Pending, Some(metadata)) => {
-                Ok(TaskResult::PendingWithMetadata { metadata })
-            }
-            (TaskStatus::Pending, None) => Ok(TaskResult::Pending),
+            (TaskStatus::Pending, Some(metadata)) => Ok(TaskResult::PendingWithMetadata {
+                input: task.input_data.clone(),
+                metadata,
+            }),
+            (TaskStatus::Pending, None) => Ok(TaskResult::Pending {
+                input: task.input_data.clone(),
+            }),
             (TaskStatus::Running | TaskStatus::InputNeeded { .. }, Some(metadata)) => {
-                Ok(TaskResult::RunningWithMetadata { metadata })
+                Ok(TaskResult::RunningWithMetadata {
+                    input: task.input_data.clone(),
+                    metadata,
+                })
             }
-            (TaskStatus::Running | TaskStatus::InputNeeded { .. }, None) => Ok(TaskResult::Running),
+            (TaskStatus::Running | TaskStatus::InputNeeded { .. }, None) => {
+                Ok(TaskResult::Running {
+                    input: task.input_data.clone(),
+                })
+            }
         }
     }
 
@@ -148,7 +162,7 @@ mod tests {
         TaskInstance {
             task_def_id: "task-a".to_string(),
             status,
-            input_data: vec![],
+            input_data: vec![json!({"request": true})],
             output_data,
             recorded_side_effects: vec![],
             generation: TaskGenerationMetadata {
@@ -194,7 +208,12 @@ mod tests {
             .await
             .unwrap()
         {
-            TaskResult::SuccessWithMetadata { output, metadata } => {
+            TaskResult::SuccessWithMetadata {
+                input,
+                output,
+                metadata,
+            } => {
+                assert_eq!(input, vec![json!({"request": true})]);
                 assert_eq!(output, json!({"ok": true}));
                 assert_eq!(metadata.generation.unwrap().generation_index, 1);
             }

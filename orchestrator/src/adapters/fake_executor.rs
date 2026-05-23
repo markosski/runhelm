@@ -31,6 +31,14 @@ impl Default for FakeExecutor {
 /// - `"type": "null"` → `null`
 /// - No `type` field, or unsupported constructs (`oneOf`, `anyOf`, `$ref`) → `{}`
 fn schema_default(schema: &Value) -> Value {
+    if let Some(first_enum_value) = schema
+        .get("enum")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+    {
+        return first_enum_value.clone();
+    }
+
     let type_str = schema.get("type").and_then(Value::as_str);
 
     match type_str {
@@ -96,11 +104,10 @@ mod tests {
                 url: "http://example.com".to_string(),
                 method: "GET".to_string(),
             },
-            verifier: None,
+            control: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: Some(schema),
-            expected_side_effects: vec![],
             required_credentials: vec![],
         }
     }

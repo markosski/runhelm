@@ -20,20 +20,21 @@ export interface FunctionDependency {
 export interface TaskDef {
     id: string;
     kind: TaskKind;
-    verifier?: AgentVerifierConfig;
+    control?: TaskControl;
     timeout_secs?: number;
-    input_schemas: any[];
+    input_schemas?: any[];
     output_schema?: any;
-    expected_side_effects: any[];
     required_credentials: string[];
 }
 
-export interface AgentVerifierConfig {
+export interface TaskControl {
+    verifier?: VerifierControlConfig;
+}
+
+export interface VerifierControlConfig {
     max_iterations: number;
     on_exhausted_continue: boolean;
     rerun_from_task_id?: string;
-    code: string;
-    dependencies?: FunctionDependency[];
 }
 
 export interface LoopExecutionContext {
@@ -43,23 +44,8 @@ export interface LoopExecutionContext {
     previous_output?: any;
 }
 
-export interface VerifierExecutionContext {
-    output: any;
-    generation: number;
-    max_iterations: number;
-    feedback_history: string[];
-    upstream_context: Record<string, any>;
-}
-
 export interface ExecutionMetadata {
     loop_context?: LoopExecutionContext;
-    verifier_context?: VerifierExecutionContext;
-}
-
-export interface VerifierExecutionResult {
-    decision: 'continue' | 'complete';
-    feedback?: string;
-    output: any;
 }
 
 export interface TaskExecutionPayload {

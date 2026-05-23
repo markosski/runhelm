@@ -230,6 +230,24 @@ pub async fn get_task_result(
     }
 }
 
+pub async fn list_task_results(
+    State(state): State<AppState>,
+    Path(workflow_instance_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    match state
+        .orchestrator
+        .list_task_results(&workflow_instance_id)
+        .await
+    {
+        Ok(tasks) => Ok(Json(json!({
+            "workflow_instance_id": workflow_instance_id,
+            "tasks": tasks,
+        }))),
+        Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 pub async fn get_task_result_generation(
     State(state): State<AppState>,
     Path((workflow_instance_id, task_id, generation)): Path<(String, String, u32)>,
@@ -314,11 +332,6 @@ fn execution_result_to_value(result: ExecutionResult) -> Value {
         ExecutionResult::Success(output) => json!({
             "status": "success",
             "output": output
-        }),
-        ExecutionResult::SuccessWithVerifier { output, verifier } => json!({
-            "status": "success",
-            "output": output,
-            "verifier": verifier
         }),
         ExecutionResult::InputNeeded(description) => json!({
             "status": "input_needed",

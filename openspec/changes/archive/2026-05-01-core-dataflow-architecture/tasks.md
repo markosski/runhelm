@@ -1,7 +1,7 @@
 ## 1. Core Models Setup
 
 - [x] 1.1 Add `jsonschema` and `serde_json` dependencies to `Cargo.toml` if not present
-- [x] 1.2 Update `TaskKindDef` and `TaskDef` structs to support `input_schemas`, `output_schema`, and `expected_side_effects`
+- [x] 1.2 Update `TaskKindDef` and `TaskDef` structs to support `input_schemas` and `output_schema`
 - [x] 1.3 Create `DataBinding` and `WorkflowDef` structs to map data flow
 - [x] 1.4 Create `TaskInstance`, `SideEffectInstance`, and `WorkflowInstance` structs for live execution state
 
