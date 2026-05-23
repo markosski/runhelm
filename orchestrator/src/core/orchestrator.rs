@@ -1,8 +1,8 @@
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
-    FunctionDef, TaskDef, TaskInstance, TaskStatus, TaskTypeDef, WorkflowDef, WorkflowInstance,
-    WorkflowList, WorkflowQueueStatus, WorkflowStatus, WorkflowStatusReport, WorkflowSummary,
+    FunctionDef, TaskDef, TaskInstance, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowList,
+    WorkflowQueueStatus, WorkflowStatus, WorkflowStatusReport, WorkflowSummary,
 };
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata};
@@ -212,7 +212,7 @@ impl Orchestrator {
                 if let Err(error) = orchestrator.run_workflow(instance_id).await {
                     error!(
                         %workflow_instance_id,
-                        %error,
+                        error = ?error,
                         "workflow execution failed"
                     );
                 }
@@ -316,7 +316,7 @@ fn resolve_task_lookup_attempt_id(
         return Ok(generation_attempt_id(&normalized_task_id, generation));
     }
 
-    Ok(normalized_task_id)
+    Ok(generation_attempt_id(&normalized_task_id, 1))
 }
 
 fn should_include_task_result_metadata(
@@ -327,7 +327,7 @@ fn should_include_task_result_metadata(
 ) -> bool {
     requested_generation.is_some()
         || requested_task_id != resolved_attempt_id
-        || task.generation.is_some()
+        || task.generation.generation_index > 0
         || task.verifier_metadata.is_some()
 }
 
@@ -340,7 +340,7 @@ fn task_result_for_instance(
     let metadata = include_metadata.then(|| TaskResultMetadata {
         requested_task_id: requested_task_id.to_string(),
         resolved_attempt_id: resolved_attempt_id.to_string(),
-        generation: task.generation.clone(),
+        generation: Some(task.generation.clone()),
         verifier_metadata: task.verifier_metadata.clone(),
     });
 
@@ -372,7 +372,8 @@ fn compute_loop_slices(def: &WorkflowDef) -> HashMap<String, Vec<String>> {
     let mut slices = HashMap::new();
     for verifier_task in def.tasks.iter().filter(|task| task.verifier.is_some()) {
         let verifier = verifier_task.verifier.as_ref().unwrap();
-        let from_start = reachable_from(def, &verifier.on_failure_rerun_task);
+        let rerun_start_task_id = verifier_rerun_start_task_id(verifier, &verifier_task.id);
+        let from_start = reachable_from(def, &rerun_start_task_id);
         let to_verifier = can_reach_target_set(def, &verifier_task.id);
         let slice = def
             .tasks
@@ -427,6 +428,16 @@ fn generation_attempt_id(task_def_id: &str, generation_index: u32) -> String {
     format!("{task_def_id}[{generation_index}]")
 }
 
+fn verifier_rerun_start_task_id(
+    verifier: &crate::core::models::AgentVerifierConfig,
+    verifier_task_id: &str,
+) -> String {
+    verifier
+        .rerun_from_task_id
+        .clone()
+        .unwrap_or_else(|| verifier_task_id.to_string())
+}
+
 fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<WorkflowDef> {
     validate_ascii_alphanumeric_id("workflow", &def.id)?;
     def.id = def.id.to_ascii_lowercase();
@@ -459,12 +470,6 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
 
     for task in &mut def.tasks {
         if let Some(verifier) = &mut task.verifier {
-            if !matches!(task.kind, TaskTypeDef::Agent { .. }) {
-                anyhow::bail!(
-                    "task {} declares verifier but is not an Agent task",
-                    task.id
-                );
-            }
             if verifier.max_iterations == 0 {
                 anyhow::bail!("task {} verifier max_iterations must be positive", task.id);
             }
@@ -474,11 +479,13 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
                     task.id
                 );
             }
-            verifier.on_failure_rerun_task = normalize_task_reference(
-                &original_to_normalized,
-                &verifier.on_failure_rerun_task,
-                "verifier on_failure_rerun_task",
-            )?;
+            if let Some(rerun_from_task_id) = verifier.rerun_from_task_id.as_mut() {
+                *rerun_from_task_id = normalize_task_reference(
+                    &original_to_normalized,
+                    rerun_from_task_id,
+                    "verifier rerun_from_task_id",
+                )?;
+            }
         }
     }
 
@@ -488,11 +495,16 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
 
     for task in &def.tasks {
         if let Some(verifier) = &task.verifier {
-            if !is_upstream_ancestor(&def, &verifier.on_failure_rerun_task, &task.id) {
+            let Some(rerun_from_task_id) = &verifier.rerun_from_task_id else {
+                continue;
+            };
+            if rerun_from_task_id != &task.id
+                && !is_upstream_ancestor(&def, rerun_from_task_id, &task.id)
+            {
                 anyhow::bail!(
                     "task {} verifier rerun task {} is not an upstream ancestor",
                     task.id,
-                    verifier.on_failure_rerun_task
+                    rerun_from_task_id
                 );
             }
         }
@@ -865,6 +877,38 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result, Some(ExecutionResult::Success(_))));
+    }
+
+    #[tokio::test]
+    async fn get_task_result_resolves_logical_task_id_to_generation_one() {
+        let orchestrator = orchestrator();
+        orchestrator
+            .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+            .await
+            .unwrap();
+        orchestrator
+            .create_workflow_instance(workflow_instance("instance1", "workflow1"))
+            .await
+            .unwrap();
+
+        orchestrator
+            .run_workflow("instance1".to_string())
+            .await
+            .unwrap();
+
+        match orchestrator
+            .get_task_result("instance1", "taska")
+            .await
+            .unwrap()
+        {
+            TaskResult::SuccessWithMetadata { output, metadata } => {
+                assert_eq!(output, json!({ "ok": false }));
+                assert_eq!(metadata.requested_task_id, "taska");
+                assert_eq!(metadata.resolved_attempt_id, "taska[1]");
+                assert_eq!(metadata.generation.unwrap().generation_index, 1);
+            }
+            result => panic!("expected success with metadata, got {result:?}"),
+        }
     }
 
     #[tokio::test]

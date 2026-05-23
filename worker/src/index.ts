@@ -1,5 +1,6 @@
 import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
+import { executeTaskVerifier } from './adapters/executors/verifierRunner.js';
 import { FileCredentialsAdapter, defaultCredentialsFilePath } from './adapters/FileCredentialsAdapter.js';
 import type { TaskExecutionPayload } from './core/models/TaskDef.js';
 import type { CredentialsPort } from './core/ports/CredentialsPort.js';
@@ -98,6 +99,11 @@ async function processTask(
                     const errorMsg = `Output schema validation failed: ${ajv.errorsText(validate.errors)}`;
                     return { kind: 'failure', reason: errorMsg };
                 }
+            }
+
+            const verifier = await executeTaskVerifier(payload, result.output);
+            if (verifier) {
+                return mapExecutionResult({ ...result, verifier });
             }
         }
         return mapExecutionResult(result);

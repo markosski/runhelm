@@ -48,7 +48,12 @@ pub struct FunctionDependency {
 pub struct AgentVerifierConfig {
     pub max_iterations: u32,
     pub on_exhausted_continue: bool,
-    pub on_failure_rerun_task: String,
+    #[serde(
+        default,
+        alias = "on_failure_rerun_task",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rerun_from_task_id: Option<String>,
     pub code: String,
 }
 
@@ -159,8 +164,7 @@ pub struct TaskInstance {
     pub input_data: Vec<serde_json::Value>,
     pub output_data: Option<serde_json::Value>,
     pub recorded_side_effects: Vec<SideEffectInstance>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<TaskGenerationMetadata>,
+    pub generation: TaskGenerationMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifier_metadata: Option<VerifierAttemptMetadata>,
 }

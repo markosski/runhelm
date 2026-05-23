@@ -66,7 +66,7 @@ tasks:
     verifier:
       max_iterations: 3
       on_exhausted_continue: false
-      on_failure_rerun_task: pullstocks
+      rerun_from_task_id: pullstocks
       code: |
         export default async function verify(ctx) {
           const response = String(ctx.output?.response ?? "").trim();
@@ -82,13 +82,7 @@ tasks:
           };
         }
     input_schemas: []
-    output_schema:
-      type: object
-      required:
-        - response
-      properties:
-        response:
-          type: string
+    output_schema: []
     expected_side_effects: []
     required_credentials:
       - llm_api_key

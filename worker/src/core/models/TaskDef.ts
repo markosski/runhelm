@@ -31,7 +31,7 @@ export interface TaskDef {
 export interface AgentVerifierConfig {
     max_iterations: number;
     on_exhausted_continue: boolean;
-    on_failure_rerun_task: string;
+    rerun_from_task_id?: string;
     code: string;
     dependencies?: FunctionDependency[];
 }

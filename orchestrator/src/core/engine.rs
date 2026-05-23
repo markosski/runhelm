@@ -42,7 +42,7 @@ impl WorkflowEngine {
                 task_def_id: t.task_def_id.clone(),
                 status: t.status.clone(),
                 has_output: t.output_data.is_some(),
-                generation: t.generation.clone(),
+                generation: Some(t.generation.clone()),
                 verifier_metadata: t.verifier_metadata.clone(),
             })
             .collect();
@@ -94,23 +94,24 @@ impl WorkflowEngine {
             .await?;
 
         let loop_slices = self.compute_loop_slices(&def);
-        let loop_task_to_verifier = self.loop_task_to_verifier(&loop_slices);
 
         // Initialize tasks if not already done
         if instance.tasks.is_empty() {
             for task_def in &def.tasks {
-                if loop_task_to_verifier.contains_key(&task_def.id) {
-                    continue;
-                }
+                let attempt_id = Self::generation_attempt_id(&task_def.id, 1);
                 instance.tasks.insert(
-                    task_def.id.clone(),
+                    attempt_id.clone(),
                     TaskInstance {
                         task_def_id: task_def.id.clone(),
                         status: TaskStatus::Pending,
                         input_data: vec![], // Empty until upstream dependencies propagate data
                         output_data: None,
                         recorded_side_effects: vec![],
-                        generation: None,
+                        generation: TaskGenerationMetadata {
+                            attempt_id,
+                            original_task_def_id: task_def.id.clone(),
+                            generation_index: 1,
+                        },
                         verifier_metadata: None,
                     },
                 );
@@ -311,7 +312,8 @@ impl WorkflowEngine {
         let mut slices = HashMap::new();
         for verifier_task in def.tasks.iter().filter(|task| task.verifier.is_some()) {
             let verifier = verifier_task.verifier.as_ref().unwrap();
-            let from_start = self.reachable_from(def, &verifier.on_failure_rerun_task);
+            let rerun_start_task_id = verifier_rerun_start_task_id(verifier, &verifier_task.id);
+            let from_start = self.reachable_from(def, &rerun_start_task_id);
             let to_verifier = self.can_reach_target_set(def, &verifier_task.id);
             let slice = def
                 .tasks
@@ -324,19 +326,6 @@ impl WorkflowEngine {
             slices.insert(verifier_task.id.clone(), slice);
         }
         slices
-    }
-
-    fn loop_task_to_verifier(
-        &self,
-        loop_slices: &HashMap<String, Vec<String>>,
-    ) -> HashMap<String, String> {
-        let mut task_to_verifier = HashMap::new();
-        for (verifier_id, slice) in loop_slices {
-            for task_id in slice {
-                task_to_verifier.insert(task_id.clone(), verifier_id.clone());
-            }
-        }
-        task_to_verifier
     }
 
     fn reachable_from(&self, def: &WorkflowDef, start: &str) -> HashSet<String> {
@@ -396,7 +385,7 @@ impl WorkflowEngine {
             let Some(start_task) = def
                 .tasks
                 .iter()
-                .find(|task| task.id == verifier.on_failure_rerun_task)
+                .find(|task| task.id == verifier_rerun_start_task_id(verifier, verifier_task_id))
             else {
                 continue;
             };
@@ -415,7 +404,7 @@ impl WorkflowEngine {
                 verifier_task_id.clone(),
                 VerifierGenerationState {
                     verifier_task_id: verifier_task_id.clone(),
-                    rerun_start_task_id: verifier.on_failure_rerun_task.clone(),
+                    rerun_start_task_id: verifier_rerun_start_task_id(verifier, verifier_task_id),
                     latest_generation: 1,
                     selected_generation: None,
                     feedback_history: vec![],
@@ -467,11 +456,11 @@ impl WorkflowEngine {
                     input_data: vec![],
                     output_data: None,
                     recorded_side_effects: vec![],
-                    generation: Some(TaskGenerationMetadata {
+                    generation: TaskGenerationMetadata {
                         attempt_id,
                         original_task_def_id: task_def_id.clone(),
                         generation_index,
-                    }),
+                    },
                     verifier_metadata: None,
                 });
         }
@@ -490,7 +479,7 @@ impl WorkflowEngine {
         task_def: &crate::core::models::TaskDef,
     ) -> Option<Vec<serde_json::Value>> {
         let loop_slices = self.compute_loop_slices(def);
-        let target_generation = task_instance.generation.as_ref();
+        let target_generation = Some(&task_instance.generation);
         let mut inputs = Vec::new();
 
         for binding in def
@@ -555,7 +544,7 @@ impl WorkflowEngine {
             ));
         }
 
-        Some(source_task_id.to_string())
+        Some(Self::generation_attempt_id(source_task_id, 1))
     }
 
     fn execution_metadata(
@@ -566,9 +555,7 @@ impl WorkflowEngine {
         task_instance: &TaskInstance,
         task_def: &crate::core::models::TaskDef,
     ) -> ExecutionMetadata {
-        let Some(generation) = task_instance.generation.as_ref() else {
-            return ExecutionMetadata::default();
-        };
+        let generation = &task_instance.generation;
         let loop_slices = self.compute_loop_slices(def);
         let Some((verifier_id, _)) = loop_slices
             .iter()
@@ -672,11 +659,7 @@ impl WorkflowEngine {
             .tasks
             .get(task_id)
             .ok_or_else(|| anyhow::anyhow!("verifier task attempt {task_id} not found"))?;
-        let generation = task
-            .generation
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("verifier task {task_id} is not materialized"))?
-            .generation_index;
+        let generation = task.generation.generation_index;
         let verifier_task_id = task.task_def_id.clone();
         let verifier_task = def
             .tasks
@@ -808,12 +791,23 @@ impl WorkflowEngine {
     }
 }
 
+fn verifier_rerun_start_task_id(
+    verifier: &crate::core::models::AgentVerifierConfig,
+    verifier_task_id: &str,
+) -> String {
+    verifier
+        .rerun_from_task_id
+        .clone()
+        .unwrap_or_else(|| verifier_task_id.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::adapters::fake_executor::FakeExecutor;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::core::models::*;
+    use serde_json::Number;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -859,6 +853,82 @@ mod tests {
         instance_id
     }
 
+    fn agent_verifier_task(id: &str, rerun_from_task_id: Option<&str>) -> TaskDef {
+        let mut task = task_def(id, json!({ "type": "object" }));
+        task.kind = TaskTypeDef::Agent {
+            model_id: "test/model".to_string(),
+            provider_url: "".to_string(),
+            prompt: "verify".to_string(),
+            tools: vec![],
+            skills: vec![],
+            ask: false,
+            schema_failure_retry_times: Number::from(0),
+        };
+        task.verifier = Some(AgentVerifierConfig {
+            max_iterations: 2,
+            on_exhausted_continue: false,
+            rerun_from_task_id: rerun_from_task_id.map(str::to_string),
+            code: "export default async function verify() { return { decision: 'complete' }; }"
+                .to_string(),
+        });
+        task
+    }
+
+    #[test]
+    fn test_verifier_without_rerun_from_task_id_self_reruns_only() {
+        let engine = make_engine();
+        let def = WorkflowDef {
+            id: "def-self-rerun".to_string(),
+            tasks: vec![
+                task_def("task-a", json!({ "type": "object" })),
+                agent_verifier_task("verify", None),
+            ],
+            data_bindings: vec![DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "verify".to_string(),
+                target_input_index: 0,
+            }],
+        };
+
+        let slices = engine.compute_loop_slices(&def);
+        assert_eq!(slices["verify"], vec!["verify".to_string()]);
+    }
+
+    #[test]
+    fn test_verifier_with_rerun_from_task_id_reruns_upstream_slice() {
+        let engine = make_engine();
+        let def = WorkflowDef {
+            id: "def-upstream-rerun".to_string(),
+            tasks: vec![
+                task_def("task-a", json!({ "type": "object" })),
+                task_def("task-b", json!({ "type": "object" })),
+                agent_verifier_task("verify", Some("task-a")),
+            ],
+            data_bindings: vec![
+                DataBinding {
+                    source_task_id: "task-a".to_string(),
+                    target_task_id: "task-b".to_string(),
+                    target_input_index: 0,
+                },
+                DataBinding {
+                    source_task_id: "task-b".to_string(),
+                    target_task_id: "verify".to_string(),
+                    target_input_index: 0,
+                },
+            ],
+        };
+
+        let slices = engine.compute_loop_slices(&def);
+        assert_eq!(
+            slices["verify"],
+            vec![
+                "task-a".to_string(),
+                "task-b".to_string(),
+                "verify".to_string()
+            ]
+        );
+    }
+
     /// A single task with no dependencies should run and complete the workflow.
     #[tokio::test]
     async fn test_single_task_workflow_completes() {
@@ -883,7 +953,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.status, WorkflowStatus::Completed);
-        assert_eq!(result.tasks["task-a"].status, TaskStatus::Completed);
+        assert_eq!(result.tasks["task-a[1]"].status, TaskStatus::Completed);
+        assert_eq!(result.tasks["task-a[1]"].task_def_id, "task-a");
+        assert_eq!(result.tasks["task-a[1]"].generation.generation_index, 1);
     }
 
     /// Two independent tasks (A and B) feed into a third (C) via data bindings.
@@ -941,12 +1013,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.status, WorkflowStatus::Completed);
-        assert_eq!(result.tasks["task-a"].status, TaskStatus::Completed);
-        assert_eq!(result.tasks["task-b"].status, TaskStatus::Completed);
-        assert_eq!(result.tasks["task-c"].status, TaskStatus::Completed);
+        assert_eq!(result.tasks["task-a[1]"].status, TaskStatus::Completed);
+        assert_eq!(result.tasks["task-b[1]"].status, TaskStatus::Completed);
+        assert_eq!(result.tasks["task-c[1]"].status, TaskStatus::Completed);
 
         // task-c should have received propagated inputs at both index slots
-        let task_c = &result.tasks["task-c"];
+        let task_c = &result.tasks["task-c[1]"];
         assert_eq!(task_c.input_data.len(), 2);
     }
 
@@ -978,7 +1050,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(instance.status, WorkflowStatus::Failed);
-        assert_eq!(instance.tasks["task-strict"].status, TaskStatus::Failed);
+        assert_eq!(instance.tasks["task-strict[1]"].status, TaskStatus::Failed);
     }
 
     /// After a successful run, get_workflow_status should return a report reflecting
@@ -1012,12 +1084,14 @@ mod tests {
         assert_eq!(report.status, WorkflowStatus::Completed);
         assert_eq!(report.tasks.len(), 2);
 
-        // Tasks are sorted by id, so task-a comes first.
-        assert_eq!(report.tasks[0].task_id, "task-a");
+        // Tasks are sorted by id, so task-a[1] comes first.
+        assert_eq!(report.tasks[0].task_id, "task-a[1]");
+        assert_eq!(report.tasks[0].task_def_id, "task-a");
         assert_eq!(report.tasks[0].status, TaskStatus::Completed);
         assert!(report.tasks[0].has_output);
 
-        assert_eq!(report.tasks[1].task_id, "task-b");
+        assert_eq!(report.tasks[1].task_id, "task-b[1]");
+        assert_eq!(report.tasks[1].task_def_id, "task-b");
         assert_eq!(report.tasks[1].status, TaskStatus::Completed);
         assert!(report.tasks[1].has_output);
     }

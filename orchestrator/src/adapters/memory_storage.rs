@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 use crate::core::models::{
-    FunctionDef, TaskStatus, VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus,
+    FunctionDef, TaskGenerationMetadata, TaskStatus, VerifierStateStatus, WorkflowDef,
+    WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata};
 
@@ -65,13 +66,11 @@ impl StoragePort for MemoryStorage {
             .tasks
             .get(task_id)
             .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
-        let metadata = (task.generation.is_some() || task.verifier_metadata.is_some()).then(|| {
-            TaskResultMetadata {
-                requested_task_id: task_id.to_string(),
-                resolved_attempt_id: task_id.to_string(),
-                generation: task.generation.clone(),
-                verifier_metadata: task.verifier_metadata.clone(),
-            }
+        let metadata = Some(TaskResultMetadata {
+            requested_task_id: task_id.to_string(),
+            resolved_attempt_id: task_id.to_string(),
+            generation: Some(task.generation.clone()),
+            verifier_metadata: task.verifier_metadata.clone(),
         });
 
         match (&task.status, metadata) {
@@ -145,13 +144,18 @@ mod tests {
     use serde_json::json;
 
     fn task_instance(status: TaskStatus, output_data: Option<serde_json::Value>) -> TaskInstance {
+        let attempt_id = "task-a[1]".to_string();
         TaskInstance {
             task_def_id: "task-a".to_string(),
             status,
             input_data: vec![],
             output_data,
             recorded_side_effects: vec![],
-            generation: None,
+            generation: TaskGenerationMetadata {
+                attempt_id,
+                original_task_def_id: "task-a".to_string(),
+                generation_index: 1,
+            },
             verifier_metadata: None,
         }
     }
@@ -185,36 +189,38 @@ mod tests {
         };
         storage.save_workflow_instance(instance).await.unwrap();
 
-        assert_eq!(
-            storage
-                .get_task_result("instance-1", "completed")
-                .await
-                .unwrap(),
-            TaskResult::Success(json!({"ok": true}))
-        );
-        assert_eq!(
+        match storage
+            .get_task_result("instance-1", "completed")
+            .await
+            .unwrap()
+        {
+            TaskResult::SuccessWithMetadata { output, metadata } => {
+                assert_eq!(output, json!({"ok": true}));
+                assert_eq!(metadata.generation.unwrap().generation_index, 1);
+            }
+            result => panic!("expected success with metadata, got {result:?}"),
+        }
+        assert!(matches!(
             storage
                 .get_task_result("instance-1", "pending")
                 .await
                 .unwrap(),
-            TaskResult::Pending
-        );
-        assert_eq!(
+            TaskResult::PendingWithMetadata { .. }
+        ));
+        assert!(matches!(
             storage
                 .get_task_result("instance-1", "running")
                 .await
                 .unwrap(),
-            TaskResult::Running
-        );
-        assert_eq!(
+            TaskResult::RunningWithMetadata { .. }
+        ));
+        assert!(matches!(
             storage
                 .get_task_result("instance-1", "failed")
                 .await
                 .unwrap(),
-            TaskResult::Failure {
-                error_message: "task failed".to_string()
-            }
-        );
+            TaskResult::FailureWithMetadata { .. }
+        ));
     }
 
     #[tokio::test]
