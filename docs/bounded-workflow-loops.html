@@ -869,8 +869,9 @@
         <h3>Why bounded loops fit this use case</h3>
         <p>
           The verifier can reject a weak report without restarting unrelated setup work. Feedback is
-          injected into the next rerun generation as loop context, so the Agent can correct the exact
-          issue that caused rejection.
+          injected into the next rerun generation as loop context. The worker receives the most
+          recent feedback, ordered feedback history, and the previous same-task output, so the Agent
+          can correct the current issue while preserving earlier corrections.
         </p>
       </div>
     </section>

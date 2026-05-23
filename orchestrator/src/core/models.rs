@@ -212,11 +212,17 @@ pub struct WorkflowInstance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoopFeedbackEntry {
+    pub generation: u32,
+    pub feedback: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LoopExecutionContext {
     pub generation: u32,
     pub max_iterations: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latest_feedback: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feedback_history: Vec<LoopFeedbackEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_output: Option<serde_json::Value>,
 }

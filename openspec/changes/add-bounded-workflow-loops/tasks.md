@@ -34,7 +34,7 @@
 
 ## 4. Loop Context and Binding Resolution
 
-- [x] 4.1 Build orchestrator-owned loop context containing generation, max iterations, latest feedback, and feedback history.
+- [x] 4.1 Build orchestrator-owned loop context containing generation, max iterations, and ordered feedback history.
 - [x] 4.2 Inject loop context into rerun-slice task execution as dedicated execution metadata, not as user-declared input data.
 - [x] 4.3 Persist verifier feedback and verifier output after each verifier run.
 - [x] 4.4 Update data binding resolution so tasks inside a rerun slice consume same-generation upstream outputs.

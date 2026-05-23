@@ -73,7 +73,7 @@ Within a rerun generation, bindings between tasks in the rerun slice consume out
 
 **5. Carry rerun feedback as dedicated execution metadata**
 
-When a verifier returns `continue`, RunHelm persists the feedback and creates the next generation with orchestrator-owned loop context containing iteration, max iterations, latest feedback, and feedback history. This context is passed as dedicated execution metadata, not as an extra user-declared input.
+When a verifier returns `continue`, RunHelm persists the feedback and creates the next generation with orchestrator-owned loop context containing iteration, max iterations, and ordered feedback history. Workers derive the latest feedback from the last history entry. This context is passed as dedicated execution metadata, not as an extra user-declared input.
 
 Agent workers append the loop context to the prompt. Function and API tasks receive the execution request unchanged unless their executors explicitly support loop context later.
 

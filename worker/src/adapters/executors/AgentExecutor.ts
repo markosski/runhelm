@@ -144,12 +144,20 @@ export class AgentExecutor implements TaskExecutor {
         }
 
         const loopContext = payload.execution_metadata?.loop_context;
-        if (loopContext?.latest_feedback || loopContext?.previous_output !== undefined) {
+        const latestFeedback = loopContext?.feedback_history?.at(-1)?.feedback;
+        const feedbackHistory = loopContext?.feedback_history?.slice(0, -1) || [];
+        if (latestFeedback || loopContext?.previous_output !== undefined) {
             logger.info('[AgentExecutor] Verifier feedback provided')
             contextPrompt += `\n\nVERIFIER-GUIDED RETRY CONTEXT:\n`;
-            contextPrompt += `This task is being re-executed because a downstream verifier rejected the previous generation. Use the verifier feedback to revise the result, and use the previous output as the most recent version produced by this same task.\n`;
-            if (loopContext.latest_feedback) {
-                contextPrompt += `\nMost recent verifier feedback:\n${loopContext.latest_feedback}\n`;
+            contextPrompt += `This task is being re-executed because a downstream verifier rejected the previous generation. Use the verifier feedback to revise the result, preserve earlier corrections from the feedback history, and use the previous output as the most recent version produced by this same task.\n`;
+            if (latestFeedback) {
+                contextPrompt += `\nMost recent verifier feedback:\n${latestFeedback}\n`;
+            }
+            if (feedbackHistory.length > 0) {
+                contextPrompt += `\nPrior verifier feedback history:\n`;
+                feedbackHistory.forEach((entry) => {
+                    contextPrompt += `- Generation ${entry.generation}: ${entry.feedback}\n`;
+                });
             }
             if (loopContext.previous_output !== undefined) {
                 contextPrompt += `\nMost recent previous output from this same task:\n${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
@@ -240,6 +248,18 @@ export class AgentExecutor implements TaskExecutor {
             Use the approved tools available to you to gather the needed information.
             DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
             `;
+
+        if (latestFeedback || loopContext?.previous_output !== undefined) {
+            agent.state.systemPrompt += `
+            \n\n
+            VERIFIER-GUIDED RETRY:
+            This execution includes verifier feedback from a previous rejected generation.
+            Treat that feedback as orchestration guidance for revising your result.
+            The most recent feedback identifies the current issue to fix.
+            Prior feedback records earlier corrections to preserve when applicable.
+            Do not include the feedback text in the final output unless the task explicitly asks for it.
+            `;
+        }
 
         if (payload.task.output_schema) {
             agent.state.systemPrompt += `

@@ -73,7 +73,7 @@ The system SHALL provide orchestrator-owned loop context to tasks in repeated ve
 
 #### Scenario: Rerun generation receives feedback
 - **WHEN** a verifier returns feedback and creates a next generation
-- **THEN** tasks in the next generation receive dedicated loop context containing iteration number, maximum iteration count, latest feedback, and feedback history
+- **THEN** tasks in the next generation receive dedicated loop context containing iteration number, maximum iteration count, and ordered feedback history
 
 #### Scenario: First generation has no prior feedback
 - **WHEN** the first verifier-controlled generation runs

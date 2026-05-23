@@ -1,9 +1,10 @@
 use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
-    ExecutionMetadata, LoopExecutionContext, TaskGenerationMetadata, TaskInstance, TaskStatus,
-    TaskStatusReport, VerifierAttemptMetadata, VerifierAttemptStatus, VerifierControlConfig,
-    VerifierDecision, VerifierExecutionResult, VerifierGenerationState, VerifierStateStatus,
-    VerifierStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport,
+    ExecutionMetadata, LoopExecutionContext, LoopFeedbackEntry, TaskGenerationMetadata,
+    TaskInstance, TaskStatus, TaskStatusReport, VerifierAttemptMetadata, VerifierAttemptStatus,
+    VerifierControlConfig, VerifierDecision, VerifierExecutionResult, VerifierGenerationState,
+    VerifierStateStatus, VerifierStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus,
+    WorkflowStatusReport,
 };
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
@@ -583,6 +584,7 @@ impl WorkflowEngine {
         let Some(verifier) = task_verifier(verifier_task) else {
             return ExecutionMetadata::default();
         };
+
         let feedback_history = instance
             .verifier_states
             .get(verifier_id)
@@ -590,11 +592,13 @@ impl WorkflowEngine {
                 state
                     .feedback_history
                     .iter()
-                    .map(|entry| entry.feedback.clone())
+                    .map(|entry| LoopFeedbackEntry {
+                        generation: entry.generation_index,
+                        feedback: entry.feedback.clone(),
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let latest_feedback = feedback_history.last().cloned();
 
         let previous_output =
             generation
@@ -614,7 +618,7 @@ impl WorkflowEngine {
         let loop_context = LoopExecutionContext {
             generation: generation.generation_index,
             max_iterations: verifier.max_iterations,
-            latest_feedback,
+            feedback_history,
             previous_output,
         };
 
@@ -967,6 +971,93 @@ mod tests {
                 "task-b".to_string(),
                 "verify".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn test_loop_execution_metadata_includes_feedback_history() {
+        let engine = make_engine();
+        let def = WorkflowDef {
+            id: "def-loop-metadata".to_string(),
+            tasks: vec![
+                task_def("task-a", json!({ "type": "object" })),
+                agent_verifier_task("verify", Some("task-a")),
+            ],
+            data_bindings: vec![DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "verify".to_string(),
+                target_input_index: 0,
+            }],
+        };
+        let task_instance = TaskInstance {
+            task_def_id: "task-a".to_string(),
+            status: TaskStatus::Pending,
+            input_data: vec![],
+            output_data: None,
+            recorded_side_effects: vec![],
+            generation: TaskGenerationMetadata {
+                attempt_id: "task-a[2]".to_string(),
+                original_task_def_id: "task-a".to_string(),
+                generation_index: 2,
+            },
+            verifier_metadata: None,
+        };
+        let mut instance = WorkflowInstance {
+            id: "inst-loop-metadata".to_string(),
+            workflow_def_id: def.id.clone(),
+            status: WorkflowStatus::Running,
+            tasks: HashMap::from([
+                (
+                    "task-a[1]".to_string(),
+                    TaskInstance {
+                        task_def_id: "task-a".to_string(),
+                        status: TaskStatus::Completed,
+                        input_data: vec![],
+                        output_data: Some(json!({ "draft": "first" })),
+                        recorded_side_effects: vec![],
+                        generation: TaskGenerationMetadata {
+                            attempt_id: "task-a[1]".to_string(),
+                            original_task_def_id: "task-a".to_string(),
+                            generation_index: 1,
+                        },
+                        verifier_metadata: None,
+                    },
+                ),
+                ("task-a[2]".to_string(), task_instance.clone()),
+            ]),
+            verifier_states: HashMap::new(),
+        };
+        instance.verifier_states.insert(
+            "verify".to_string(),
+            VerifierGenerationState {
+                verifier_task_id: "verify".to_string(),
+                rerun_start_task_id: "task-a".to_string(),
+                latest_generation: 2,
+                selected_generation: None,
+                feedback_history: vec![VerifierFeedbackEntry {
+                    generation_index: 1,
+                    feedback: "Add citations.".to_string(),
+                    verifier_output: json!({ "decision": "continue" }),
+                }],
+                status: VerifierStateStatus::Running,
+                exit_reason: None,
+            },
+        );
+
+        let metadata =
+            engine.execution_metadata(&instance, &def, "task-a[2]", &task_instance, &def.tasks[0]);
+        let loop_context = metadata.loop_context.unwrap();
+
+        assert_eq!(
+            loop_context.feedback_history,
+            vec![LoopFeedbackEntry {
+                generation: 1,
+                feedback: "Add citations.".to_string(),
+            }]
+        );
+        assert_eq!(
+            loop_context.previous_output,
+            Some(json!({ "draft": "first" }))
         );
     }
 

@@ -8,7 +8,7 @@ RunHelm needs a first-class way for a workflow to revise a bounded slice of prio
 - Treat verifier `continue` as a bounded backedge to the configured previous task instead of rerunning only the verifier Agent.
 - Materialize rerun-slice generations as distinct runtime attempts, such as `b[1]`, `c[1]`, `d[1]`, then `b[2]`, `c[2]`, `d[2]`.
 - Add a dependency-free verifier code contract returning `decision: "continue" | "complete"` and optional feedback.
-- Add orchestrator-owned loop context for repeated generations, including iteration metadata, latest feedback, and feedback history.
+- Add orchestrator-owned loop context for repeated generations, including iteration metadata and ordered feedback history.
 - Add configurable exhaustion behavior so a verifier can either fail the workflow or continue with the latest schema-valid generation.
 - Resolve downstream bindings after the verifier only after a generation is accepted or finalized by exhaustion policy.
 

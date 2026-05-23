@@ -37,10 +37,15 @@ export interface VerifierControlConfig {
     rerun_from_task_id?: string;
 }
 
+export interface LoopFeedbackEntry {
+    generation: number;
+    feedback: string;
+}
+
 export interface LoopExecutionContext {
     generation: number;
     max_iterations: number;
-    latest_feedback?: string;
+    feedback_history?: LoopFeedbackEntry[];
     previous_output?: any;
 }
 
