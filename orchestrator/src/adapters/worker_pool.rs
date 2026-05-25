@@ -151,16 +151,6 @@ impl WorkerPool {
         task: &TaskDef,
         inputs: &[serde_json::Value],
         timeout: Duration,
-    ) -> anyhow::Result<ExecutionResult> {
-        self.enqueue_task_with_metadata(task, inputs, timeout, ExecutionMetadata::default())
-            .await
-    }
-
-    pub async fn enqueue_task_with_metadata(
-        &self,
-        task: &TaskDef,
-        inputs: &[serde_json::Value],
-        timeout: Duration,
         execution_metadata: ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult> {
         let task_id = format!(
@@ -357,7 +347,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_secs(5))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 
@@ -399,7 +394,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_millis(10))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_millis(10),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 
@@ -442,7 +442,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_secs(5))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 
@@ -469,7 +474,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_millis(10))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_millis(10),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 

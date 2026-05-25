@@ -189,7 +189,7 @@ impl WorkflowEngine {
                     match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
                         Ok(resolved_task_def) => {
                             self.executor
-                                .execute_with_metadata(&resolved_task_def, &inputs, &metadata)
+                                .execute(&resolved_task_def, &inputs, &metadata)
                                 .await
                         }
                         Err(error) => Err(error),

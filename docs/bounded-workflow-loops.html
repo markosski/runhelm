@@ -905,8 +905,9 @@
           <details>
             <summary>Loop context is execution metadata</summary>
             <p>
-              Feedback history is injected through dedicated execution metadata, not as a user-declared
-              input slot. The workflow input schema remains about business data, not orchestration state.
+              Feedback history is carried as execution metadata on the normal executor and worker
+              enqueue path, not as a user-declared input slot. The workflow input schema remains
+              about business data, not orchestration state.
             </p>
           </details>
         </div>

@@ -29,12 +29,7 @@ impl DockerExecutor {
 
 #[async_trait]
 impl ExecutorPort for DockerExecutor {
-    async fn execute(&self, task: &TaskDef, inputs: &[Value]) -> anyhow::Result<ExecutionResult> {
-        self.execute_with_metadata(task, inputs, &ExecutionMetadata::default())
-            .await
-    }
-
-    async fn execute_with_metadata(
+    async fn execute(
         &self,
         task: &TaskDef,
         inputs: &[Value],
@@ -46,7 +41,7 @@ impl ExecutorPort for DockerExecutor {
             .unwrap_or(self.task_timeout);
 
         self.worker_pool
-            .enqueue_task_with_metadata(task, inputs, task_timeout, metadata.clone())
+            .enqueue_task(task, inputs, task_timeout, metadata.clone())
             .await
     }
 }
@@ -82,8 +77,11 @@ mod tests {
             required_credentials: vec![],
         };
 
-        let result =
-            tokio::time::timeout(Duration::from_millis(30), executor.execute(&task, &[])).await;
+        let result = tokio::time::timeout(
+            Duration::from_millis(30),
+            executor.execute(&task, &[], &ExecutionMetadata::default()),
+        )
+        .await;
 
         assert!(result.is_err());
     }
@@ -114,7 +112,11 @@ mod tests {
             required_credentials: vec![],
         };
 
-        let execution = tokio::spawn(async move { executor.execute(&task, &[]).await });
+        let execution = tokio::spawn(async move {
+            executor
+                .execute(&task, &[], &ExecutionMetadata::default())
+                .await
+        });
         let claimed = worker_pool
             .claim_task("worker-1", Duration::from_secs(1))
             .await

@@ -14,14 +14,6 @@ pub trait ExecutorPort {
         &self,
         task: &TaskDef,
         inputs: &[serde_json::Value],
+        metadata: &ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult>;
-
-    async fn execute_with_metadata(
-        &self,
-        task: &TaskDef,
-        inputs: &[serde_json::Value],
-        _metadata: &ExecutionMetadata,
-    ) -> anyhow::Result<ExecutionResult> {
-        self.execute(task, inputs).await
-    }
 }

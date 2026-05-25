@@ -1,9 +1,9 @@
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_resolution::resolve_task_function_ref;
 use crate::core::models::{
-    FunctionDef, TaskDef, TaskInstance, TaskStatus, VerifierControlConfig, WorkflowDef,
-    WorkflowInstance, WorkflowList, WorkflowQueueStatus, WorkflowStatus, WorkflowStatusReport,
-    WorkflowSummary, verifier_decision_schema,
+    ExecutionMetadata, FunctionDef, TaskDef, TaskInstance, TaskStatus, VerifierControlConfig,
+    WorkflowDef, WorkflowInstance, WorkflowList, WorkflowQueueStatus, WorkflowStatus,
+    WorkflowStatusReport, WorkflowSummary, verifier_decision_schema,
 };
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata, WorkflowTaskResult};
@@ -301,7 +301,9 @@ impl Orchestrator {
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
         let task = self.resolve_task_function_ref(task).await?;
-        self.executor.execute(&task, inputs).await
+        self.executor
+            .execute(&task, inputs, &ExecutionMetadata::default())
+            .await
     }
 
     async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
@@ -709,6 +711,7 @@ mod tests {
             &self,
             _task: &TaskDef,
             _inputs: &[serde_json::Value],
+            _metadata: &ExecutionMetadata,
         ) -> anyhow::Result<ExecutionResult> {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(active, Ordering::SeqCst);
