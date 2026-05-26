@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 use crate::core::models::{
-    FunctionDef, TaskGenerationMetadata, TaskStatus, VerifierStateStatus, WorkflowDef,
+    FunctionDef, TaskStatus, VerifierStateStatus, WorkflowDef,
     WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata};
@@ -62,10 +62,12 @@ impl StoragePort for MemoryStorage {
         let instance = map
             .get(workflow_instance_id)
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
         let task = instance
             .tasks
             .get(task_id)
             .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
+
         let metadata = Some(TaskResultMetadata {
             requested_task_id: task_id.to_string(),
             resolved_attempt_id: task_id.to_string(),
@@ -154,7 +156,7 @@ impl StoragePort for MemoryStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::TaskInstance;
+    use crate::core::models::{TaskGenerationMetadata, TaskInstance};
     use serde_json::json;
 
     fn task_instance(status: TaskStatus, output_data: Option<serde_json::Value>) -> TaskInstance {

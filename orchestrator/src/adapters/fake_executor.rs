@@ -5,9 +5,11 @@ use serde_json::Value;
 
 /// A deterministic, in-process executor that generates schema-conformant default
 /// output from a `TaskDef`'s `output_schema`. Used in unit tests and dry-runs.
+#[allow(dead_code)]
 pub struct FakeExecutor;
 
 impl FakeExecutor {
+#[allow(dead_code)]
     pub fn new() -> Self {
         FakeExecutor
     }

@@ -185,6 +185,7 @@ impl Orchestrator {
             .get_workflow_instance(workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
         let def = self
             .storage
             .get_workflow_def(&instance.workflow_def_id)
@@ -193,6 +194,7 @@ impl Orchestrator {
 
         let resolved_attempt_id =
             resolve_task_lookup_attempt_id(&instance, &def, task_id, generation)?;
+
         let task = instance
             .tasks
             .get(&resolved_attempt_id)
@@ -311,6 +313,7 @@ impl Orchestrator {
     }
 }
 
+/// The result of a task execution, including its input, output or error, and optional metadata about how the result was obtained.
 fn resolve_task_lookup_attempt_id(
     instance: &WorkflowInstance,
     def: &WorkflowDef,
@@ -335,6 +338,7 @@ fn resolve_task_lookup_attempt_id(
     }
 
     let loop_slices = compute_loop_slices(def);
+
     if let Some((verifier_task_id, _)) = loop_slices
         .iter()
         .find(|(_, slice)| slice.contains(&normalized_task_id))
