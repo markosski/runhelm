@@ -1,5 +1,6 @@
 use crate::core::models::{
-    FunctionDef, TaskGenerationMetadata, VerifierAttemptMetadata, WorkflowDef, WorkflowInstance,
+    FunctionDef, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata, WorkflowDef,
+    WorkflowInstance,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -43,15 +44,17 @@ pub enum TaskResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WorkflowTaskResult {
-    pub task_id: String,
+    pub task_attempt_id: String,
     pub result: TaskResult,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskResultMetadata {
-    pub requested_task_id: String,
-    pub resolved_attempt_id: String,
-    pub generation: Option<TaskGenerationMetadata>,
+    pub task_def_id: String,
+    pub task_attempt_id: String,
+    pub satisfaction: TaskSatisfactionStatus,
+    pub input_mapping: Vec<TaskInputMapping>,
+    pub generation_index: u32,
     pub verifier_metadata: Option<VerifierAttemptMetadata>,
 }
 
@@ -62,11 +65,13 @@ fn serialize_metadata<S>(
 where
     S: SerializeMap,
 {
-    map.serialize_entry("requested_task_id", &metadata.requested_task_id)?;
-    map.serialize_entry("resolved_attempt_id", &metadata.resolved_attempt_id)?;
-    if let Some(generation) = &metadata.generation {
-        map.serialize_entry("generation", generation)?;
+    map.serialize_entry("task_def_id", &metadata.task_def_id)?;
+    map.serialize_entry("task_attempt_id", &metadata.task_attempt_id)?;
+    map.serialize_entry("satisfaction", &metadata.satisfaction)?;
+    if !metadata.input_mapping.is_empty() {
+        map.serialize_entry("input_mapping", &metadata.input_mapping)?;
     }
+    map.serialize_entry("generation_index", &metadata.generation_index)?;
     if let Some(verifier_metadata) = &metadata.verifier_metadata {
         map.serialize_entry("verifier_metadata", verifier_metadata)?;
     }
@@ -151,19 +156,16 @@ impl Serialize for TaskResult {
 }
 
 #[async_trait]
+// TODO: consider converting to using event sourcing for state changes
+//  Global destrictive operations like delete workflow should still wipe out all workflow data
 pub trait StoragePort {
-    async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()>;
     async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>>;
-    async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()>;
     async fn get_function_def(&self, id: &str) -> anyhow::Result<Option<FunctionDef>>;
-    async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool>;
-    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()>;
     async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>>;
     async fn list_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
     async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
-    async fn get_task_result(
-        &self,
-        workflow_instance_id: &str,
-        task_id: &str,
-    ) -> anyhow::Result<TaskResult>;
+    async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()>;
+    async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()>;
+    async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool>;
+    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()>;
 }

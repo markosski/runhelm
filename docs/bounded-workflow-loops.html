@@ -567,7 +567,7 @@
         <p class="eyebrow">Verifier-controlled bounded reruns</p>
         <h1 id="page-title">A workflow can revise a focused slice without restarting everything.</h1>
         <p class="hero-copy">
-          Bounded workflow loops let an Agent verifier reject a generation, provide feedback,
+          Bounded workflow loops let a verifier task reject a generation, provide feedback,
           and ask RunHelm to rerun a configured upstream slice. The workflow stays flat,
           bounded, persisted, and observable.
         </p>
@@ -676,7 +676,7 @@
 
             <rect x="602" y="46" width="128" height="86" rx="8" class="node node-verify"></rect>
             <text x="666" y="82" text-anchor="middle" class="svg-label">Task D</text>
-            <text x="666" y="106" text-anchor="middle" class="svg-small">Agent verifier</text>
+            <text x="666" y="106" text-anchor="middle" class="svg-small">verifier task</text>
 
             <path d="M184 89 H230" stroke="#526171" stroke-width="2.4" marker-end="url(#arrow-model)"></path>
             <path d="M388 89 H434" stroke="#526171" stroke-width="2.4" marker-end="url(#arrow-model)"></path>
@@ -717,15 +717,22 @@
           <p>A verifier task must not declare its own <code>output_schema</code>. RunHelm supplies the required decision schema.</p>
         </article>
       </div>
+      <p class="note">
+        Verifier control is available on any task kind. Function verifiers are useful for deterministic checks over upstream outputs.
+        A verifier returns a control decision, not corrected business data; model transformations as normal tasks.
+      </p>
     </section>
 
     <section id="lifecycle">
       <div class="section-head">
         <h2>Lifecycle Of A Bounded Rerun</h2>
         <p>
-          Runtime state moves from logical task IDs to materialized attempts for the rerun slice.
-          Rejected attempts complete normally at the task lifecycle layer, while verifier metadata
-          records why the generation was not selected.
+          Runtime state uses materialized attempts rather than overwriting logical task IDs.
+          The first generation is initialized with the static workflow, while verifier retries
+          create later generations for the rerun slice. Rejected attempts complete normally at
+          the task lifecycle layer, while verifier metadata records why the generation was not
+          selected. Each attempt also records whether it is currently satisfied for dependency
+          resolution.
         </p>
       </div>
 
@@ -733,15 +740,15 @@
         <div class="step">
           <div class="step-number">1</div>
           <div>
-            <h3>Run normal upstream tasks</h3>
-            <p>Tasks outside the rerun slice, such as <code>A</code>, run once and keep their selected output.</p>
+            <h3>Initialize generation 1</h3>
+            <p>When a workflow starts, RunHelm pre-creates generation-1 attempts for the static task graph, such as <code>A[1]</code>, <code>B[1]</code>, <code>C[1]</code>, and <code>D[1]</code>.</p>
           </div>
         </div>
         <div class="step">
           <div class="step-number">2</div>
           <div>
-            <h3>Materialize generation 1</h3>
-            <p>When the rerun start becomes eligible, RunHelm creates <code>B[1]</code>, <code>C[1]</code>, and <code>D[1]</code> instead of overwriting <code>B</code>, <code>C</code>, or <code>D</code>.</p>
+            <h3>Run eligible attempts</h3>
+            <p>Pending attempts run when their inputs are ready. Tasks outside the rerun slice, such as <code>A[1]</code>, run once and keep their selected output.</p>
           </div>
         </div>
         <div class="step">
@@ -761,8 +768,8 @@
         <div class="step">
           <div class="step-number">5</div>
           <div>
-            <h3>Complete selects a generation</h3>
-            <p>A <code>complete</code> decision selects the current generation. Downstream tasks after the verifier consume only the selected output.</p>
+            <h3>Complete satisfies a generation</h3>
+            <p>A <code>complete</code> decision marks the current slice attempts as satisfied. Downstream tasks after the verifier consume only satisfied outputs.</p>
           </div>
         </div>
       </div>
@@ -772,8 +779,8 @@
       <div class="section-head">
         <h2>Binding Rules</h2>
         <p>
-          The core implementation decision is generation-scoped resolution. The same logical
-          binding can resolve to a different materialized attempt depending on where the consumer runs.
+          Data bindings are ordered per target task. RunHelm derives input positions from the order
+          of matching bindings and records the exact source attempt used for each input slot.
         </p>
       </div>
 
@@ -802,14 +809,20 @@
           <tr>
             <td><span class="pill state">E</span></td>
             <td><code>D -> E</code></td>
-            <td><code>D[2]</code> after selection</td>
-            <td>Downstream work waits for an accepted or exhaustion-finalized verifier generation.</td>
+            <td><code>D[2]</code> after satisfaction</td>
+            <td>Downstream work waits for a satisfied verifier generation.</td>
           </tr>
           <tr>
             <td><span class="pill verify">Rejected D[1]</span></td>
             <td><code>D -> E</code></td>
             <td>Does not satisfy readiness</td>
-            <td>Rejected generations remain observable but do not leak into downstream execution.</td>
+            <td>Unsatisfied attempts remain observable but do not leak into downstream execution.</td>
+          </tr>
+          <tr>
+            <td><span class="pill state">E[1]</span></td>
+            <td><code>C -> E</code></td>
+            <td><code>C[1]</code> in <code>input_mapping</code></td>
+            <td>Attempt records preserve the concrete source generation even when later attempts appear.</td>
           </tr>
         </tbody>
       </table>
@@ -899,7 +912,16 @@
             <summary>Verifier state is separate from task lifecycle</summary>
             <p>
               A rejected generation can have task lifecycle <code>Completed</code> because it produced
-              schema-valid output. Selection, rejection, exhaustion, and feedback live in verifier metadata.
+              schema-valid output. The task satisfaction field says whether the attempt can be used
+              for downstream dependency resolution.
+            </p>
+          </details>
+          <details>
+            <summary>Input order is derived from binding order</summary>
+            <p>
+              Workflow authors declare source and target task IDs. For each target task, RunHelm
+              orders matching bindings as they appear in <code>data_bindings</code> and passes outputs
+              to the executor in that order.
             </p>
           </details>
           <details>
@@ -917,7 +939,14 @@
             <summary>Ordinary cycles are still rejected</summary>
             <p>
               Data bindings remain acyclic. The verifier backedge is explicit control flow and only valid
-              from an Agent verifier to one of its upstream ancestors.
+              from a verifier task to itself or one of its upstream ancestors.
+            </p>
+          </details>
+          <details>
+            <summary>Verifier slices do not overlap</summary>
+            <p>
+              A task can belong to at most one verifier rerun slice. Back-to-back verifier regions are
+              supported, but overlapping or nested slices are rejected.
             </p>
           </details>
           <details>
@@ -949,7 +978,7 @@
 
     <footer class="footer">
       RunHelm bounded loops: flat workflow definitions, bounded verifier-controlled reruns,
-      persisted generations, scoped data binding, and explicit selection.
+      persisted generations, scoped data binding, and explicit satisfaction.
     </footer>
   </main>
 </body>

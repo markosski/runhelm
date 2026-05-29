@@ -96,7 +96,6 @@ pub struct TaskDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataBinding {
     pub target_task_id: String,
-    pub target_input_index: usize,
     pub source_task_id: String,
 }
 
@@ -116,16 +115,19 @@ pub enum TaskStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SideEffectInstance {
-    pub description: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSatisfactionStatus {
+    #[default]
+    Pending,
+    Satisfied,
+    Unsatisfied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TaskGenerationMetadata {
-    pub attempt_id: String,
-    pub original_task_def_id: String,
-    pub generation_index: u32,
+pub struct TaskInputMapping {
+    pub task_id: String,
+    pub generation: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,12 +164,21 @@ pub struct VerifierAttemptMetadata {
 pub struct TaskInstance {
     pub task_def_id: String,
     pub status: TaskStatus,
+    #[serde(default)]
+    pub satisfaction_status: TaskSatisfactionStatus,
     pub input_data: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_mapping: Vec<TaskInputMapping>,
     pub output_data: Option<serde_json::Value>,
-    pub recorded_side_effects: Vec<SideEffectInstance>,
-    pub generation: TaskGenerationMetadata,
+    pub generation_index: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifier_metadata: Option<VerifierAttemptMetadata>,
+}
+
+impl TaskInstance {
+    pub fn make_task_attempt_id(task_def_id: &str, generation_index: u32) -> String {
+        format!("{task_def_id}[{generation_index}]")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +217,7 @@ pub struct WorkflowInstance {
     pub id: String,
     pub workflow_def_id: String,
     pub status: WorkflowStatus,
+    // Keyed by task_attempt_id, e.g. "task-a[2]".
     pub tasks: HashMap<String, TaskInstance>,
     #[serde(default)]
     pub verifier_states: HashMap<String, VerifierGenerationState>,
@@ -256,59 +268,4 @@ pub fn verifier_decision_schema() -> serde_json::Value {
         },
         "additionalProperties": true
     })
-}
-
-/// A lightweight read model describing the current state of a workflow instance.
-/// Intended for status queries — does not expose raw input/output data.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowStatusReport {
-    pub instance_id: String,
-    pub workflow_def_id: String,
-    pub status: WorkflowStatus,
-    pub tasks: Vec<TaskStatusReport>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verifier_states: Vec<VerifierStatusReport>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowSummary {
-    pub id: String,
-    pub workflow_def_id: String,
-    pub status: WorkflowStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowList {
-    pub workflows: Vec<WorkflowSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowQueueStatus {
-    pub pending: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskStatusReport {
-    pub task_id: String,
-    pub task_def_id: String,
-    pub status: TaskStatus,
-    /// True when the task has produced output data.
-    pub has_output: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<TaskGenerationMetadata>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verifier_metadata: Option<VerifierAttemptMetadata>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifierStatusReport {
-    pub verifier_task_id: String,
-    pub rerun_start_task_id: String,
-    pub latest_generation: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selected_generation: Option<u32>,
-    pub status: VerifierStateStatus,
-    pub feedback_count: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit_reason: Option<String>,
 }

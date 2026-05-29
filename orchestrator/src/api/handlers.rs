@@ -3,14 +3,13 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tracing::info;
 
 use crate::adapters::worker_pool::{
     TaskResult, WorkerExecutionResult, WorkerRegistration, WorkerResponse,
 };
-use crate::core::models::{FunctionDef, WorkflowDef, WorkflowInstance, WorkflowStatus};
+use crate::core::models::{FunctionDef, WorkflowDef, WorkflowStatus};
 use crate::ports::executor::ExecutionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -32,7 +31,7 @@ pub async fn create_workflow_def(
     let workflow_def_id = workflow_def.id.clone();
 
     state
-        .orchestrator
+        .workflow_service
         .create_workflow_def(workflow_def)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -54,7 +53,7 @@ pub async fn create_function_def(
     let function_def_id = function_def.id.clone();
 
     state
-        .orchestrator
+        .function_service
         .create_function_def(function_def)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -74,7 +73,7 @@ pub async fn delete_function_def(
     Path(function_def_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     match state
-        .orchestrator
+        .function_service
         .delete_function_def(&function_def_id)
         .await
     {
@@ -89,29 +88,17 @@ pub async fn trigger_workflow_instance(
     Path(workflow_def_id): Path<String>,
     Json(_payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let Some(_) = state
-        .orchestrator
-        .get_workflow_def(&workflow_def_id)
+    let instance_id = state
+        .workflow_service
+        .create_workflow_instance_for_def(&workflow_def_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-
-    let instance_id = create_instance_id(&workflow_def_id)?;
-    let instance = WorkflowInstance {
-        id: instance_id.clone(),
-        workflow_def_id,
-        status: WorkflowStatus::Pending,
-        tasks: HashMap::new(),
-        verifier_states: HashMap::new(),
-    };
-
-    state
-        .orchestrator
-        .create_workflow_instance(instance)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|error| {
+            if error.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
 
     state
         .orchestrator
@@ -177,7 +164,7 @@ pub async fn list_workflows(
         .map(parse_workflow_status)
         .transpose()?;
 
-    match state.orchestrator.list_workflows(status).await {
+    match state.workflow_service.list_workflows(status).await {
         Ok(workflows) => Ok(Json(serde_json::to_value(workflows).unwrap())),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
@@ -220,7 +207,7 @@ pub async fn get_task_result(
     Path((workflow_instance_id, task_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
-        .orchestrator
+        .workflow_service
         .get_task_result(&workflow_instance_id, &task_id)
         .await
     {
@@ -235,7 +222,7 @@ pub async fn list_task_results(
     Path(workflow_instance_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
-        .orchestrator
+        .workflow_service
         .list_task_results(&workflow_instance_id)
         .await
     {
@@ -253,7 +240,7 @@ pub async fn get_task_result_generation(
     Path((workflow_instance_id, task_id, generation)): Path<(String, String, u32)>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
-        .orchestrator
+        .workflow_service
         .get_task_result_for_generation(&workflow_instance_id, &task_id, Some(generation))
         .await
     {
@@ -342,14 +329,6 @@ fn execution_result_to_value(result: ExecutionResult) -> Value {
             "error_message": error_message
         }),
     }
-}
-
-fn create_instance_id(workflow_def_id: &str) -> Result<String, StatusCode> {
-    let timestamp_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .as_nanos();
-    Ok(format!("{workflow_def_id}-{timestamp_nanos}"))
 }
 
 fn parse_workflow_status(status: &str) -> Result<WorkflowStatus, StatusCode> {

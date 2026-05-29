@@ -168,10 +168,7 @@ tasks:
 data_bindings:
   - source_task_id: fetch_inbound_mail
     target_task_id: match_workflows
-    target_input_index: 0
   - source_task_id: fetch_inbound_mail
     target_task_id: dispatch_and_reply
-    target_input_index: 0
   - source_task_id: match_workflows
     target_task_id: dispatch_and_reply
-    target_input_index: 1

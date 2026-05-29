@@ -72,4 +72,3 @@ tasks:
 data_bindings:
   - source_task_id: pullstocks
     target_task_id: verify
-    target_input_index: 0

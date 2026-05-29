@@ -4,7 +4,7 @@
 The orchestrator SHALL normalize workflow IDs and task IDs to lowercase during workflow registration and SHALL reject IDs containing non-alphanumeric characters.
 
 #### Scenario: Uppercase IDs are registered
-- **WHEN** a workflow definition contains uppercase workflow or task IDs using only alphanumeric characters
+- **WHEN** a workflow definition contains uppercase workflow or task IDs using only ASCII alphanumeric characters
 - **THEN** the system registers those IDs in lowercase form
 
 #### Scenario: ID contains brackets
@@ -16,41 +16,53 @@ The orchestrator SHALL normalize workflow IDs and task IDs to lowercase during w
 - **THEN** the system rejects the workflow definition
 
 ### Requirement: Bounded Backedge Validation
-The orchestrator SHALL preserve ordinary data binding cycle validation and SHALL allow bounded verifier backedges only through verifier configuration.
+The orchestrator SHALL preserve ordinary data binding cycle validation and SHALL allow bounded verifier backedges only through `control.verifier` configuration.
 
 #### Scenario: Ordinary data binding cycle
 - **WHEN** workflow data bindings contain a cycle such as `A -> B -> A`
 - **THEN** the workflow definition is rejected
 
 #### Scenario: Explicit bounded backedge
-- **WHEN** workflow data bindings contain `A -> B -> C -> D` and Agent task `D` declares `on_failure_rerun_task: B`
+- **WHEN** workflow data bindings contain `A -> B -> C -> D` and task `D` declares `control.verifier.rerun_from_task_id: B`
 - **THEN** the workflow definition is accepted as a bounded verifier-controlled rerun
 
+#### Scenario: Verifier self-rerun
+- **WHEN** task `D` declares `control.verifier` without `rerun_from_task_id`
+- **THEN** the workflow definition is accepted and verifier `continue` reruns only `D`
+
 #### Scenario: Backedge target is downstream
-- **WHEN** Agent task `B` declares `on_failure_rerun_task: D` for downstream task `D`
+- **WHEN** task `B` declares `control.verifier.rerun_from_task_id: D` for downstream task `D`
+- **THEN** the workflow definition is rejected
+
+#### Scenario: Verifier slices overlap
+- **WHEN** multiple verifier controls create rerun slices that share any task
 - **THEN** the workflow definition is rejected
 
 ### Requirement: Task Instance Lifecycle Management
-The orchestrator SHALL transition each materialized `TaskInstance` through a strictly defined lifecycle. Non-rerun task instances SHALL use `Pending` -> `Running` -> (`Completed` or `Failed`), while verifier-controlled generations SHALL be selected before downstream tasks after the verifier can run.
+The orchestrator SHALL transition each materialized `TaskInstance` through a lifecycle and SHALL track satisfaction separately from lifecycle completion.
 
 #### Scenario: Valid inputs trigger execution
 - **WHEN** all input schemas of a `Pending` materialized task instance are satisfied by upstream data bindings
 - **THEN** the task status transitions from `Pending` to `Running`
 
 #### Scenario: Workflow initialization without verifier backedges
-- **WHEN** a `WorkflowInstance` is initialized from a `WorkflowDef` with no verifier backedges
-- **THEN** all tasks are instantiated as `Pending`, and any tasks with no data bindings immediately transition to `Running`
+- **WHEN** a `WorkflowInstance` is initialized from a `WorkflowDef`
+- **THEN** generation-1 task attempts are materialized for the static workflow graph
 
-#### Scenario: First bounded generation initialization
-- **WHEN** a verifier-controlled rerun slice becomes eligible to run
-- **THEN** the first generation of tasks in that slice is materialized
+#### Scenario: Bounded retry generation materialization
+- **WHEN** a verifier-controlled generation returns `continue` and has remaining iteration budget
+- **THEN** the next generation is materialized only for tasks in the verifier rerun slice
 
 #### Scenario: Bounded generation completion
 - **WHEN** a verifier-controlled generation produces schema-valid outputs and its verifier returns `complete`
-- **THEN** the generation is selected and downstream tasks after the verifier become eligible
+- **THEN** the generation is marked satisfied and downstream tasks after the verifier become eligible
+
+#### Scenario: Rejected bounded generation
+- **WHEN** a verifier-controlled generation produces schema-valid outputs and its verifier returns `continue`
+- **THEN** the generation remains lifecycle `Completed` but is marked unsatisfied for downstream binding
 
 ### Requirement: Data Binding Resolution
-The orchestrator SHALL construct executable workflow dataflow from the `DataBinding`s in the `WorkflowDef`, resolving bounded rerun source task IDs to the selected generation when a task participates in a verifier-controlled rerun slice.
+The orchestrator SHALL construct executable workflow dataflow from the `DataBinding`s in the `WorkflowDef`, resolving source task IDs to concrete materialized attempts by generation scope and satisfaction state.
 
 #### Scenario: Sequential propagation
 - **WHEN** Task A completes successfully outside verifier-controlled rerun handling
@@ -71,3 +83,7 @@ The orchestrator SHALL construct executable workflow dataflow from the `DataBind
 #### Scenario: Rejected generation does not propagate after verifier
 - **WHEN** verifier task `D[1]` is rejected and another generation will run
 - **THEN** downstream tasks bound after `D` do not receive output from `D[1]`
+
+#### Scenario: Input mapping records resolved attempts
+- **WHEN** a materialized task receives propagated inputs
+- **THEN** the task records `input_mapping` for each consumed source task ID and generation

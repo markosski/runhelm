@@ -9,7 +9,7 @@ use serde_json::Value;
 pub struct FakeExecutor;
 
 impl FakeExecutor {
-#[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn new() -> Self {
         FakeExecutor
     }

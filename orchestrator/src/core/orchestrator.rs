@@ -1,14 +1,10 @@
+use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_resolution::resolve_task_function_ref;
-use crate::core::models::{
-    ExecutionMetadata, FunctionDef, TaskDef, TaskInstance, TaskStatus, VerifierControlConfig,
-    WorkflowDef, WorkflowInstance, WorkflowList, WorkflowQueueStatus, WorkflowStatus,
-    WorkflowStatusReport, WorkflowSummary, verifier_decision_schema,
-};
+use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus, WorkflowStatus};
 use crate::ports::executor::ExecutorPort;
-use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata, WorkflowTaskResult};
+use crate::ports::storage::StoragePort;
 use crate::ports::workflow_queue::WorkflowQueuePort;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{error, info};
@@ -37,27 +33,6 @@ impl Orchestrator {
         }
     }
 
-    /// Registers a new workflow definition.
-    pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
-        let def = validate_and_normalize_workflow_def(def)?;
-        self.storage.save_workflow_def(def).await
-    }
-
-    /// Retrieves a workflow definition by ID.
-    pub async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
-        self.storage.get_workflow_def(id).await
-    }
-
-    /// Registers a reusable function definition.
-    pub async fn create_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
-        self.storage.save_function_def(def).await
-    }
-
-    /// Deletes a reusable function definition.
-    pub async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
-        self.storage.delete_function_def(id).await
-    }
-
     /// Finds a task in a registered workflow definition and executes it directly.
     pub async fn execute_workflow_task_isolated(
         &self,
@@ -74,11 +49,6 @@ impl Orchestrator {
         };
 
         self.execute_task_isolated(&task, inputs).await.map(Some)
-    }
-
-    /// Creates a new workflow instance.
-    pub async fn create_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()> {
-        self.storage.save_workflow_instance(instance).await
     }
 
     /// Adds a workflow instance to the execution queue.
@@ -109,103 +79,6 @@ impl Orchestrator {
         id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
         self.engine.get_workflow_status(id).await
-    }
-
-    pub async fn list_workflows(
-        &self,
-        status: Option<WorkflowStatus>,
-    ) -> anyhow::Result<WorkflowList> {
-        let mut workflows: Vec<WorkflowSummary> = self
-            .storage
-            .list_workflow_instances()
-            .await?
-            .into_iter()
-            .filter(|instance| {
-                status
-                    .as_ref()
-                    .is_none_or(|status| instance.status == *status)
-            })
-            .map(|instance| WorkflowSummary {
-                id: instance.id,
-                workflow_def_id: instance.workflow_def_id,
-                status: instance.status,
-            })
-            .collect();
-
-        workflows.sort_by(|left, right| left.id.cmp(&right.id));
-
-        Ok(WorkflowList { workflows })
-    }
-
-    pub async fn get_task_result(
-        &self,
-        workflow_instance_id: &str,
-        task_id: &str,
-    ) -> anyhow::Result<TaskResult> {
-        self.get_task_result_for_generation(workflow_instance_id, task_id, None)
-            .await
-    }
-
-    pub async fn list_task_results(
-        &self,
-        workflow_instance_id: &str,
-    ) -> anyhow::Result<Vec<WorkflowTaskResult>> {
-        let instance = self
-            .storage
-            .get_workflow_instance(workflow_instance_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
-
-        let mut tasks: Vec<WorkflowTaskResult> = instance
-            .tasks
-            .iter()
-            .map(|(task_id, task)| WorkflowTaskResult {
-                task_id: task_id.clone(),
-                result: task_result_for_instance(
-                    task_id,
-                    task_id,
-                    task,
-                    should_include_task_result_metadata(task_id, task_id, task, None),
-                ),
-            })
-            .collect();
-        tasks.sort_by(|left, right| left.task_id.cmp(&right.task_id));
-
-        Ok(tasks)
-    }
-
-    pub async fn get_task_result_for_generation(
-        &self,
-        workflow_instance_id: &str,
-        task_id: &str,
-        generation: Option<u32>,
-    ) -> anyhow::Result<TaskResult> {
-        let instance = self
-            .storage
-            .get_workflow_instance(workflow_instance_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
-
-        let def = self
-            .storage
-            .get_workflow_def(&instance.workflow_def_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("workflow definition not found"))?;
-
-        let resolved_attempt_id =
-            resolve_task_lookup_attempt_id(&instance, &def, task_id, generation)?;
-
-        let task = instance
-            .tasks
-            .get(&resolved_attempt_id)
-            .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
-
-        Ok(task_result_for_instance(
-            task_id,
-            &resolved_attempt_id,
-            task,
-            should_include_task_result_metadata(task_id, &resolved_attempt_id, task, generation),
-        ))
     }
 
     /// Starts or resumes execution of a workflow instance.
@@ -313,368 +186,20 @@ impl Orchestrator {
     }
 }
 
-/// The result of a task execution, including its input, output or error, and optional metadata about how the result was obtained.
-fn resolve_task_lookup_attempt_id(
-    instance: &WorkflowInstance,
-    def: &WorkflowDef,
-    requested_task_id: &str,
-    requested_generation: Option<u32>,
-) -> anyhow::Result<String> {
-    let normalized_task_id = requested_task_id.to_ascii_lowercase();
-
-    if let Some(generation) = requested_generation {
-        if generation == 0 {
-            anyhow::bail!("generation must be positive");
-        }
-        return Ok(generation_attempt_id(&normalized_task_id, generation));
-    }
-
-    if instance.tasks.contains_key(requested_task_id) {
-        return Ok(requested_task_id.to_string());
-    }
-
-    if normalized_task_id != requested_task_id && instance.tasks.contains_key(&normalized_task_id) {
-        return Ok(normalized_task_id);
-    }
-
-    let loop_slices = compute_loop_slices(def);
-
-    if let Some((verifier_task_id, _)) = loop_slices
-        .iter()
-        .find(|(_, slice)| slice.contains(&normalized_task_id))
-    {
-        let state = instance
-            .verifier_states
-            .get(verifier_task_id)
-            .ok_or_else(|| anyhow::anyhow!("task {requested_task_id} not found"))?;
-        let generation = state.selected_generation.unwrap_or(state.latest_generation);
-        return Ok(generation_attempt_id(&normalized_task_id, generation));
-    }
-
-    Ok(generation_attempt_id(&normalized_task_id, 1))
-}
-
-fn should_include_task_result_metadata(
-    requested_task_id: &str,
-    resolved_attempt_id: &str,
-    task: &TaskInstance,
-    requested_generation: Option<u32>,
-) -> bool {
-    requested_generation.is_some()
-        || requested_task_id != resolved_attempt_id
-        || task.generation.generation_index > 0
-        || task.verifier_metadata.is_some()
-}
-
-fn task_result_for_instance(
-    requested_task_id: &str,
-    resolved_attempt_id: &str,
-    task: &TaskInstance,
-    include_metadata: bool,
-) -> TaskResult {
-    let metadata = include_metadata.then(|| TaskResultMetadata {
-        requested_task_id: requested_task_id.to_string(),
-        resolved_attempt_id: resolved_attempt_id.to_string(),
-        generation: Some(task.generation.clone()),
-        verifier_metadata: task.verifier_metadata.clone(),
-    });
-
-    match (&task.status, metadata) {
-        (TaskStatus::Completed, Some(metadata)) => TaskResult::SuccessWithMetadata {
-            input: task.input_data.clone(),
-            output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
-            metadata,
-        },
-        (TaskStatus::Completed, None) => TaskResult::Success {
-            input: task.input_data.clone(),
-            output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
-        },
-        (TaskStatus::Failed, Some(metadata)) => TaskResult::FailureWithMetadata {
-            input: task.input_data.clone(),
-            error_message: "task failed".to_string(),
-            metadata,
-        },
-        (TaskStatus::Failed, None) => TaskResult::Failure {
-            input: task.input_data.clone(),
-            error_message: "task failed".to_string(),
-        },
-        (TaskStatus::Pending, Some(metadata)) => TaskResult::PendingWithMetadata {
-            input: task.input_data.clone(),
-            metadata,
-        },
-        (TaskStatus::Pending, None) => TaskResult::Pending {
-            input: task.input_data.clone(),
-        },
-        (TaskStatus::Running | TaskStatus::InputNeeded { .. }, Some(metadata)) => {
-            TaskResult::RunningWithMetadata {
-                input: task.input_data.clone(),
-                metadata,
-            }
-        }
-        (TaskStatus::Running | TaskStatus::InputNeeded { .. }, None) => TaskResult::Running {
-            input: task.input_data.clone(),
-        },
-    }
-}
-
-// Returns a map of verifier task ID to the set of task IDs that are in its loop slice.
-fn compute_loop_slices(def: &WorkflowDef) -> HashMap<String, Vec<String>> {
-    let mut slices = HashMap::new();
-
-    for verifier_task in def
-        .tasks
-        .iter()
-        .filter(|task| get_task_verifier_config(task).is_some())
-    {
-        let verifier_config = get_task_verifier_config(verifier_task).unwrap();
-        let rerun_start_task_id = verifier_rerun_start_task_id(verifier_config, &verifier_task.id);
-        let from_start = reachable_from(def, &rerun_start_task_id);
-        let to_verifier = can_reach_target_set(def, &verifier_task.id);
-        let slice = def
-            .tasks
-            .iter()
-            .filter_map(|task| {
-                (from_start.contains(&task.id) && to_verifier.contains(&task.id))
-                    .then_some(task.id.clone())
-            })
-            .collect::<Vec<_>>();
-        slices.insert(verifier_task.id.clone(), slice);
-    }
-    slices
-}
-
-fn reachable_from(def: &WorkflowDef, start: &str) -> HashSet<String> {
-    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
-    for binding in &def.data_bindings {
-        adjacency
-            .entry(binding.source_task_id.clone())
-            .or_default()
-            .push(binding.target_task_id.clone());
-    }
-    walk_graph(start, &adjacency)
-}
-
-fn can_reach_target_set(def: &WorkflowDef, target: &str) -> HashSet<String> {
-    let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
-    for binding in &def.data_bindings {
-        reverse
-            .entry(binding.target_task_id.clone())
-            .or_default()
-            .push(binding.source_task_id.clone());
-    }
-    walk_graph(target, &reverse)
-}
-
-fn walk_graph(start: &str, adjacency: &HashMap<String, Vec<String>>) -> HashSet<String> {
-    let mut seen = HashSet::new();
-    let mut stack = vec![start.to_string()];
-    while let Some(current) = stack.pop() {
-        if !seen.insert(current.clone()) {
-            continue;
-        }
-        if let Some(next) = adjacency.get(&current) {
-            stack.extend(next.iter().cloned());
-        }
-    }
-    seen
-}
-
-fn generation_attempt_id(task_def_id: &str, generation_index: u32) -> String {
-    format!("{task_def_id}[{generation_index}]")
-}
-
-fn get_task_verifier_config(task: &TaskDef) -> Option<&VerifierControlConfig> {
-    task.control.as_ref()?.verifier.as_ref()
-}
-
-fn verifier_rerun_start_task_id(
-    verifier: &VerifierControlConfig,
-    verifier_task_id: &str,
-) -> String {
-    verifier
-        .rerun_from_task_id
-        .clone()
-        .unwrap_or_else(|| verifier_task_id.to_string())
-}
-
-fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<WorkflowDef> {
-    validate_ascii_alphanumeric_id("workflow", &def.id)?;
-    def.id = def.id.to_ascii_lowercase();
-
-    let mut original_to_normalized = HashMap::new();
-    let mut normalized_task_ids = HashSet::new();
-
-    for task in &mut def.tasks {
-        validate_ascii_alphanumeric_id("task", &task.id)?;
-        let normalized = task.id.to_ascii_lowercase();
-        if !normalized_task_ids.insert(normalized.clone()) {
-            anyhow::bail!("duplicate task id after normalization: {normalized}");
-        }
-        original_to_normalized.insert(task.id.clone(), normalized.clone());
-        task.id = normalized;
-    }
-
-    for binding in &mut def.data_bindings {
-        binding.source_task_id = normalize_task_reference(
-            &original_to_normalized,
-            &binding.source_task_id,
-            "data binding source",
-        )?;
-        binding.target_task_id = normalize_task_reference(
-            &original_to_normalized,
-            &binding.target_task_id,
-            "data binding target",
-        )?;
-    }
-
-    for task in &mut def.tasks {
-        if get_task_verifier_config(task).is_some() && task.output_schema.is_some() {
-            anyhow::bail!(
-                "task {} declares control.verifier and must not declare output_schema",
-                task.id
-            );
-        }
-        if let Some(verifier) = task
-            .control
-            .as_mut()
-            .and_then(|control| control.verifier.as_mut())
-        {
-            if verifier.max_iterations == 0 {
-                anyhow::bail!("task {} verifier max_iterations must be positive", task.id);
-            }
-            if let Some(rerun_from_task_id) = verifier.rerun_from_task_id.as_mut() {
-                *rerun_from_task_id = normalize_task_reference(
-                    &original_to_normalized,
-                    rerun_from_task_id,
-                    "verifier rerun_from_task_id",
-                )?;
-            }
-            task.output_schema = Some(verifier_decision_schema());
-        }
-    }
-
-    if has_data_binding_cycle(&def) {
-        anyhow::bail!("workflow data bindings contain a cycle");
-    }
-
-    for task in &def.tasks {
-        if let Some(verifier) = get_task_verifier_config(task) {
-            let Some(rerun_from_task_id) = &verifier.rerun_from_task_id else {
-                continue;
-            };
-            if rerun_from_task_id != &task.id
-                && !is_upstream_ancestor(&def, rerun_from_task_id, &task.id)
-            {
-                anyhow::bail!(
-                    "task {} verifier rerun task {} is not an upstream ancestor",
-                    task.id,
-                    rerun_from_task_id
-                );
-            }
-        }
-    }
-
-    Ok(def)
-}
-
-fn validate_ascii_alphanumeric_id(kind: &str, id: &str) -> anyhow::Result<()> {
-    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        anyhow::bail!("{kind} id {id:?} must contain only ASCII alphanumeric characters");
-    }
-    Ok(())
-}
-
-fn normalize_task_reference(
-    original_to_normalized: &HashMap<String, String>,
-    id: &str,
-    field: &str,
-) -> anyhow::Result<String> {
-    validate_ascii_alphanumeric_id(field, id)?;
-    original_to_normalized
-        .get(id)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("{field} references unknown task id {id}"))
-}
-
-fn has_data_binding_cycle(def: &WorkflowDef) -> bool {
-    let mut in_degree: HashMap<String, usize> = def
-        .tasks
-        .iter()
-        .map(|task| (task.id.clone(), 0usize))
-        .collect();
-    let mut adjacency: HashMap<String, Vec<String>> = def
-        .tasks
-        .iter()
-        .map(|task| (task.id.clone(), Vec::new()))
-        .collect();
-
-    for binding in &def.data_bindings {
-        *in_degree.entry(binding.target_task_id.clone()).or_insert(0) += 1;
-        adjacency
-            .entry(binding.source_task_id.clone())
-            .or_default()
-            .push(binding.target_task_id.clone());
-    }
-
-    let mut queue = in_degree
-        .iter()
-        .filter_map(|(node, degree)| (*degree == 0).then_some(node.clone()))
-        .collect::<VecDeque<_>>();
-    let mut visited = 0usize;
-
-    while let Some(node) = queue.pop_front() {
-        visited += 1;
-        if let Some(neighbors) = adjacency.get(&node) {
-            for neighbor in neighbors {
-                if let Some(degree) = in_degree.get_mut(neighbor) {
-                    *degree -= 1;
-                    if *degree == 0 {
-                        queue.push_back(neighbor.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    visited != def.tasks.len()
-}
-
-fn is_upstream_ancestor(def: &WorkflowDef, ancestor: &str, task_id: &str) -> bool {
-    let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
-    for binding in &def.data_bindings {
-        reverse
-            .entry(binding.target_task_id.clone())
-            .or_default()
-            .push(binding.source_task_id.clone());
-    }
-
-    let mut stack = vec![task_id.to_string()];
-    let mut seen = HashSet::new();
-    while let Some(current) = stack.pop() {
-        if !seen.insert(current.clone()) {
-            continue;
-        }
-        if let Some(upstream) = reverse.get(&current) {
-            for source in upstream {
-                if source == ancestor {
-                    return true;
-                }
-                stack.push(source.clone());
-            }
-        }
-    }
-
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::adapters::fake_executor::FakeExecutor;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-    use crate::core::models::{FunctionDef, FunctionTaskDef, TaskTypeDef};
+    use crate::core::function_service::FunctionService;
+    use crate::core::models::{
+        DataBinding, FunctionDef, FunctionTaskDef, TaskTypeDef, WorkflowDef, WorkflowInstance,
+        verifier_decision_schema,
+    };
+    use crate::core::workflow_service::WorkflowService;
     use crate::ports::executor::ExecutionResult;
+    use crate::ports::storage::{StoragePort, TaskResult};
     use async_trait::async_trait;
     use serde_json::json;
     use std::collections::HashMap;
@@ -686,6 +211,19 @@ mod tests {
             Arc::new(MemoryStorage::new()),
             Arc::new(FakeExecutor::new()),
             Arc::new(MemoryWorkflowQueue::new(10)),
+        )
+    }
+
+    fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionService) {
+        let storage = Arc::new(MemoryStorage::new());
+        (
+            Orchestrator::new(
+                storage.clone(),
+                Arc::new(FakeExecutor::new()),
+                Arc::new(MemoryWorkflowQueue::new(10)),
+            ),
+            WorkflowService::new(storage.clone()),
+            FunctionService::new(storage),
         )
     }
 
@@ -786,8 +324,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_workflow_task_isolated_finds_registered_task() {
-        let orchestrator = orchestrator();
-        orchestrator
+        let (orchestrator, workflow_service, _) = orchestrator_with_services();
+        workflow_service
             .create_workflow_def(workflow("workflow1", vec![task("taska")]))
             .await
             .unwrap();
@@ -805,12 +343,12 @@ mod tests {
 
     #[tokio::test]
     async fn execute_workflow_task_isolated_scopes_task_lookup_to_workflow_def() {
-        let orchestrator = orchestrator();
-        orchestrator
+        let (orchestrator, workflow_service, _) = orchestrator_with_services();
+        workflow_service
             .create_workflow_def(workflow("workflow1", vec![task("taska")]))
             .await
             .unwrap();
-        orchestrator
+        workflow_service
             .create_workflow_def(workflow("workflow2", vec![task("taska")]))
             .await
             .unwrap();
@@ -828,8 +366,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_workflow_task_isolated_resolves_registered_function_ref() {
-        let orchestrator = orchestrator();
-        orchestrator
+        let (orchestrator, workflow_service, function_service) = orchestrator_with_services();
+        function_service
             .create_function_def(FunctionDef {
                 id: "functiona".to_string(),
                 dependencies: vec![],
@@ -837,7 +375,7 @@ mod tests {
             })
             .await
             .unwrap();
-        orchestrator
+        workflow_service
             .create_workflow_def(workflow(
                 "workflow1",
                 vec![function_ref_task("taska", "functiona")],
@@ -858,8 +396,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_workflow_task_isolated_errors_for_missing_function_ref() {
-        let orchestrator = orchestrator();
-        orchestrator
+        let (orchestrator, workflow_service, _) = orchestrator_with_services();
+        workflow_service
             .create_workflow_def(workflow(
                 "workflow1",
                 vec![function_ref_task("taska", "missingfunction")],
@@ -928,8 +466,8 @@ mod tests {
 
     #[tokio::test]
     async fn isolated_workflow_task_execution_does_not_require_scheduler() {
-        let orchestrator = orchestrator();
-        orchestrator
+        let (orchestrator, workflow_service, _) = orchestrator_with_services();
+        workflow_service
             .create_workflow_def(workflow("workflow1", vec![task("taska")]))
             .await
             .unwrap();
@@ -944,7 +482,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_workflow_def_accepts_missing_input_schemas() {
-        let orchestrator = orchestrator();
+        let storage = Arc::new(MemoryStorage::new());
+        let workflow_service = WorkflowService::new(storage.clone());
         let workflow_def: WorkflowDef = serde_json::from_value(json!({
             "id": "workflow1",
             "tasks": [
@@ -966,12 +505,12 @@ mod tests {
         }))
         .unwrap();
 
-        orchestrator
+        workflow_service
             .create_workflow_def(workflow_def)
             .await
             .unwrap();
 
-        let stored = orchestrator
+        let stored = storage
             .get_workflow_def("workflow1")
             .await
             .unwrap()
@@ -981,23 +520,23 @@ mod tests {
 
     #[tokio::test]
     async fn get_task_result_resolves_logical_task_id_to_generation_one() {
-        let orchestrator = orchestrator();
-        orchestrator
+        let (orchestrator, workflow_service, _) = orchestrator_with_services();
+        workflow_service
             .create_workflow_def(workflow("workflow1", vec![task("taska")]))
             .await
             .unwrap();
-        orchestrator
-            .create_workflow_instance(workflow_instance("instance1", "workflow1"))
+        let instance_id = workflow_service
+            .create_workflow_instance_for_def("workflow1")
             .await
             .unwrap();
 
         orchestrator
-            .run_workflow("instance1".to_string())
+            .run_workflow(instance_id.clone())
             .await
             .unwrap();
 
-        match orchestrator
-            .get_task_result("instance1", "taska")
+        match workflow_service
+            .get_task_result(&instance_id, "taska")
             .await
             .unwrap()
         {
@@ -1008,9 +547,9 @@ mod tests {
             } => {
                 assert_eq!(input, Vec::<serde_json::Value>::new());
                 assert_eq!(output, json!({ "ok": false }));
-                assert_eq!(metadata.requested_task_id, "taska");
-                assert_eq!(metadata.resolved_attempt_id, "taska[1]");
-                assert_eq!(metadata.generation.unwrap().generation_index, 1);
+                assert_eq!(metadata.task_def_id, "taska");
+                assert_eq!(metadata.task_attempt_id, "taska[1]");
+                assert_eq!(metadata.generation_index, 1);
             }
             result => panic!("expected success with metadata, got {result:?}"),
         }
@@ -1018,25 +557,28 @@ mod tests {
 
     #[tokio::test]
     async fn list_task_results_returns_materialized_attempts() {
-        let orchestrator = orchestrator();
-        orchestrator
+        let (orchestrator, workflow_service, _) = orchestrator_with_services();
+        workflow_service
             .create_workflow_def(workflow("workflow1", vec![task("taska")]))
             .await
             .unwrap();
-        orchestrator
-            .create_workflow_instance(workflow_instance("instance1", "workflow1"))
+        let instance_id = workflow_service
+            .create_workflow_instance_for_def("workflow1")
             .await
             .unwrap();
 
         orchestrator
-            .run_workflow("instance1".to_string())
+            .run_workflow(instance_id.clone())
             .await
             .unwrap();
 
-        let tasks = orchestrator.list_task_results("instance1").await.unwrap();
+        let tasks = workflow_service
+            .list_task_results(&instance_id)
+            .await
+            .unwrap();
 
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].task_id, "taska[1]");
+        assert_eq!(tasks[0].task_attempt_id, "taska[1]");
         match &tasks[0].result {
             TaskResult::SuccessWithMetadata {
                 input,
@@ -1045,20 +587,18 @@ mod tests {
             } => {
                 assert_eq!(input, &Vec::<serde_json::Value>::new());
                 assert_eq!(output, &json!({ "ok": false }));
-                assert_eq!(metadata.requested_task_id, "taska[1]");
-                assert_eq!(metadata.resolved_attempt_id, "taska[1]");
-                assert_eq!(
-                    metadata.generation.as_ref().unwrap().original_task_def_id,
-                    "taska"
-                );
+                assert_eq!(metadata.task_def_id, "taska");
+                assert_eq!(metadata.task_attempt_id, "taska[1]");
+                assert_eq!(metadata.generation_index, 1);
             }
             result => panic!("expected success with metadata, got {result:?}"),
         }
     }
 
     #[tokio::test]
-    async fn verifier_control_injects_decision_schema() {
-        let orchestrator = orchestrator();
+    async fn verifier_control_accepts_function_task_and_injects_decision_schema() {
+        let storage = Arc::new(MemoryStorage::new());
+        let workflow_service = WorkflowService::new(storage.clone());
         let mut verifier = task("verify");
         verifier.output_schema = None;
         verifier.control = Some(crate::core::models::TaskControl {
@@ -1069,22 +609,23 @@ mod tests {
             }),
         });
 
-        orchestrator
+        workflow_service
             .create_workflow_def(workflow("workflow1", vec![verifier]))
             .await
             .unwrap();
 
-        let def = orchestrator
+        let def = storage
             .get_workflow_def("workflow1")
             .await
             .unwrap()
             .unwrap();
+        assert!(matches!(def.tasks[0].kind, TaskTypeDef::Function(_)));
         assert_eq!(def.tasks[0].output_schema, Some(verifier_decision_schema()));
     }
 
     #[tokio::test]
     async fn verifier_control_rejects_user_output_schema() {
-        let orchestrator = orchestrator();
+        let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
         let mut verifier = task("verify");
         verifier.control = Some(crate::core::models::TaskControl {
             verifier: Some(crate::core::models::VerifierControlConfig {
@@ -1094,7 +635,7 @@ mod tests {
             }),
         });
 
-        let error = orchestrator
+        let error = workflow_service
             .create_workflow_def(workflow("workflow1", vec![verifier]))
             .await
             .unwrap_err();
@@ -1104,6 +645,53 @@ mod tests {
                 .to_string()
                 .contains("control.verifier and must not declare output_schema")
         );
+    }
+
+    #[tokio::test]
+    async fn verifier_control_rejects_overlapping_loop_slices() {
+        let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
+        let mut verifya = task("verifya");
+        verifya.output_schema = None;
+        verifya.control = Some(crate::core::models::TaskControl {
+            verifier: Some(crate::core::models::VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: Some("taska".to_string()),
+            }),
+        });
+        let mut verifyb = task("verifyb");
+        verifyb.output_schema = None;
+        verifyb.control = Some(crate::core::models::TaskControl {
+            verifier: Some(crate::core::models::VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: Some("taskb".to_string()),
+            }),
+        });
+
+        let error = workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow1".to_string(),
+                tasks: vec![task("taska"), task("taskb"), verifya, verifyb],
+                data_bindings: vec![
+                    DataBinding {
+                        source_task_id: "taska".to_string(),
+                        target_task_id: "taskb".to_string(),
+                    },
+                    DataBinding {
+                        source_task_id: "taskb".to_string(),
+                        target_task_id: "verifya".to_string(),
+                    },
+                    DataBinding {
+                        source_task_id: "taskb".to_string(),
+                        target_task_id: "verifyb".to_string(),
+                    },
+                ],
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("verifier loop slices overlap"));
     }
 
     #[tokio::test]
@@ -1162,37 +750,6 @@ mod tests {
                 .unwrap()
                 .pending
                 .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn list_workflows_filters_by_status() {
-        let storage = Arc::new(MemoryStorage::new());
-        let orchestrator = Orchestrator::new(
-            storage.clone(),
-            Arc::new(FakeExecutor::new()),
-            Arc::new(MemoryWorkflowQueue::new(10)),
-        );
-
-        let mut completed = workflow_instance("completed-workflow", "workflow-1");
-        completed.status = WorkflowStatus::Completed;
-        let mut running = workflow_instance("running-workflow", "workflow-1");
-        running.status = WorkflowStatus::Running;
-        storage.save_workflow_instance(completed).await.unwrap();
-        storage.save_workflow_instance(running).await.unwrap();
-
-        assert_eq!(
-            orchestrator
-                .list_workflows(Some(WorkflowStatus::Running))
-                .await
-                .unwrap(),
-            WorkflowList {
-                workflows: vec![WorkflowSummary {
-                    id: "running-workflow".to_string(),
-                    workflow_def_id: "workflow-1".to_string(),
-                    status: WorkflowStatus::Running,
-                }],
-            }
         );
     }
 }
