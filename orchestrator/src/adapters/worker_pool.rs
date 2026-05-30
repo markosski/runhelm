@@ -1,4 +1,4 @@
-use crate::core::models::TaskDef;
+use crate::core::models::{ExecutionMetadata, TaskDef};
 use crate::ports::executor::ExecutionResult;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,8 @@ pub struct TaskDispatch {
     pub task: TaskDef,
     #[serde(default)]
     pub inputs: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub execution_metadata: ExecutionMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +151,7 @@ impl WorkerPool {
         task: &TaskDef,
         inputs: &[serde_json::Value],
         timeout: Duration,
+        execution_metadata: ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult> {
         let task_id = format!(
             "{}-{}",
@@ -164,6 +167,7 @@ impl WorkerPool {
                 task_id: task_id.clone(),
                 task: task.clone(),
                 inputs: inputs.to_vec(),
+                execution_metadata,
             },
             result_tx,
             claimed_tx,
@@ -343,7 +347,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_secs(5))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 
@@ -385,7 +394,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_millis(10))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_millis(10),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 
@@ -428,7 +442,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_secs(5))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 
@@ -455,7 +474,12 @@ mod tests {
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
-                .enqueue_task(&task, &[], Duration::from_millis(10))
+                .enqueue_task(
+                    &task,
+                    &[],
+                    Duration::from_millis(10),
+                    ExecutionMetadata::default(),
+                )
                 .await
         });
 
@@ -493,10 +517,10 @@ mod tests {
                 dependencies: vec![],
                 code: "return 1".to_string(),
             }),
+            control: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
-            expected_side_effects: vec![],
             required_credentials: vec![],
         }
     }

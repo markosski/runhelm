@@ -1,0 +1,985 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RunHelm Bounded Workflow Loops</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16202a;
+      --muted: #607080;
+      --page: #f5f7fa;
+      --panel: #ffffff;
+      --line: #d9e0e8;
+      --agent: #246fb8;
+      --agent-soft: #eaf4ff;
+      --verify: #b84d45;
+      --verify-soft: #fff0ef;
+      --state: #177962;
+      --state-soft: #e8f7f1;
+      --engine: #7a5cc7;
+      --engine-soft: #f1edff;
+      --warn: #b17612;
+      --warn-soft: #fff4da;
+      --shadow: 0 18px 45px rgba(22, 32, 42, 0.09);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, #eef3f7 0, var(--page) 420px),
+        var(--page);
+      line-height: 1.5;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: #edf1f5;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 0;
+      padding: 18px;
+      border: 1px solid #273241;
+      border-radius: 8px;
+      color: #e9f0f7;
+      background: #17202b;
+      line-height: 1.45;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid rgba(217, 224, 232, 0.82);
+      background: rgba(245, 247, 250, 0.92);
+      backdrop-filter: blur(16px);
+    }
+
+    .nav {
+      max-width: 1160px;
+      min-height: 64px;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background: linear-gradient(135deg, var(--agent), var(--engine) 58%, var(--state));
+      box-shadow: 0 10px 24px rgba(36, 111, 184, 0.23);
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .nav-links a {
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      color: var(--ink);
+      background: #fff;
+    }
+
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 46px 24px 72px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 0.92fr) minmax(360px, 1.08fr);
+      gap: 32px;
+      align-items: center;
+      min-height: 540px;
+    }
+
+    .eyebrow {
+      margin: 0 0 13px;
+      color: var(--state);
+      font-size: 13px;
+      font-weight: 850;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      max-width: 680px;
+      font-size: clamp(42px, 6vw, 76px);
+    }
+
+    h2 {
+      font-size: clamp(28px, 4vw, 42px);
+    }
+
+    h3 {
+      font-size: 18px;
+    }
+
+    .hero-copy {
+      max-width: 640px;
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: 19px;
+    }
+
+    .hero-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 30px;
+    }
+
+    .metric {
+      min-height: 88px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .diagram {
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .diagram svg {
+      width: 100%;
+      min-width: 560px;
+      height: auto;
+      display: block;
+    }
+
+    .node {
+      fill: #fff;
+      stroke: var(--line);
+      stroke-width: 2;
+    }
+
+    .node-agent {
+      fill: var(--agent-soft);
+      stroke: var(--agent);
+    }
+
+    .node-verify {
+      fill: var(--verify-soft);
+      stroke: var(--verify);
+    }
+
+    .node-state {
+      fill: var(--state-soft);
+      stroke: var(--state);
+    }
+
+    .node-muted {
+      fill: #f4f6f8;
+      stroke: #bac5d1;
+    }
+
+    .arrow {
+      stroke: #526171;
+      stroke-width: 2.4;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+
+    .backedge {
+      stroke: var(--verify);
+      stroke-width: 2.8;
+      fill: none;
+      stroke-dasharray: 6 5;
+      marker-end: url(#arrow-red);
+    }
+
+    .selected {
+      stroke: var(--state);
+      stroke-width: 3.2;
+      fill: none;
+      marker-end: url(#arrow-green);
+    }
+
+    .svg-label {
+      fill: var(--ink);
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .svg-small {
+      fill: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    section {
+      margin-top: 74px;
+    }
+
+    .section-head {
+      max-width: 820px;
+      margin-bottom: 22px;
+    }
+
+    .section-head p {
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .feature {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .feature .tag {
+      display: inline-block;
+      margin-bottom: 12px;
+      padding: 4px 8px;
+      border-radius: 5px;
+      color: #fff;
+      background: var(--engine);
+      font-size: 12px;
+      font-weight: 850;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .feature p {
+      margin: 10px 0 0;
+      color: var(--muted);
+    }
+
+    .timeline {
+      display: grid;
+      gap: 14px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr);
+      gap: 16px;
+      align-items: stretch;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .step-number {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--agent);
+      font-weight: 850;
+    }
+
+    .step p {
+      margin: 8px 0 0;
+      color: var(--muted);
+    }
+
+    .zoom {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .callout {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--state);
+      border-radius: 8px;
+      background: var(--state-soft);
+    }
+
+    .callout.warn {
+      border-left-color: var(--warn);
+      background: var(--warn-soft);
+    }
+
+    .callout p {
+      margin: 8px 0 0;
+      color: #42505f;
+    }
+
+    .lane-table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .lane-table th,
+    .lane-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .lane-table th {
+      color: #344252;
+      background: #eef3f7;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .lane-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 25px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .pill.agent {
+      color: #154b82;
+      background: var(--agent-soft);
+    }
+
+    .pill.verify {
+      color: #87352f;
+      background: var(--verify-soft);
+    }
+
+    .pill.state {
+      color: #0c604c;
+      background: var(--state-soft);
+    }
+
+    .use-case {
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .quote-box {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.98)),
+        var(--panel);
+    }
+
+    .quote-box p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    details + details {
+      margin-top: 10px;
+    }
+
+    summary {
+      cursor: pointer;
+      padding: 15px 17px;
+      font-weight: 850;
+    }
+
+    details p,
+    details ul {
+      margin: 0;
+      padding: 0 17px 17px;
+      color: var(--muted);
+    }
+
+    ul.clean {
+      margin: 12px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    .footer {
+      margin-top: 72px;
+      padding-top: 24px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 920px) {
+      .hero,
+      .zoom,
+      .use-case,
+      .grid.two,
+      .grid.three {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        min-height: 0;
+      }
+
+      .hero-metrics {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .nav {
+        align-items: flex-start;
+        flex-direction: column;
+        padding-top: 14px;
+        padding-bottom: 14px;
+      }
+
+      main {
+        padding: 34px 16px 56px;
+      }
+
+      .step {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="Page navigation">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">RH</div>
+        <span>RunHelm Bounded Loops</span>
+      </div>
+      <div class="nav-links">
+        <a href="#model">Model</a>
+        <a href="#lifecycle">Lifecycle</a>
+        <a href="#bindings">Bindings</a>
+        <a href="#use-case">Use Case</a>
+        <a href="#implementation">Implementation</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow">Verifier-controlled bounded reruns</p>
+        <h1 id="page-title">A workflow can revise a focused slice without restarting everything.</h1>
+        <p class="hero-copy">
+          Bounded workflow loops let a verifier task reject a generation, provide feedback,
+          and ask RunHelm to rerun a configured upstream slice. The workflow stays flat,
+          bounded, persisted, and observable.
+        </p>
+        <div class="hero-metrics" aria-label="Key properties">
+          <div class="metric">
+            <strong>Acyclic</strong>
+            <span>Normal data bindings remain a DAG.</span>
+          </div>
+          <div class="metric">
+            <strong>Bounded</strong>
+            <span>Each verifier has a max iteration budget.</span>
+          </div>
+          <div class="metric">
+            <strong>Auditable</strong>
+            <span>Rejected generations stay visible.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel diagram" aria-label="Bounded loop overview diagram">
+        <svg viewBox="0 0 760 430" role="img" aria-labelledby="overview-title overview-desc">
+          <title id="overview-title">A to B to C to D workflow with verifier backedge</title>
+          <desc id="overview-desc">Task D verifies B through C through D and can rerun the slice from B.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#526171"></path>
+            </marker>
+            <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#b84d45"></path>
+            </marker>
+            <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#177962"></path>
+            </marker>
+          </defs>
+
+          <rect x="32" y="50" width="126" height="78" rx="8" class="node node-muted"></rect>
+          <text x="95" y="84" text-anchor="middle" class="svg-label">A</text>
+          <text x="95" y="106" text-anchor="middle" class="svg-small">outside slice</text>
+
+          <rect x="230" y="50" width="126" height="78" rx="8" class="node node-agent"></rect>
+          <text x="293" y="84" text-anchor="middle" class="svg-label">B[1]</text>
+          <text x="293" y="106" text-anchor="middle" class="svg-small">generation 1</text>
+
+          <rect x="430" y="50" width="126" height="78" rx="8" class="node node-agent"></rect>
+          <text x="493" y="84" text-anchor="middle" class="svg-label">C[1]</text>
+          <text x="493" y="106" text-anchor="middle" class="svg-small">same generation</text>
+
+          <rect x="604" y="50" width="126" height="78" rx="8" class="node node-verify"></rect>
+          <text x="667" y="84" text-anchor="middle" class="svg-label">D[1]</text>
+          <text x="667" y="106" text-anchor="middle" class="svg-small">verifier agent</text>
+
+          <path d="M158 89 H222" class="arrow"></path>
+          <path d="M356 89 H422" class="arrow"></path>
+          <path d="M556 89 H596" class="arrow"></path>
+          <path d="M667 134 C667 198 293 198 293 138" class="backedge"></path>
+          <text x="476" y="190" text-anchor="middle" class="svg-small" fill="#b84d45">continue + feedback reruns from B</text>
+
+          <rect x="230" y="260" width="126" height="78" rx="8" class="node node-agent"></rect>
+          <text x="293" y="294" text-anchor="middle" class="svg-label">B[2]</text>
+          <text x="293" y="316" text-anchor="middle" class="svg-small">uses feedback</text>
+
+          <rect x="430" y="260" width="126" height="78" rx="8" class="node node-agent"></rect>
+          <text x="493" y="294" text-anchor="middle" class="svg-label">C[2]</text>
+          <text x="493" y="316" text-anchor="middle" class="svg-small">uses B[2]</text>
+
+          <rect x="604" y="260" width="126" height="78" rx="8" class="node node-state"></rect>
+          <text x="667" y="294" text-anchor="middle" class="svg-label">D[2]</text>
+          <text x="667" y="316" text-anchor="middle" class="svg-small">selected</text>
+
+          <path d="M356 299 H422" class="selected"></path>
+          <path d="M556 299 H596" class="selected"></path>
+          <path d="M667 252 C667 206 667 176 667 136" class="selected"></path>
+          <text x="472" y="362" text-anchor="middle" class="svg-small" fill="#177962">complete selects generation 2 for downstream bindings</text>
+        </svg>
+      </div>
+    </section>
+
+    <section id="model">
+      <div class="section-head">
+        <h2>The Definition Model</h2>
+        <p>
+          A bounded loop is not a new nested workflow language. It is a <code>control.verifier</code>
+          block on a verifier task. The block defines a bounded control edge back to an upstream ancestor.
+        </p>
+      </div>
+
+      <div class="zoom">
+        <div class="panel diagram">
+          <svg viewBox="0 0 760 320" role="img" aria-label="Definition model diagram">
+            <defs>
+              <marker id="arrow-model" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L0,6 L9,3 z" fill="#526171"></path>
+              </marker>
+            </defs>
+            <rect x="34" y="46" width="150" height="86" rx="8" class="node node-muted"></rect>
+            <text x="109" y="82" text-anchor="middle" class="svg-label">Task A</text>
+            <text x="109" y="106" text-anchor="middle" class="svg-small">normal upstream</text>
+
+            <rect x="238" y="46" width="150" height="86" rx="8" class="node node-agent"></rect>
+            <text x="313" y="82" text-anchor="middle" class="svg-label">Task B</text>
+            <text x="313" y="106" text-anchor="middle" class="svg-small">rerun start</text>
+
+            <rect x="442" y="46" width="150" height="86" rx="8" class="node node-agent"></rect>
+            <text x="517" y="82" text-anchor="middle" class="svg-label">Task C</text>
+            <text x="517" y="106" text-anchor="middle" class="svg-small">inside slice</text>
+
+            <rect x="602" y="46" width="128" height="86" rx="8" class="node node-verify"></rect>
+            <text x="666" y="82" text-anchor="middle" class="svg-label">Task D</text>
+            <text x="666" y="106" text-anchor="middle" class="svg-small">verifier task</text>
+
+            <path d="M184 89 H230" stroke="#526171" stroke-width="2.4" marker-end="url(#arrow-model)"></path>
+            <path d="M388 89 H434" stroke="#526171" stroke-width="2.4" marker-end="url(#arrow-model)"></path>
+            <path d="M592 89 H594" stroke="#526171" stroke-width="2.4" marker-end="url(#arrow-model)"></path>
+
+            <rect x="238" y="178" width="492" height="78" rx="8" fill="none" stroke="#b84d45" stroke-width="2.4" stroke-dasharray="8 6"></rect>
+            <text x="484" y="212" text-anchor="middle" class="svg-label">Derived rerun slice: B -> C -> D</text>
+            <text x="484" y="236" text-anchor="middle" class="svg-small">computed from rerun_from_task_id and data bindings</text>
+          </svg>
+        </div>
+
+        <pre><code>control:
+  verifier:
+    max_iterations: 3
+    on_exhausted_continue: false
+    rerun_from_task_id: b
+
+# The verifier task returns JSON:
+# { "decision": "complete" }
+# or
+# { "decision": "continue", "feedback": "Improve evidence and formatting." }</code></pre>
+      </div>
+
+      <div class="grid three" style="margin-top: 16px;">
+        <article class="feature">
+          <span class="tag">Validation</span>
+          <h3>Verifier task owns the decision</h3>
+          <p>The verifier task returns a JSON decision. RunHelm injects that decision schema when <code>control.verifier</code> is declared.</p>
+        </article>
+        <article class="feature">
+          <span class="tag">Bounds</span>
+          <h3>Iteration budget is explicit</h3>
+          <p><code>max_iterations</code> must be positive. Exhaustion either fails the workflow or finalizes the latest valid generation.</p>
+        </article>
+        <article class="feature">
+          <span class="tag">Safety</span>
+          <h3>No custom output schema</h3>
+          <p>A verifier task must not declare its own <code>output_schema</code>. RunHelm supplies the required decision schema.</p>
+        </article>
+      </div>
+      <p class="note">
+        Verifier control is available on any task kind. Function verifiers are useful for deterministic checks over upstream outputs.
+        A verifier returns a control decision, not corrected business data; model transformations as normal tasks.
+      </p>
+    </section>
+
+    <section id="lifecycle">
+      <div class="section-head">
+        <h2>Lifecycle Of A Bounded Rerun</h2>
+        <p>
+          Runtime state uses materialized attempts rather than overwriting logical task IDs.
+          The first generation is initialized with the static workflow, while verifier retries
+          create later generations for the rerun slice. Rejected attempts complete normally at
+          the task lifecycle layer, while verifier metadata records why the generation was not
+          selected. Each attempt also records whether it is currently satisfied for dependency
+          resolution.
+        </p>
+      </div>
+
+      <div class="timeline">
+        <div class="step">
+          <div class="step-number">1</div>
+          <div>
+            <h3>Initialize generation 1</h3>
+            <p>When a workflow starts, RunHelm pre-creates generation-1 attempts for the static task graph, such as <code>A[1]</code>, <code>B[1]</code>, <code>C[1]</code>, and <code>D[1]</code>.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <div>
+            <h3>Run eligible attempts</h3>
+            <p>Pending attempts run when their inputs are ready. Tasks outside the rerun slice, such as <code>A[1]</code>, run once and keep their selected output.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <div>
+            <h3>Parse the verifier decision</h3>
+            <p>The verifier task output must satisfy the injected decision schema before RunHelm applies <code>complete</code> or <code>continue</code>.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">4</div>
+          <div>
+            <h3>Continue creates the next generation</h3>
+            <p>A valid <code>continue</code> decision requires non-empty feedback. RunHelm persists that feedback and creates <code>B[2]</code>, <code>C[2]</code>, and <code>D[2]</code> if budget remains.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">5</div>
+          <div>
+            <h3>Complete satisfies a generation</h3>
+            <p>A <code>complete</code> decision marks the current slice attempts as satisfied. Downstream tasks after the verifier consume only satisfied outputs.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="bindings">
+      <div class="section-head">
+        <h2>Binding Rules</h2>
+        <p>
+          Data bindings are ordered per target task. RunHelm derives input positions from the order
+          of matching bindings and records the exact source attempt used for each input slot.
+        </p>
+      </div>
+
+      <table class="lane-table">
+        <thead>
+          <tr>
+            <th>Consumer</th>
+            <th>Source Binding</th>
+            <th>Resolved Source</th>
+            <th>Why It Matters</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="pill agent">C[2]</span></td>
+            <td><code>B -> C</code></td>
+            <td><code>B[2]</code></td>
+            <td>Tasks inside a rerun slice consume same-generation upstream outputs.</td>
+          </tr>
+          <tr>
+            <td><span class="pill agent">B[2]</span></td>
+            <td><code>A -> B</code></td>
+            <td><code>A</code></td>
+            <td>Inputs from outside the slice stay stable across generations.</td>
+          </tr>
+          <tr>
+            <td><span class="pill state">E</span></td>
+            <td><code>D -> E</code></td>
+            <td><code>D[2]</code> after satisfaction</td>
+            <td>Downstream work waits for a satisfied verifier generation.</td>
+          </tr>
+          <tr>
+            <td><span class="pill verify">Rejected D[1]</span></td>
+            <td><code>D -> E</code></td>
+            <td>Does not satisfy readiness</td>
+            <td>Unsatisfied attempts remain observable but do not leak into downstream execution.</td>
+          </tr>
+          <tr>
+            <td><span class="pill state">E[1]</span></td>
+            <td><code>C -> E</code></td>
+            <td><code>C[1]</code> in <code>input_mapping</code></td>
+            <td>Attempt records preserve the concrete source generation even when later attempts appear.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="use-case">
+      <div class="section-head">
+        <h2>Use Case: Market Report With Format Verification</h2>
+        <p>
+          A stock-report workflow is a compact example because correctness is not just "did an Agent
+          return JSON." The result needs fresh data, currency formatting, dates, and a useful summary.
+        </p>
+      </div>
+
+      <div class="use-case">
+        <div class="quote-box">
+          <h3>Workflow Shape</h3>
+          <ul class="clean">
+            <li><code>fetchprices</code>: gets recent AAPL and MSFT market data.</li>
+            <li><code>draftsummary</code>: writes a concise market summary.</li>
+            <li><code>verify</code>: checks date format, dollar formatting, and source clarity.</li>
+            <li>If verification fails, rerun from <code>fetchprices</code> with concrete feedback.</li>
+          </ul>
+        </div>
+
+        <div class="panel diagram">
+          <svg viewBox="0 0 760 300" role="img" aria-label="Market report use case diagram">
+            <defs>
+              <marker id="arrow-case" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L0,6 L9,3 z" fill="#526171"></path>
+              </marker>
+              <marker id="arrow-case-red" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L0,6 L9,3 z" fill="#b84d45"></path>
+              </marker>
+            </defs>
+            <rect x="36" y="74" width="150" height="78" rx="8" class="node node-agent"></rect>
+            <text x="111" y="108" text-anchor="middle" class="svg-label">fetchprices</text>
+            <text x="111" y="130" text-anchor="middle" class="svg-small">web-backed data</text>
+
+            <rect x="288" y="74" width="150" height="78" rx="8" class="node node-agent"></rect>
+            <text x="363" y="108" text-anchor="middle" class="svg-label">draftsummary</text>
+            <text x="363" y="130" text-anchor="middle" class="svg-small">narrative output</text>
+
+            <rect x="574" y="74" width="150" height="78" rx="8" class="node node-verify"></rect>
+            <text x="649" y="108" text-anchor="middle" class="svg-label">verify</text>
+            <text x="649" y="130" text-anchor="middle" class="svg-small">format and source gate</text>
+
+            <path d="M186 113 H280" stroke="#526171" stroke-width="2.4" marker-end="url(#arrow-case)"></path>
+            <path d="M438 113 H566" stroke="#526171" stroke-width="2.4" marker-end="url(#arrow-case)"></path>
+            <path d="M649 158 C649 228 111 228 111 160" stroke="#b84d45" stroke-width="2.8" fill="none" stroke-dasharray="6 5" marker-end="url(#arrow-case-red)"></path>
+            <text x="381" y="218" text-anchor="middle" class="svg-small" fill="#b84d45">feedback: "Use $150.00 and YYYY-MM-DD; cite source URL"</text>
+          </svg>
+        </div>
+      </div>
+
+      <div class="callout" style="margin-top: 16px;">
+        <h3>Why bounded loops fit this use case</h3>
+        <p>
+          The verifier can reject a weak report without restarting unrelated setup work. Feedback is
+          injected into the next rerun generation as loop context. The worker receives the most
+          recent feedback, ordered feedback history, and the previous same-task output, so the Agent
+          can correct the current issue while preserving earlier corrections.
+        </p>
+      </div>
+    </section>
+
+    <section id="implementation">
+      <div class="section-head">
+        <h2>Implementation Decisions To Notice</h2>
+        <p>
+          The feature is high-level for workflow authors, but a few implementation choices make it
+          reliable enough for production orchestration.
+        </p>
+      </div>
+
+      <div class="grid two">
+        <div>
+          <details open>
+            <summary>Materialized attempts are stable IDs</summary>
+            <p>
+              A rerun slice persists as <code>b[1]</code>, <code>c[1]</code>, <code>d[1]</code>,
+              then <code>b[2]</code>, <code>c[2]</code>, <code>d[2]</code>. The instance also keeps
+              the original task definition ID and generation index.
+            </p>
+          </details>
+          <details>
+            <summary>Verifier state is separate from task lifecycle</summary>
+            <p>
+              A rejected generation can have task lifecycle <code>Completed</code> because it produced
+              schema-valid output. The task satisfaction field says whether the attempt can be used
+              for downstream dependency resolution.
+            </p>
+          </details>
+          <details>
+            <summary>Input order is derived from binding order</summary>
+            <p>
+              Workflow authors declare source and target task IDs. For each target task, RunHelm
+              orders matching bindings as they appear in <code>data_bindings</code> and passes outputs
+              to the executor in that order.
+            </p>
+          </details>
+          <details>
+            <summary>Loop context is execution metadata</summary>
+            <p>
+              Feedback history is carried as execution metadata on the normal executor and worker
+              enqueue path, not as a user-declared input slot. The workflow input schema remains
+              about business data, not orchestration state.
+            </p>
+          </details>
+        </div>
+
+        <div>
+          <details open>
+            <summary>Ordinary cycles are still rejected</summary>
+            <p>
+              Data bindings remain acyclic. The verifier backedge is explicit control flow and only valid
+              from a verifier task to itself or one of its upstream ancestors.
+            </p>
+          </details>
+          <details>
+            <summary>Verifier slices do not overlap</summary>
+            <p>
+              A task can belong to at most one verifier rerun slice. Back-to-back verifier regions are
+              supported, but overlapping or nested slices are rejected.
+            </p>
+          </details>
+          <details>
+            <summary>Exhaustion policy is explicit</summary>
+            <p>
+              <code>on_exhausted_continue: false</code> fails the workflow when budget is exhausted.
+              <code>true</code> finalizes the latest schema-valid generation, and records why.
+            </p>
+          </details>
+          <details>
+            <summary>Rejected generations are observable</summary>
+            <p>
+              RunHelm does not erase failed review history or roll back side effects. Rejected attempts
+              remain part of the persisted audit trail.
+            </p>
+          </details>
+        </div>
+      </div>
+
+      <div class="callout warn" style="margin-top: 18px;">
+        <h3>Operational guidance</h3>
+        <p>
+          Put side-effect-heavy tasks outside rerun slices when possible. If a rerun slice must perform
+          side effects, make those effects idempotent or safe to repeat because rejected generations are
+          retained, not rolled back.
+        </p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      RunHelm bounded loops: flat workflow definitions, bounded verifier-controlled reruns,
+      persisted generations, scoped data binding, and explicit satisfaction.
+    </footer>
+  </main>
+</body>
+</html>

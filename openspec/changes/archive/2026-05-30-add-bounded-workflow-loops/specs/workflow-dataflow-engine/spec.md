@@ -1,9 +1,4 @@
-# Capability: workflow-dataflow-engine
-
-## Purpose
-Defines how the orchestrator constructs and executes a workflow DAG based on data dependencies, transitioning tasks dynamically as their inputs are satisfied by upstream task outputs.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Workflow Definition Identifier Normalization
 The orchestrator SHALL normalize workflow definition IDs and task definition IDs to lowercase during workflow registration and SHALL reject those definition IDs when they contain non-alphanumeric characters.

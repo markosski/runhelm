@@ -1,36 +1,7 @@
-id: simple-agent-workflow
+id: simpleagentworkflow
 
 tasks:
-  - id: test
-    kind:
-      Agent:
-        model_id: "google/gemini-3-flash-preview"
-        provider_url: ""
-        prompt: |
-          Perform the following actions:
-          - Use curl to access www.marcinkossakowski.com
-          - Download the content to /tmp/marcin.html
-          - Extract the title of the page and return as response
-
-          {
-            "response": "summary text including the close date, close price, trend direction, and source",
-          }
-        tools: ["read", "write", "edit"]
-        skills: []
-        ask: false
-        schema_failure_retry_times: 2
-    input_schemas: []
-    output_schema:
-      type: object
-      required:
-        - response
-      properties:
-        response:
-          type: string
-    expected_side_effects: []
-    required_credentials:
-      - llm_api_key
-  - id: pull_stocks
+  - id: pullstocks
     kind:
       Agent:
         model_id: "google/gemini-3-flash-preview"
@@ -66,7 +37,6 @@ tasks:
         skills: ["brave-web-search"]
         ask: false
         schema_failure_retry_times: 2
-    input_schemas: []
     output_schema:
       type: object
       required:
@@ -74,11 +44,31 @@ tasks:
       properties:
         response:
           type: string
-    expected_side_effects: []
+    required_credentials:
+      - llm_api_key
+  - id: verify
+    kind:
+      Agent:
+        model_id: "google/gemini-3-flash-preview"
+        provider_url: ""
+        prompt: |
+          Verify provided information ensuring proper format, currency, date formatting etc.
+          - ensure currency fields are in dollars, e.g. $150.00
+          - ensure date fields are in YYYY-MM-DD format, e.g. 2026-10-02
+          - return decision "complete" when the input is acceptable
+          - return decision "continue" with concrete feedback when the input needs to be regenerated
+        tools: []
+        skills: []
+        ask: false
+        schema_failure_retry_times: 2
+    control:
+      verifier:
+        max_iterations: 3
+        on_exhausted_continue: false
+        rerun_from_task_id: pullstocks
     required_credentials:
       - llm_api_key
 
 data_bindings:
-  - source_task_id: fetch_user
-    target_task_id: summarize_user
-    target_input_index: 0
+  - source_task_id: pullstocks
+    target_task_id: verify

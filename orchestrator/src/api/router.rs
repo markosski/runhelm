@@ -6,19 +6,29 @@ use std::sync::Arc;
 
 use super::handlers;
 
-use crate::adapters::worker_pool::WorkerPool;
+use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
+use crate::{adapters::worker_pool::WorkerPool, core::workflow_service::WorkflowService};
 
 // AppState holds the injected dependencies
 #[derive(Clone)]
 pub struct AppState {
     pub orchestrator: Arc<Orchestrator>,
+    pub workflow_service: Arc<WorkflowService>,
+    pub function_service: Arc<FunctionService>,
     pub worker_pool: WorkerPool,
 }
 
-pub fn create_public_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
+pub fn create_public_router(
+    orchestrator: Arc<Orchestrator>,
+    workflow_service: Arc<WorkflowService>,
+    function_service: Arc<FunctionService>,
+    worker_pool: WorkerPool,
+) -> Router {
     let state = AppState {
         orchestrator,
+        workflow_service,
+        function_service,
         worker_pool,
     };
 
@@ -46,6 +56,14 @@ pub fn create_public_router(orchestrator: Arc<Orchestrator>, worker_pool: Worker
         .route("/workflows", get(handlers::list_workflows))
         .route("/workflows/{id}", get(handlers::get_workflow_instance))
         .route(
+            "/workflows/{workflow_instance_id}/tasks",
+            get(handlers::list_task_results),
+        )
+        .route(
+            "/workflows/{workflow_instance_id}/tasks/{task_id}/{generation}",
+            get(handlers::get_task_result_generation),
+        )
+        .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
         )
@@ -53,9 +71,16 @@ pub fn create_public_router(orchestrator: Arc<Orchestrator>, worker_pool: Worker
         .with_state(state)
 }
 
-pub fn create_worker_router(orchestrator: Arc<Orchestrator>, worker_pool: WorkerPool) -> Router {
+pub fn create_worker_router(
+    orchestrator: Arc<Orchestrator>,
+    workflow_service: Arc<WorkflowService>,
+    function_service: Arc<FunctionService>,
+    worker_pool: WorkerPool,
+) -> Router {
     let state = AppState {
         orchestrator,
+        workflow_service,
+        function_service,
         worker_pool,
     };
 

@@ -8,7 +8,7 @@ Existing constraints:
 - All orchestrator code is Rust.
 - The engine is synchronous at the loop level but uses `async/await` for I/O (storage). Task execution will also be async.
 - JSON Schema validation is already handled by the `jsonschema` crate inside the engine loop; the executor does **not** perform validation — it only produces a raw JSON value.
-- The `TaskDef` carries all the information needed to dispatch a task: `kind` (discriminated union of `ApiCall` and `Agent`), `input_schemas`, `output_schema`, and `expected_side_effects`.
+- The `TaskDef` carries all the information needed to dispatch a task: `kind` (discriminated union of `ApiCall` and `Agent`), `input_schemas`, and `output_schema`.
 
 ## Goals / Non-Goals
 

@@ -1,15 +1,18 @@
+use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
-use crate::core::function_resolution::resolve_task_function_ref;
-use crate::core::models::{
-    FunctionDef, TaskDef, TaskStatus, WorkflowDef, WorkflowInstance, WorkflowList,
-    WorkflowQueueStatus, WorkflowStatus, WorkflowStatusReport, WorkflowSummary,
-};
+use crate::core::function_service::resolve_task_function_ref;
+use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus, WorkflowStatus};
 use crate::ports::executor::ExecutorPort;
-use crate::ports::storage::{StoragePort, TaskResult};
+use crate::ports::storage::StoragePort;
 use crate::ports::workflow_queue::WorkflowQueuePort;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{error, info};
+
+
+#[cfg(test)]
+#[path = "orchestrator_tests.rs"]
+mod tests;
 
 /// The application layer for the orchestrator.
 /// It coordinates between the workflow engine, storage, and executors.
@@ -35,26 +38,6 @@ impl Orchestrator {
         }
     }
 
-    /// Registers a new workflow definition.
-    pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
-        self.storage.save_workflow_def(def).await
-    }
-
-    /// Retrieves a workflow definition by ID.
-    pub async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
-        self.storage.get_workflow_def(id).await
-    }
-
-    /// Registers a reusable function definition.
-    pub async fn create_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
-        self.storage.save_function_def(def).await
-    }
-
-    /// Deletes a reusable function definition.
-    pub async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
-        self.storage.delete_function_def(id).await
-    }
-
     /// Finds a task in a registered workflow definition and executes it directly.
     pub async fn execute_workflow_task_isolated(
         &self,
@@ -71,11 +54,6 @@ impl Orchestrator {
         };
 
         self.execute_task_isolated(&task, inputs).await.map(Some)
-    }
-
-    /// Creates a new workflow instance.
-    pub async fn create_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()> {
-        self.storage.save_workflow_instance(instance).await
     }
 
     /// Adds a workflow instance to the execution queue.
@@ -106,42 +84,6 @@ impl Orchestrator {
         id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
         self.engine.get_workflow_status(id).await
-    }
-
-    pub async fn list_workflows(
-        &self,
-        status: Option<WorkflowStatus>,
-    ) -> anyhow::Result<WorkflowList> {
-        let mut workflows: Vec<WorkflowSummary> = self
-            .storage
-            .list_workflow_instances()
-            .await?
-            .into_iter()
-            .filter(|instance| {
-                status
-                    .as_ref()
-                    .is_none_or(|status| instance.status == *status)
-            })
-            .map(|instance| WorkflowSummary {
-                id: instance.id,
-                workflow_def_id: instance.workflow_def_id,
-                status: instance.status,
-            })
-            .collect();
-
-        workflows.sort_by(|left, right| left.id.cmp(&right.id));
-
-        Ok(WorkflowList { workflows })
-    }
-
-    pub async fn get_task_result(
-        &self,
-        workflow_instance_id: &str,
-        task_id: &str,
-    ) -> anyhow::Result<TaskResult> {
-        self.storage
-            .get_task_result(workflow_instance_id, task_id)
-            .await
     }
 
     /// Starts or resumes execution of a workflow instance.
@@ -179,7 +121,7 @@ impl Orchestrator {
                 if let Err(error) = orchestrator.run_workflow(instance_id).await {
                     error!(
                         %workflow_instance_id,
-                        %error,
+                        error = ?error,
                         "workflow execution failed"
                     );
                 }
@@ -239,374 +181,12 @@ impl Orchestrator {
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
         let task = self.resolve_task_function_ref(task).await?;
-        self.executor.execute(&task, inputs).await
+        self.executor
+            .execute(&task, inputs, &ExecutionMetadata::default())
+            .await
     }
 
     async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
         resolve_task_function_ref(self.storage.as_ref(), task).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::adapters::fake_executor::FakeExecutor;
-    use crate::adapters::memory_storage::MemoryStorage;
-    use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-    use crate::core::models::{FunctionDef, FunctionTaskDef, TaskTypeDef};
-    use crate::ports::executor::ExecutionResult;
-    use async_trait::async_trait;
-    use serde_json::json;
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::time::{Duration, sleep};
-
-    fn orchestrator() -> Orchestrator {
-        Orchestrator::new(
-            Arc::new(MemoryStorage::new()),
-            Arc::new(FakeExecutor::new()),
-            Arc::new(MemoryWorkflowQueue::new(10)),
-        )
-    }
-
-    struct CountingExecutor {
-        active: AtomicUsize,
-        max_active: AtomicUsize,
-        delay: Duration,
-    }
-
-    impl CountingExecutor {
-        fn new(delay: Duration) -> Self {
-            Self {
-                active: AtomicUsize::new(0),
-                max_active: AtomicUsize::new(0),
-                delay,
-            }
-        }
-
-        fn max_active(&self) -> usize {
-            self.max_active.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait]
-    impl ExecutorPort for CountingExecutor {
-        async fn execute(
-            &self,
-            _task: &TaskDef,
-            _inputs: &[serde_json::Value],
-        ) -> anyhow::Result<ExecutionResult> {
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_active.fetch_max(active, Ordering::SeqCst);
-            sleep(self.delay).await;
-            self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(ExecutionResult::Success(json!({})))
-        }
-    }
-
-    fn task(id: &str) -> TaskDef {
-        TaskDef {
-            id: id.to_string(),
-            kind: TaskTypeDef::Function(FunctionTaskDef::Inline {
-                dependencies: vec![],
-                code: "export default async function run() { return {}; }".to_string(),
-            }),
-            timeout_secs: None,
-            input_schemas: vec![],
-            output_schema: Some(json!({
-                "type": "object",
-                "required": ["ok"],
-                "properties": {
-                    "ok": { "type": "boolean" }
-                }
-            })),
-            expected_side_effects: vec![],
-            required_credentials: vec![],
-        }
-    }
-
-    fn function_ref_task(id: &str, reference: &str) -> TaskDef {
-        TaskDef {
-            id: id.to_string(),
-            kind: TaskTypeDef::Function(FunctionTaskDef::Ref {
-                reference: reference.to_string(),
-            }),
-            timeout_secs: None,
-            input_schemas: vec![],
-            output_schema: Some(json!({
-                "type": "object",
-                "required": ["ok"],
-                "properties": {
-                    "ok": { "type": "boolean" }
-                }
-            })),
-            expected_side_effects: vec![],
-            required_credentials: vec![],
-        }
-    }
-
-    fn workflow(id: &str, tasks: Vec<TaskDef>) -> WorkflowDef {
-        WorkflowDef {
-            id: id.to_string(),
-            tasks,
-            data_bindings: vec![],
-        }
-    }
-
-    fn workflow_instance(id: &str, workflow_def_id: &str) -> WorkflowInstance {
-        WorkflowInstance {
-            id: id.to_string(),
-            workflow_def_id: workflow_def_id.to_string(),
-            status: WorkflowStatus::Pending,
-            tasks: HashMap::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn execute_workflow_task_isolated_finds_registered_task() {
-        let orchestrator = orchestrator();
-        orchestrator
-            .create_workflow_def(workflow("workflow-1", vec![task("task-a")]))
-            .await
-            .unwrap();
-
-        let result = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result,
-            Some(ExecutionResult::Success(json!({ "ok": false })))
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_workflow_task_isolated_scopes_task_lookup_to_workflow_def() {
-        let orchestrator = orchestrator();
-        orchestrator
-            .create_workflow_def(workflow("workflow-1", vec![task("task-a")]))
-            .await
-            .unwrap();
-        orchestrator
-            .create_workflow_def(workflow("workflow-2", vec![task("task-a")]))
-            .await
-            .unwrap();
-
-        let result = orchestrator
-            .execute_workflow_task_isolated("workflow-2", "task-a", &[])
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result,
-            Some(ExecutionResult::Success(json!({ "ok": false })))
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_workflow_task_isolated_resolves_registered_function_ref() {
-        let orchestrator = orchestrator();
-        orchestrator
-            .create_function_def(FunctionDef {
-                id: "function-a".to_string(),
-                dependencies: vec![],
-                code: "export default async function run() { return {}; }".to_string(),
-            })
-            .await
-            .unwrap();
-        orchestrator
-            .create_workflow_def(workflow(
-                "workflow-1",
-                vec![function_ref_task("task-a", "function-a")],
-            ))
-            .await
-            .unwrap();
-
-        let result = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result,
-            Some(ExecutionResult::Success(json!({ "ok": false })))
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_workflow_task_isolated_errors_for_missing_function_ref() {
-        let orchestrator = orchestrator();
-        orchestrator
-            .create_workflow_def(workflow(
-                "workflow-1",
-                vec![function_ref_task("task-a", "missing-function")],
-            ))
-            .await
-            .unwrap();
-
-        let error = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("Function definition not found: missing-function")
-        );
-    }
-
-    #[tokio::test]
-    async fn scheduler_limits_concurrent_workflow_execution() {
-        let storage = Arc::new(MemoryStorage::new());
-        let executor = Arc::new(CountingExecutor::new(Duration::from_millis(50)));
-        let queue = Arc::new(MemoryWorkflowQueue::new(10));
-        let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue));
-        let scheduler = tokio::spawn(orchestrator.clone().run_scheduler(2));
-
-        for id in ["workflow-1", "workflow-2", "workflow-3"] {
-            storage
-                .save_workflow_def(workflow(
-                    id,
-                    vec![TaskDef {
-                        output_schema: None,
-                        ..task("task-a")
-                    }],
-                ))
-                .await
-                .unwrap();
-            storage
-                .save_workflow_instance(workflow_instance(id, id))
-                .await
-                .unwrap();
-            orchestrator
-                .enqueue_workflow_instance(id.to_string())
-                .await
-                .unwrap();
-        }
-
-        for _ in 0..20 {
-            let mut completed = 0;
-            for id in ["workflow-1", "workflow-2", "workflow-3"] {
-                let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
-                if instance.status == WorkflowStatus::Completed {
-                    completed += 1;
-                }
-            }
-            if completed == 3 {
-                break;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
-
-        assert_eq!(executor.max_active(), 2);
-        scheduler.abort();
-    }
-
-    #[tokio::test]
-    async fn isolated_workflow_task_execution_does_not_require_scheduler() {
-        let orchestrator = orchestrator();
-        orchestrator
-            .create_workflow_def(workflow("workflow-1", vec![task("task-a")]))
-            .await
-            .unwrap();
-
-        let result = orchestrator
-            .execute_workflow_task_isolated("workflow-1", "task-a", &[])
-            .await
-            .unwrap();
-
-        assert!(matches!(result, Some(ExecutionResult::Success(_))));
-    }
-
-    #[tokio::test]
-    async fn queue_status_lists_pending_workflows() {
-        let storage = Arc::new(MemoryStorage::new());
-        let queue = Arc::new(MemoryWorkflowQueue::new(10));
-        let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
-
-        let mut running = workflow_instance("running-workflow", "workflow-1");
-        running.status = WorkflowStatus::Running;
-        storage.save_workflow_instance(running).await.unwrap();
-
-        orchestrator
-            .enqueue_workflow_instance("pending-workflow".to_string())
-            .await
-            .unwrap();
-
-        assert_eq!(
-            orchestrator.get_queue_status().await.unwrap(),
-            WorkflowQueueStatus {
-                pending: vec!["pending-workflow".to_string()],
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn remove_and_purge_affect_pending_queue_only() {
-        let orchestrator = orchestrator();
-
-        orchestrator
-            .enqueue_workflow_instance("workflow-1".to_string())
-            .await
-            .unwrap();
-        orchestrator
-            .enqueue_workflow_instance("workflow-2".to_string())
-            .await
-            .unwrap();
-
-        assert!(
-            orchestrator
-                .remove_queued_workflow_instance("workflow-1")
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            orchestrator
-                .purge_queued_workflow_instances()
-                .await
-                .unwrap(),
-            vec!["workflow-2".to_string()]
-        );
-        assert!(
-            orchestrator
-                .get_queue_status()
-                .await
-                .unwrap()
-                .pending
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn list_workflows_filters_by_status() {
-        let storage = Arc::new(MemoryStorage::new());
-        let orchestrator = Orchestrator::new(
-            storage.clone(),
-            Arc::new(FakeExecutor::new()),
-            Arc::new(MemoryWorkflowQueue::new(10)),
-        );
-
-        let mut completed = workflow_instance("completed-workflow", "workflow-1");
-        completed.status = WorkflowStatus::Completed;
-        let mut running = workflow_instance("running-workflow", "workflow-1");
-        running.status = WorkflowStatus::Running;
-        storage.save_workflow_instance(completed).await.unwrap();
-        storage.save_workflow_instance(running).await.unwrap();
-
-        assert_eq!(
-            orchestrator
-                .list_workflows(Some(WorkflowStatus::Running))
-                .await
-                .unwrap(),
-            WorkflowList {
-                workflows: vec![WorkflowSummary {
-                    id: "running-workflow".to_string(),
-                    workflow_def_id: "workflow-1".to_string(),
-                    status: WorkflowStatus::Running,
-                }],
-            }
-        );
     }
 }

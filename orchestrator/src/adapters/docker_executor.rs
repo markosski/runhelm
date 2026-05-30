@@ -1,5 +1,5 @@
 use crate::adapters::worker_pool::WorkerPool;
-use crate::core::models::TaskDef;
+use crate::core::models::{ExecutionMetadata, TaskDef};
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -29,14 +29,19 @@ impl DockerExecutor {
 
 #[async_trait]
 impl ExecutorPort for DockerExecutor {
-    async fn execute(&self, task: &TaskDef, inputs: &[Value]) -> anyhow::Result<ExecutionResult> {
+    async fn execute(
+        &self,
+        task: &TaskDef,
+        inputs: &[Value],
+        metadata: &ExecutionMetadata,
+    ) -> anyhow::Result<ExecutionResult> {
         let task_timeout = task
             .timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(self.task_timeout);
 
         self.worker_pool
-            .enqueue_task(task, inputs, task_timeout)
+            .enqueue_task(task, inputs, task_timeout, metadata.clone())
             .await
     }
 }
@@ -65,15 +70,18 @@ mod tests {
                     code: "return 1".to_string(),
                 },
             ),
+            control: None,
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
-            expected_side_effects: vec![],
             required_credentials: vec![],
         };
 
-        let result =
-            tokio::time::timeout(Duration::from_millis(30), executor.execute(&task, &[])).await;
+        let result = tokio::time::timeout(
+            Duration::from_millis(30),
+            executor.execute(&task, &[], &ExecutionMetadata::default()),
+        )
+        .await;
 
         assert!(result.is_err());
     }
@@ -97,14 +105,18 @@ mod tests {
                     code: "return 1".to_string(),
                 },
             ),
+            control: None,
             timeout_secs: Some(1),
             input_schemas: vec![],
             output_schema: None,
-            expected_side_effects: vec![],
             required_credentials: vec![],
         };
 
-        let execution = tokio::spawn(async move { executor.execute(&task, &[]).await });
+        let execution = tokio::spawn(async move {
+            executor
+                .execute(&task, &[], &ExecutionMetadata::default())
+                .await
+        });
         let claimed = worker_pool
             .claim_task("worker-1", Duration::from_secs(1))
             .await

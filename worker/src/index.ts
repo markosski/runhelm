@@ -131,8 +131,22 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function describeError(error: unknown): string {
+    if (error instanceof Error) {
+        const cause = (error as Error & { cause?: unknown }).cause;
+        if (cause instanceof Error) {
+            return `${error.message}: ${cause.message}`;
+        }
+
+        return error.message;
+    }
+
+    return String(error);
+}
+
 async function registerWorkerUntilAck(baseUrl: string, workerId: string): Promise<void> {
     const url = `${baseUrl}/workers/register`;
+    let attempt = 0;
 
     while (true) {
         try {
@@ -144,7 +158,19 @@ async function registerWorkerUntilAck(baseUrl: string, workerId: string): Promis
 
             logger.warn({ ack, workerId }, "Unexpected worker registration ack");
         } catch (err) {
-            logger.warn({ err, workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker registration failed; retrying");
+            attempt += 1;
+            const retryContext = {
+                error: describeError(err),
+                attempt,
+                workerId,
+                retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS,
+            };
+
+            if (attempt % 30 === 0) {
+                logger.warn(retryContext, "Still waiting for orchestrator worker API");
+            } else if (attempt <= 3 || attempt % 5 === 0) {
+                logger.info(retryContext, "Waiting for orchestrator worker API");
+            }
         }
 
         await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
@@ -210,7 +236,7 @@ async function runWorker(
                 logger.warn({ workerId }, "Worker is not registered with orchestrator; re-registering");
                 await registerWorkerUntilAck(baseUrl, workerId);
             } else {
-                logger.warn({ err, workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker task claim failed; retrying");
+                logger.warn({ error: describeError(err), workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker task claim failed; retrying");
                 await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
             }
             continue;

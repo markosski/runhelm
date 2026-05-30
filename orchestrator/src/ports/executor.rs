@@ -1,4 +1,4 @@
-use crate::core::models::TaskDef;
+use crate::core::models::{ExecutionMetadata, TaskDef};
 use async_trait::async_trait;
 
 #[derive(Debug, PartialEq)]
@@ -14,5 +14,6 @@ pub trait ExecutorPort {
         &self,
         task: &TaskDef,
         inputs: &[serde_json::Value],
+        metadata: &ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult>;
 }

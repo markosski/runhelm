@@ -1,0 +1,932 @@
+use super::*;
+use crate::adapters::fake_executor::FakeExecutor;
+use crate::adapters::memory_storage::MemoryStorage;
+use crate::core::models::*;
+use crate::ports::executor::ExecutionResult;
+use crate::ports::executor::ExecutorPort;
+use async_trait::async_trait;
+use serde_json::Number;
+use serde_json::json;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+fn make_engine() -> WorkflowEngine {
+    WorkflowEngine::new(
+        Arc::new(MemoryStorage::new()),
+        Arc::new(FakeExecutor::new()),
+    )
+}
+
+fn make_engine_with_executor(executor: Arc<dyn ExecutorPort + Send + Sync>) -> WorkflowEngine {
+    WorkflowEngine::new(Arc::new(MemoryStorage::new()), executor)
+}
+
+struct ContinueThenCompleteExecutor;
+
+#[async_trait]
+impl ExecutorPort for ContinueThenCompleteExecutor {
+    async fn execute(
+        &self,
+        task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        metadata: &ExecutionMetadata,
+    ) -> anyhow::Result<ExecutionResult> {
+        if task_verifier(task).is_some() {
+            let generation = metadata
+                .loop_context
+                .as_ref()
+                .map(|context| context.generation)
+                .unwrap_or(1);
+            if generation == 1 {
+                return Ok(ExecutionResult::Success(json!({
+                    "decision": "continue",
+                    "feedback": "try again"
+                })));
+            }
+            return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
+        }
+
+        Ok(ExecutionResult::Success(json!({})))
+    }
+}
+
+struct CompleteVerifierExecutor;
+
+#[async_trait]
+impl ExecutorPort for CompleteVerifierExecutor {
+    async fn execute(
+        &self,
+        task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+    ) -> anyhow::Result<ExecutionResult> {
+        if task_verifier(task).is_some() {
+            return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
+        }
+
+        Ok(ExecutionResult::Success(json!({})))
+    }
+}
+
+struct AlwaysContinueVerifierExecutor;
+
+#[async_trait]
+impl ExecutorPort for AlwaysContinueVerifierExecutor {
+    async fn execute(
+        &self,
+        task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+    ) -> anyhow::Result<ExecutionResult> {
+        if task_verifier(task).is_some() {
+            return Ok(ExecutionResult::Success(json!({
+                "decision": "continue",
+                "feedback": "try again"
+            })));
+        }
+
+        Ok(ExecutionResult::Success(json!({})))
+    }
+}
+
+fn task_def(id: &str, output_schema: serde_json::Value) -> TaskDef {
+    TaskDef {
+        id: id.to_string(),
+        kind: TaskTypeDef::ApiCall {
+            url: "http://example.com".to_string(),
+            method: "GET".to_string(),
+        },
+        control: None,
+        timeout_secs: None,
+        input_schemas: vec![],
+        output_schema: Some(output_schema),
+        required_credentials: vec![],
+    }
+}
+
+async fn setup(engine: &WorkflowEngine, def: WorkflowDef) -> String {
+    let instance_id = "inst-1".to_string();
+    let instance = WorkflowInstance {
+        id: instance_id.clone(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Pending,
+        tasks: HashMap::new(),
+        verifier_states: HashMap::new(),
+    };
+    engine.storage.save_workflow_def(def).await.unwrap();
+    engine
+        .storage
+        .save_workflow_instance(instance)
+        .await
+        .unwrap();
+    instance_id
+}
+
+fn agent_verifier_task(id: &str, rerun_from_task_id: Option<&str>) -> TaskDef {
+    let mut task = task_def(id, json!({ "type": "object" }));
+    task.kind = TaskTypeDef::Agent {
+        model_id: "test/model".to_string(),
+        provider_url: "".to_string(),
+        prompt: "verify".to_string(),
+        tools: vec![],
+        skills: vec![],
+        ask: false,
+        schema_failure_retry_times: Number::from(0),
+    };
+    task.output_schema = None;
+    task.control = Some(TaskControl {
+        verifier: Some(VerifierControlConfig {
+            max_iterations: 2,
+            on_exhausted_continue: false,
+            rerun_from_task_id: rerun_from_task_id.map(str::to_string),
+        }),
+    });
+    task.output_schema = Some(verifier_decision_schema());
+    task
+}
+
+fn agent_verifier_task_with_policy(
+    id: &str,
+    rerun_from_task_id: Option<&str>,
+    max_iterations: u32,
+    on_exhausted_continue: bool,
+) -> TaskDef {
+    let mut task = agent_verifier_task(id, rerun_from_task_id);
+    task.control = Some(TaskControl {
+        verifier: Some(VerifierControlConfig {
+            max_iterations,
+            on_exhausted_continue,
+            rerun_from_task_id: rerun_from_task_id.map(str::to_string),
+        }),
+    });
+    task
+}
+
+fn function_verifier_task(id: &str, rerun_from_task_id: Option<&str>) -> TaskDef {
+    let mut task = task_def(id, json!({ "type": "object" }));
+    task.kind = TaskTypeDef::Function(FunctionTaskDef::Inline {
+        dependencies: vec![],
+        code: "export default async function run() { return { decision: 'complete' }; }"
+            .to_string(),
+    });
+    task.output_schema = Some(verifier_decision_schema());
+    task.control = Some(TaskControl {
+        verifier: Some(VerifierControlConfig {
+            max_iterations: 2,
+            on_exhausted_continue: false,
+            rerun_from_task_id: rerun_from_task_id.map(str::to_string),
+        }),
+    });
+    task
+}
+
+#[test]
+fn test_verifier_without_rerun_from_task_id_self_reruns_only() {
+    let engine = make_engine();
+    let def = WorkflowDef {
+        id: "def-self-rerun".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            agent_verifier_task("verify", None),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+
+    let slices = engine.compute_loop_slices(&def);
+    assert_eq!(slices["verify"], vec!["verify".to_string()]);
+}
+
+#[test]
+fn test_verifier_with_rerun_from_task_id_reruns_upstream_slice() {
+    let engine = make_engine();
+    let def = WorkflowDef {
+        id: "def-upstream-rerun".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            task_def("task-b", json!({ "type": "object" })),
+            agent_verifier_task("verify", Some("task-a")),
+        ],
+        data_bindings: vec![
+            DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "task-b".to_string(),
+            },
+            DataBinding {
+                source_task_id: "task-b".to_string(),
+                target_task_id: "verify".to_string(),
+            },
+        ],
+    };
+
+    let slices = engine.compute_loop_slices(&def);
+    assert_eq!(
+        slices["verify"],
+        vec![
+            "task-a".to_string(),
+            "task-b".to_string(),
+            "verify".to_string()
+        ]
+    );
+}
+
+#[test]
+fn test_loop_execution_metadata_includes_feedback_history() {
+    let engine = make_engine();
+    let def = WorkflowDef {
+        id: "def-loop-metadata".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            agent_verifier_task("verify", Some("task-a")),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+    let task_instance = TaskInstance {
+        task_def_id: "task-a".to_string(),
+        status: TaskStatus::Pending,
+        satisfaction_status: TaskSatisfactionStatus::Pending,
+        input_data: vec![],
+        input_mapping: vec![],
+        output_data: None,
+        generation_index: 2,
+        verifier_metadata: None,
+    };
+    let mut instance = WorkflowInstance {
+        id: "inst-loop-metadata".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([
+            (
+                "task-a[1]".to_string(),
+                TaskInstance {
+                    task_def_id: "task-a".to_string(),
+                    status: TaskStatus::Completed,
+                    satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: Some(json!({ "draft": "first" })),
+                    generation_index: 1,
+                    verifier_metadata: None,
+                },
+            ),
+            ("task-a[2]".to_string(), task_instance.clone()),
+        ]),
+        verifier_states: HashMap::new(),
+    };
+    instance.verifier_states.insert(
+        "verify".to_string(),
+        VerifierGenerationState {
+            verifier_task_id: "verify".to_string(),
+            rerun_start_task_id: "task-a".to_string(),
+            latest_generation: 2,
+            selected_generation: None,
+            feedback_history: vec![VerifierFeedbackEntry {
+                generation_index: 1,
+                feedback: "Add citations.".to_string(),
+                verifier_output: json!({ "decision": "continue" }),
+            }],
+            status: VerifierStateStatus::Running,
+            exit_reason: None,
+        },
+    );
+
+    let metadata = engine.execution_metadata(&instance, &def, &task_instance);
+    let loop_context = metadata.loop_context.unwrap();
+
+    assert_eq!(
+        loop_context.feedback_history,
+        vec![LoopFeedbackEntry {
+            generation: 1,
+            feedback: "Add citations.".to_string(),
+        }]
+    );
+    assert_eq!(
+        loop_context.previous_output,
+        Some(json!({ "draft": "first" }))
+    );
+}
+
+/// A single task with no dependencies should run and complete the workflow.
+#[tokio::test]
+async fn test_single_task_workflow_completes() {
+    let engine = make_engine();
+
+    let def = WorkflowDef {
+        id: "def-1".to_string(),
+        tasks: vec![task_def("task-a", json!({ "type": "object" }))],
+        data_bindings: vec![],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let result = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, WorkflowStatus::Completed);
+    assert_eq!(result.tasks["task-a[1]"].status, TaskStatus::Completed);
+    assert_eq!(result.tasks["task-a[1]"].task_def_id, "task-a");
+    assert_eq!(result.tasks["task-a[1]"].generation_index, 1);
+}
+
+/// Two independent tasks (A and B) feed into a third (C) via data bindings.
+/// C should only run after both A and B complete (Fan-In).
+#[tokio::test]
+async fn test_fan_in_workflow_completes_with_propagation() {
+    let engine = make_engine();
+
+    let def = WorkflowDef {
+        id: "def-2".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            task_def("task-b", json!({ "type": "object" })),
+            TaskDef {
+                id: "task-c".to_string(),
+                kind: TaskTypeDef::ApiCall {
+                    url: "http://example.com".to_string(),
+                    method: "POST".to_string(),
+                },
+                control: None,
+                timeout_secs: None,
+                input_schemas: vec![
+                    json!({ "type": "object" }), // from task-a
+                    json!({ "type": "object" }), // from task-b
+                ],
+                output_schema: Some(json!({ "type": "object" })),
+                required_credentials: vec![],
+            },
+        ],
+        data_bindings: vec![
+            DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "task-c".to_string(),
+            },
+            DataBinding {
+                source_task_id: "task-b".to_string(),
+                target_task_id: "task-c".to_string(),
+            },
+        ],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let result = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, WorkflowStatus::Completed);
+    assert_eq!(result.tasks["task-a[1]"].status, TaskStatus::Completed);
+    assert_eq!(result.tasks["task-b[1]"].status, TaskStatus::Completed);
+    assert_eq!(result.tasks["task-c[1]"].status, TaskStatus::Completed);
+
+    // task-c should have received propagated inputs at both index slots
+    let task_c = &result.tasks["task-c[1]"];
+    assert_eq!(task_c.input_data.len(), 2);
+    assert_eq!(
+        task_c.input_mapping,
+        vec![
+            TaskInputMapping {
+                task_id: "task-a".to_string(),
+                generation: 1,
+            },
+            TaskInputMapping {
+                task_id: "task-b".to_string(),
+                generation: 1,
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
+    let engine = make_engine_with_executor(Arc::new(ContinueThenCompleteExecutor));
+    let def = WorkflowDef {
+        id: "def-loop-satisfaction".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            task_def("task-b", json!({ "type": "object" })),
+            agent_verifier_task("verify", Some("task-a")),
+        ],
+        data_bindings: vec![
+            DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "task-b".to_string(),
+            },
+            DataBinding {
+                source_task_id: "task-b".to_string(),
+                target_task_id: "verify".to_string(),
+            },
+        ],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    for task_id in ["task-a[1]", "task-b[1]", "verify[1]"] {
+        assert_eq!(
+            instance.tasks[task_id].satisfaction_status,
+            TaskSatisfactionStatus::Unsatisfied
+        );
+    }
+    for task_id in ["task-a[2]", "task-b[2]", "verify[2]"] {
+        assert_eq!(
+            instance.tasks[task_id].satisfaction_status,
+            TaskSatisfactionStatus::Satisfied
+        );
+    }
+    for task_id in ["task-a[1]", "task-b[1]", "task-a[2]", "task-b[2]"] {
+        assert!(instance.tasks[task_id].verifier_metadata.is_none());
+    }
+    assert!(instance.tasks["verify[1]"].verifier_metadata.is_some());
+    assert!(instance.tasks["verify[2]"].verifier_metadata.is_some());
+    assert_eq!(
+        instance.tasks["task-b[2]"].input_mapping,
+        vec![TaskInputMapping {
+            task_id: "task-a".to_string(),
+            generation: 2,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn test_verifier_complete_accepts_first_generation() {
+    let engine = make_engine_with_executor(Arc::new(CompleteVerifierExecutor));
+    let def = WorkflowDef {
+        id: "def-first-generation-accepted".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            task_def("task-b", json!({ "type": "object" })),
+            task_def("task-c", json!({ "type": "object" })),
+            agent_verifier_task("verify", Some("task-b")),
+        ],
+        data_bindings: vec![
+            DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "task-b".to_string(),
+            },
+            DataBinding {
+                source_task_id: "task-b".to_string(),
+                target_task_id: "task-c".to_string(),
+            },
+            DataBinding {
+                source_task_id: "task-c".to_string(),
+                target_task_id: "verify".to_string(),
+            },
+        ],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(instance.status, WorkflowStatus::Completed);
+    assert!(!instance.tasks.contains_key("task-b[2]"));
+    assert!(!instance.tasks.contains_key("task-c[2]"));
+    assert!(!instance.tasks.contains_key("verify[2]"));
+
+    for task_id in ["task-a[1]", "task-b[1]", "task-c[1]", "verify[1]"] {
+        assert_eq!(instance.tasks[task_id].status, TaskStatus::Completed);
+        assert_eq!(
+            instance.tasks[task_id].satisfaction_status,
+            TaskSatisfactionStatus::Satisfied
+        );
+    }
+    assert_eq!(
+        instance.verifier_states["verify"].status,
+        VerifierStateStatus::Accepted
+    );
+    assert_eq!(
+        instance.verifier_states["verify"].selected_generation,
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn test_function_verifier_can_drive_bounded_rerun() {
+    let engine = make_engine_with_executor(Arc::new(ContinueThenCompleteExecutor));
+    let def = WorkflowDef {
+        id: "def-function-verifier".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            function_verifier_task("verify", Some("task-a")),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(instance.status, WorkflowStatus::Completed);
+    assert_eq!(
+        instance.tasks["verify[1]"].satisfaction_status,
+        TaskSatisfactionStatus::Unsatisfied
+    );
+    assert_eq!(
+        instance.tasks["verify[2]"].satisfaction_status,
+        TaskSatisfactionStatus::Satisfied
+    );
+    assert_eq!(
+        instance.verifier_states["verify"].status,
+        VerifierStateStatus::Accepted
+    );
+}
+
+#[tokio::test]
+async fn test_exhausted_verifier_fails_when_continue_policy_is_false() {
+    let engine = make_engine_with_executor(Arc::new(AlwaysContinueVerifierExecutor));
+    let def = WorkflowDef {
+        id: "def-exhaustion-fail".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            agent_verifier_task_with_policy("verify", Some("task-a"), 2, false),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    let error = engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("exhausted iteration budget"));
+
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let state = &instance.verifier_states["verify"];
+    assert_eq!(instance.status, WorkflowStatus::Failed);
+    assert_eq!(state.status, VerifierStateStatus::ExhaustedFailed);
+    assert_eq!(state.latest_generation, 2);
+    assert_eq!(state.selected_generation, None);
+    assert_eq!(state.exit_reason.as_deref(), Some("max_iterations_exhausted"));
+    assert_eq!(instance.tasks["verify[2]"].status, TaskStatus::Failed);
+    assert_eq!(
+        instance.tasks["verify[2]"]
+            .verifier_metadata
+            .as_ref()
+            .unwrap()
+            .status,
+        VerifierAttemptStatus::ExhaustedFailed
+    );
+}
+
+#[tokio::test]
+async fn test_exhausted_verifier_accepts_latest_generation_when_continue_policy_is_true() {
+    let engine = make_engine_with_executor(Arc::new(AlwaysContinueVerifierExecutor));
+    let def = WorkflowDef {
+        id: "def-exhaustion-accept".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            agent_verifier_task_with_policy("verify", Some("task-a"), 2, true),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let state = &instance.verifier_states["verify"];
+    assert_eq!(instance.status, WorkflowStatus::Completed);
+    assert_eq!(state.status, VerifierStateStatus::ExhaustedAccepted);
+    assert_eq!(state.latest_generation, 2);
+    assert_eq!(state.selected_generation, Some(2));
+    assert_eq!(state.exit_reason.as_deref(), Some("max_iterations_exhausted"));
+    assert_eq!(
+        instance.tasks["verify[2]"].satisfaction_status,
+        TaskSatisfactionStatus::Satisfied
+    );
+    assert_eq!(
+        instance.tasks["verify[2]"]
+            .verifier_metadata
+            .as_ref()
+            .unwrap()
+            .status,
+        VerifierAttemptStatus::ExhaustedAccepted
+    );
+}
+
+#[test]
+fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
+    let engine = make_engine();
+    let mut verifier_task = agent_verifier_task_with_policy("verify", Some("task-a"), 1, true);
+    verifier_task.output_schema = None;
+    let def = WorkflowDef {
+        id: "def-exhaustion-no-valid-output".to_string(),
+        tasks: vec![task_def("task-a", json!({ "type": "object" })), verifier_task],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+    let loop_slices = engine.compute_loop_slices(&def);
+    let mut instance = WorkflowInstance {
+        id: "inst-exhaustion-no-valid-output".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([(
+            "verify[1]".to_string(),
+            TaskInstance {
+                task_def_id: "verify".to_string(),
+                status: TaskStatus::Completed,
+                satisfaction_status: TaskSatisfactionStatus::Pending,
+                input_data: vec![],
+                input_mapping: vec![],
+                output_data: None,
+                generation_index: 1,
+                verifier_metadata: None,
+            },
+        )]),
+        verifier_states: HashMap::from([(
+            "verify".to_string(),
+            VerifierGenerationState {
+                verifier_task_id: "verify".to_string(),
+                rerun_start_task_id: "task-a".to_string(),
+                latest_generation: 1,
+                selected_generation: None,
+                feedback_history: vec![],
+                status: VerifierStateStatus::Running,
+                exit_reason: None,
+            },
+        )]),
+    };
+
+    let error = engine
+        .apply_verifier_result(
+            &mut instance,
+            &def,
+            &loop_slices,
+            "verify[1]",
+            &serde_json::Value::Null,
+            VerifierExecutionResult {
+                decision: VerifierDecision::Continue,
+                feedback: Some("try again".to_string()),
+                output: json!({
+                    "decision": "continue",
+                    "feedback": "try again"
+                }),
+            },
+        )
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("no schema-valid output")
+    );
+    assert_eq!(instance.status, WorkflowStatus::Failed);
+    assert_eq!(
+        instance.verifier_states["verify"].status,
+        VerifierStateStatus::Failed
+    );
+    assert_eq!(instance.tasks["verify[1]"].status, TaskStatus::Failed);
+    assert_eq!(
+        instance.tasks["verify[1]"]
+            .verifier_metadata
+            .as_ref()
+            .unwrap()
+            .status,
+        VerifierAttemptStatus::ExhaustedFailed
+    );
+}
+
+#[tokio::test]
+async fn test_downstream_uses_latest_satisfied_generation_after_verifier() {
+    let engine = make_engine_with_executor(Arc::new(ContinueThenCompleteExecutor));
+    let mut task_c = task_def("task-c", json!({ "type": "object" }));
+    task_c.input_schemas = vec![json!({ "type": "object" }), json!({ "type": "object" })];
+    let def = WorkflowDef {
+        id: "def-downstream-latest-satisfied".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            task_def("task-b", json!({ "type": "object" })),
+            agent_verifier_task("verify", Some("task-b")),
+            task_c,
+        ],
+        data_bindings: vec![
+            DataBinding {
+                source_task_id: "task-a".to_string(),
+                target_task_id: "task-b".to_string(),
+            },
+            DataBinding {
+                source_task_id: "task-b".to_string(),
+                target_task_id: "verify".to_string(),
+            },
+            DataBinding {
+                source_task_id: "task-b".to_string(),
+                target_task_id: "task-c".to_string(),
+            },
+            DataBinding {
+                source_task_id: "verify".to_string(),
+                target_task_id: "task-c".to_string(),
+            },
+        ],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        instance.tasks["task-c[1]"].input_mapping,
+        vec![
+            TaskInputMapping {
+                task_id: "task-b".to_string(),
+                generation: 2,
+            },
+            TaskInputMapping {
+                task_id: "verify".to_string(),
+                generation: 2,
+            },
+        ]
+    );
+    assert_eq!(
+        instance.tasks["task-c[1]"].satisfaction_status,
+        TaskSatisfactionStatus::Satisfied
+    );
+}
+
+/// A task whose output fails schema validation should mark the workflow as Failed.
+#[tokio::test]
+async fn test_schema_validation_failure_marks_workflow_failed() {
+    let engine = make_engine();
+
+    // FakeExecutor cannot satisfy a `const` schema — it returns `{}` for unknown constructs,
+    // which will always fail this constraint.
+    let strict_schema = json!({
+        "const": "only-this-value"
+    });
+
+    let def = WorkflowDef {
+        id: "def-3".to_string(),
+        tasks: vec![task_def("task-strict", strict_schema)],
+        data_bindings: vec![],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    let run_result = engine.run_workflow_instance(instance_id.clone()).await;
+    assert!(run_result.is_err());
+
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(instance.status, WorkflowStatus::Failed);
+    assert_eq!(instance.tasks["task-strict[1]"].status, TaskStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_input_schema_failure_marks_workflow_failed() {
+    let engine = make_engine();
+    let mut downstream = task_def("task-b", json!({ "type": "object" }));
+    downstream.input_schemas = vec![json!({ "type": "string" })];
+    let def = WorkflowDef {
+        id: "def-input-schema".to_string(),
+        tasks: vec![task_def("task-a", json!({ "type": "object" })), downstream],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "task-b".to_string(),
+        }],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    let run_result = engine.run_workflow_instance(instance_id.clone()).await;
+    assert!(run_result.is_err());
+    assert!(
+        run_result
+            .unwrap_err()
+            .to_string()
+            .contains("input 0 failed schema validation")
+    );
+
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(instance.status, WorkflowStatus::Failed);
+    assert_eq!(instance.tasks["task-b[1]"].status, TaskStatus::Failed);
+}
+
+/// After a successful run, get_workflow_status should return a report reflecting
+/// the completed state without exposing raw input/output data.
+#[tokio::test]
+async fn test_get_workflow_status_after_completion() {
+    let engine = make_engine();
+
+    let def = WorkflowDef {
+        id: "def-status".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            task_def("task-b", json!({ "type": "object" })),
+        ],
+        data_bindings: vec![],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let report = engine
+        .get_workflow_status(&instance_id)
+        .await
+        .unwrap()
+        .expect("report should be present");
+
+    assert_eq!(report.instance_id, instance_id);
+    assert_eq!(report.status, WorkflowStatus::Completed);
+    assert_eq!(report.tasks.len(), 2);
+
+    // Tasks are sorted by task attempt id, so task-a[1] comes first.
+    assert_eq!(report.tasks[0].task_attempt_id, "task-a[1]");
+    assert_eq!(report.tasks[0].task_def_id, "task-a");
+    assert_eq!(report.tasks[0].status, TaskStatus::Completed);
+
+    assert_eq!(report.tasks[1].task_attempt_id, "task-b[1]");
+    assert_eq!(report.tasks[1].task_def_id, "task-b");
+    assert_eq!(report.tasks[1].status, TaskStatus::Completed);
+}
+
+/// get_workflow_status should return None for an unknown instance id.
+#[tokio::test]
+async fn test_get_workflow_status_unknown_instance() {
+    let engine = make_engine();
+    let report = engine.get_workflow_status("does-not-exist").await.unwrap();
+    assert!(report.is_none());
+}

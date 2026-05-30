@@ -13,7 +13,9 @@ use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::adapters::worker_pool::WorkerPool;
 use crate::api::router;
+use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
+use crate::core::workflow_service::WorkflowService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -29,11 +31,15 @@ async fn main() -> anyhow::Result<()> {
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
 
     // Initialize Orchestrator (Application Layer)
-    let orchestrator = Arc::new(Orchestrator::new(storage, executor, workflow_queue));
+    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor, workflow_queue));
+    let workflow_service = Arc::new(WorkflowService::new(storage.clone()));
+    let function_service = Arc::new(FunctionService::new(storage.clone()));
     let recovered = orchestrator.synchronize_startup_tasks().await?;
     info!(recovered, "Startup task synchronization complete");
+
     let requeued = orchestrator.enqueue_active_workflow_instances().await?;
     info!(requeued, "Active workflow requeue complete");
+
     tokio::spawn(
         orchestrator
             .clone()
@@ -41,8 +47,18 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Setup API (Interface Layer)
-    let public_app = router::create_public_router(orchestrator.clone(), worker_pool.clone());
-    let worker_app = router::create_worker_router(orchestrator, worker_pool);
+    let public_app = router::create_public_router(
+        orchestrator.clone(),
+        workflow_service.clone(),
+        function_service.clone(),
+        worker_pool.clone(),
+    );
+    let worker_app = router::create_worker_router(
+        orchestrator,
+        workflow_service,
+        function_service,
+        worker_pool,
+    );
 
     let public_addr = resolve_public_http_addr();
     let worker_addr = resolve_worker_http_addr();

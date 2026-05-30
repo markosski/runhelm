@@ -143,7 +143,29 @@ export class AgentExecutor implements TaskExecutor {
             }
         }
 
+        const loopContext = payload.execution_metadata?.loop_context;
+        const latestFeedback = loopContext?.feedback_history?.at(-1)?.feedback;
+        const feedbackHistory = loopContext?.feedback_history?.slice(0, -1) || [];
+        if (latestFeedback || loopContext?.previous_output !== undefined) {
+            logger.info('[AgentExecutor] Verifier feedback provided')
+            contextPrompt += `\n\nVERIFIER-GUIDED RETRY CONTEXT:\n`;
+            contextPrompt += `This task is being re-executed because a downstream verifier rejected the previous generation. Use the verifier feedback to revise the result, preserve earlier corrections from the feedback history, and use the previous output as the most recent version produced by this same task.\n`;
+            if (latestFeedback) {
+                contextPrompt += `\nMost recent verifier feedback:\n${latestFeedback}\n`;
+            }
+            if (feedbackHistory.length > 0) {
+                contextPrompt += `\nPrior verifier feedback history:\n`;
+                feedbackHistory.forEach((entry) => {
+                    contextPrompt += `- Generation ${entry.generation}: ${entry.feedback}\n`;
+                });
+            }
+            if (loopContext.previous_output !== undefined) {
+                contextPrompt += `\nMost recent previous output from this same task:\n${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
+            }
+        }
+
         if (payload.input_provided) {
+            logger.info('[AgentExecutor] User response provided')
             contextPrompt += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${payload.input_provided}\n`;
         }
 
@@ -227,8 +249,19 @@ export class AgentExecutor implements TaskExecutor {
             DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
             `;
 
+        if (latestFeedback || loopContext?.previous_output !== undefined) {
+            agent.state.systemPrompt += `
+            \n\n
+            VERIFIER-GUIDED RETRY:
+            This execution includes verifier feedback from a previous rejected generation.
+            Treat that feedback as orchestration guidance for revising your result.
+            The most recent feedback identifies the current issue to fix.
+            Prior feedback records earlier corrections to preserve when applicable.
+            Do not include the feedback text in the final output unless the task explicitly asks for it.
+            `;
+        }
+
         if (payload.task.output_schema) {
-            const retryTimes = parseRetryTimes(agentDef.schema_failure_retry_times);
             agent.state.systemPrompt += `
             \n\n
             IMPORTANT: Your FINAL response must be valid JSON that adheres to the following schema:
@@ -240,8 +273,8 @@ export class AgentExecutor implements TaskExecutor {
             - Do NOT include any preamble like "Here is the result".
             - Do NOT wrap the JSON in markdown code blocks (e.g., no \`\`\`json).
             - The entire response must be parseable by JSON.parse().
-            If output_schema validation fails, you will be asked to correct the JSON. Retry up to ${retryTimes} time${retryTimes === 1 ? '' : 's'} and only return corrected raw JSON.
-            ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool instead of returning JSON." : ""}`;
+            If output_schema validation fails, you will be asked to correct the JSON.
+            ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool (if enabled) instead of returning JSON." : ""}`;
         }
 
         agent.state.systemPrompt += `
@@ -249,7 +282,13 @@ export class AgentExecutor implements TaskExecutor {
             NOTE: You are allowed and encouraged to use approved tools to gather information FIRST before producing the final response. 
         `;
 
-        logger.info(`Final prompt: \n ${agent.state.systemPrompt}`);
+        logger.info(
+            {
+                userPrompt: finalPrompt,
+                systemPromptLength: agent.state.systemPrompt.length,
+            },
+            "[AgentExecutor] Final agent prompt"
+        );
 
         agent.state.tools = approvedTools.map((approvedTool) => approvedTool.tool);
 
@@ -300,7 +339,7 @@ export class AgentExecutor implements TaskExecutor {
 
                 if (parseErrorMessage === undefined) {
                     if (validate(parsed)) {
-                        return { status: 'ok', output: parsed };
+                        return await finalizeAgentOutput(payload, parsed);
                     }
 
                     const validationMessage = ajv.errorsText(validate.errors);
@@ -313,7 +352,7 @@ export class AgentExecutor implements TaskExecutor {
                         Your previous response failed output_schema validation:
                         ${validationMessage}
 
-                        Retry ${attempt + 1} of ${retryTimes}. Return ONLY a corrected raw JSON object that satisfies the schema.
+                        Return ONLY a corrected raw JSON object that satisfies the schema.
                     `);
                 } else {
                     if (attempt >= retryTimes) {
@@ -325,7 +364,7 @@ export class AgentExecutor implements TaskExecutor {
                         Your previous response was not valid parseable JSON:
                         ${parseErrorMessage}
 
-                        Retry ${attempt + 1} of ${retryTimes}. Return ONLY a corrected raw JSON object that satisfies the schema.
+                        Return ONLY a corrected raw JSON object that satisfies the schema.
                     `);
                 }
 
@@ -336,6 +375,13 @@ export class AgentExecutor implements TaskExecutor {
         }
 
         const resultText = extractAssistantText(agent);
-        return { status: 'ok', output: { response: resultText } };
+        return await finalizeAgentOutput(payload, { response: resultText });
     }
+}
+
+async function finalizeAgentOutput(
+    _payload: TaskExecutionPayload,
+    output: JsonValue
+): Promise<TaskExecutionResult> {
+    return { status: 'ok', output };
 }

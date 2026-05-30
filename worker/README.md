@@ -38,6 +38,8 @@ npm run dev
 
 By default the worker connects to the orchestrator worker API at `http://127.0.0.1:3001`. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the worker API is reachable at a different URL.
 
+The worker registers with the orchestrator before polling for tasks. If the orchestrator service name or worker API is not reachable yet during container startup, registration is retried until it succeeds. These startup retries are expected during Compose bootstrap and do not require a worker restart.
+
 The worker reads credentials from `~/.runhelm/file_credentials.json` during startup. The file must contain a flat JSON object whose keys are credential names and whose values are strings:
 
 ```json
@@ -186,6 +188,42 @@ Response shape:
 }
 ```
 
+### `GET /workflows/{workflow_instance_id}/tasks`
+
+Returns all materialized task attempt results for a workflow instance.
+
+Example:
+
+```bash
+curl -sS http://localhost:3000/workflows/simple-function-workflow-1780000000000000000/tasks
+```
+
+Example response:
+
+```json
+{
+  "workflow_instance_id": "simple-function-workflow-1780000000000000000",
+  "tasks": [
+    {
+      "task_id": "summarize_user[1]",
+      "result": {
+        "status": "success",
+        "input": [
+          {
+            "name": "Ada"
+          }
+        ],
+        "output": {
+          "response": "hello world"
+        },
+        "requested_task_id": "summarize_user[1]",
+        "resolved_attempt_id": "summarize_user[1]"
+      }
+    }
+  ]
+}
+```
+
 ### `GET /workflows/{workflow_instance_id}/tasks/{task_id}`
 
 Returns a task result for a workflow instance.
@@ -200,7 +238,17 @@ Example response:
 
 ```json
 {
-  "response": "hello world"
+  "status": "success",
+  "input": [
+    {
+      "name": "Ada"
+    }
+  ],
+  "output": {
+    "response": "hello world"
+  },
+  "requested_task_id": "summarize_user",
+  "resolved_attempt_id": "summarize_user[1]"
 }
 ```
 

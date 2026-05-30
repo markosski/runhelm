@@ -19,7 +19,6 @@ tasks:
         skills: []
         ask: false
         schema_failure_retry_times: 2
-    input_schemas: []
     output_schema:
       type: object
       required:
@@ -27,7 +26,6 @@ tasks:
       properties:
         response:
           type: string
-    expected_side_effects: []
     required_credentials:
       - llm_api_key
 

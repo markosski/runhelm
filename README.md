@@ -18,7 +18,7 @@ Most agent demos stop at "the model produced an answer." Real systems need more:
 - typed contracts between steps
 - pluggable execution backends and credentials
 
-RunHelm is being built to provide that execution model. It treats an agent the same way it treats a function or API task: as a node in a workflow with declared inputs, outputs, side effects, and credentials.
+RunHelm is being built to provide that execution model. It treats an agent the same way it treats a function or API task: as a node in a workflow with declared inputs, outputs, and credentials.
 
 ## What A Workflow Looks Like
 
@@ -27,7 +27,7 @@ A workflow is defined as JSON and contains:
 - tasks
 - data bindings between task outputs and downstream task inputs
 - optional per-task timeouts
-- per-task input schemas and optional output schemas
+- optional per-task input schemas and output schemas
 - task kinds such as `Agent`, `ApiCall`, and `Function`
 
 That definition becomes a workflow instance at runtime. The orchestrator tracks task state (`Pending`, `Running`, `InputNeeded`, `Completed`, `Failed`) and promotes the overall run state as work progresses.
@@ -141,7 +141,7 @@ The repository is already aligned around a few architectural constraints:
 
 - side effects live behind ports and adapters
 - pure coordination logic stays in cohesive modules
-- schemas define contracts between tasks
+- schemas can define contracts between tasks when a workflow needs runtime validation
 - execution backends remain pluggable
 - TypeScript is preferred for dynamic task execution, while Rust provides a strong orchestration core
 
@@ -170,6 +170,8 @@ cargo run
 
 The orchestrator starts a public Axum server on `0.0.0.0:3000` and a worker-only server on `127.0.0.1:3001`. Override them with `RUNHELM_PUBLIC_HTTP_ADDR` and `RUNHELM_WORKER_HTTP_ADDR`.
 
+When running with Docker Compose, the orchestrator worker API is bound to `0.0.0.0:3001` inside the container so workers can reach it at `http://orchestrator:3001`. The Compose health check waits for both the public API and worker API before starting worker containers.
+
 ### Worker
 
 ```bash
@@ -180,6 +182,8 @@ npm start
 ```
 
 The worker pulls tasks from the worker-only orchestrator API. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the worker API is not reachable at the default local URL.
+
+During container startup the worker retries registration until the orchestrator worker API is reachable. Short DNS or service-readiness races are logged as startup wait messages; a worker only exits on unrecoverable startup failures such as credential loading errors.
 
 ### Frontend
 

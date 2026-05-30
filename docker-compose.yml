@@ -12,7 +12,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health >/dev/null && wget -qO- http://127.0.0.1:3001/health >/dev/null"]
       interval: 5s
       timeout: 2s
       retries: 12

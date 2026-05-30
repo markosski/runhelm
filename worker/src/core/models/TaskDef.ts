@@ -20,15 +20,42 @@ export interface FunctionDependency {
 export interface TaskDef {
     id: string;
     kind: TaskKind;
+    control?: TaskControl;
     timeout_secs?: number;
-    input_schemas: any[];
+    input_schemas?: any[];
     output_schema?: any;
-    expected_side_effects: any[];
     required_credentials: string[];
+}
+
+export interface TaskControl {
+    verifier?: VerifierControlConfig;
+}
+
+export interface VerifierControlConfig {
+    max_iterations: number;
+    on_exhausted_continue: boolean;
+    rerun_from_task_id?: string;
+}
+
+export interface LoopFeedbackEntry {
+    generation: number;
+    feedback: string;
+}
+
+export interface LoopExecutionContext {
+    generation: number;
+    max_iterations: number;
+    feedback_history?: LoopFeedbackEntry[];
+    previous_output?: any;
+}
+
+export interface ExecutionMetadata {
+    loop_context?: LoopExecutionContext;
 }
 
 export interface TaskExecutionPayload {
     task: TaskDef;
     inputs: any[];
+    execution_metadata?: ExecutionMetadata;
     input_provided?: string;
 }

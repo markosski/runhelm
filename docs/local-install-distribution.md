@@ -84,9 +84,17 @@ services:
       - "3000:3000"
     environment:
       RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health >/dev/null && wget -qO- http://127.0.0.1:3001/health >/dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
 
   worker:
     image: ghcr.io/runhelm/worker:${RUNHELM_VERSION}
+    depends_on:
+      orchestrator:
+        condition: service_healthy
     environment:
       RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3001
 
