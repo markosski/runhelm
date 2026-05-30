@@ -61,8 +61,8 @@
 - [x] 6.6 Add validation tests rejecting overlapping verifier rerun slices.
 - [x] 6.7 Add engine tests for `A -> B -> C -> D(control.verifier)` accepted after the first generation.
 - [x] 6.8 Add engine tests for verifier `continue` with feedback rerunning a slice as generation 2.
-- [ ] 6.9 Add engine tests for exhaustion with `on_exhausted_continue: false` and `on_exhausted_continue: true`.
-- [ ] 6.10 Add engine tests proving exhausted-continue fails when no schema-valid generation output exists.
+- [x] 6.9 Add engine tests for exhaustion with `on_exhausted_continue: false` and `on_exhausted_continue: true`.
+- [x] 6.10 Add engine tests proving exhausted-continue fails when no schema-valid generation output exists.
 - [x] 6.11 Add data binding tests proving same-generation propagation inside a rerun slice.
 - [x] 6.12 Add data binding tests proving downstream tasks receive only accepted or finalized verifier generation outputs.
 - [x] 6.13 Add result tests proving logical task ID lookup resolves to a materialized attempt and includes metadata.
