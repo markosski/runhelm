@@ -1,19 +1,23 @@
 ## MODIFIED Requirements
 
-### Requirement: Workflow Identifier Normalization
-The orchestrator SHALL normalize workflow IDs and task IDs to lowercase during workflow registration and SHALL reject IDs containing non-alphanumeric characters.
+### Requirement: Workflow Definition Identifier Normalization
+The orchestrator SHALL normalize workflow definition IDs and task definition IDs to lowercase during workflow registration and SHALL reject those definition IDs when they contain non-alphanumeric characters.
 
 #### Scenario: Uppercase IDs are registered
-- **WHEN** a workflow definition contains uppercase workflow or task IDs using only ASCII alphanumeric characters
+- **WHEN** a workflow definition contains uppercase workflow definition or task definition IDs using only ASCII alphanumeric characters
 - **THEN** the system registers those IDs in lowercase form
 
 #### Scenario: ID contains brackets
-- **WHEN** a workflow or task ID contains `[` or `]`
+- **WHEN** a workflow definition or task definition ID contains `[` or `]`
 - **THEN** the system rejects the workflow definition
 
 #### Scenario: ID contains non-alphanumeric character
-- **WHEN** a workflow or task ID contains a character other than an ASCII letter or digit
+- **WHEN** a workflow definition or task definition ID contains a character other than an ASCII letter or digit
 - **THEN** the system rejects the workflow definition
+
+#### Scenario: Generated task attempt ID contains brackets
+- **WHEN** the orchestrator materializes an internal task attempt ID such as `taska[1]`
+- **THEN** that generated attempt ID is not subject to workflow definition ID validation
 
 ### Requirement: Bounded Backedge Validation
 The orchestrator SHALL preserve ordinary data binding cycle validation and SHALL allow bounded verifier backedges only through `control.verifier` configuration.

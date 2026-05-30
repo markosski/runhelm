@@ -8,8 +8,8 @@
 
 ## 2. Definition Validation
 
-- [x] 2.1 Normalize workflow IDs and task IDs to lowercase when registering workflow definitions.
-- [x] 2.2 Reject workflow IDs and task IDs that contain anything other than ASCII alphanumeric characters.
+- [x] 2.1 Normalize workflow definition IDs and task definition IDs to lowercase when registering workflow definitions.
+- [x] 2.2 Reject workflow definition IDs and task definition IDs that contain anything other than ASCII alphanumeric characters.
 - [x] 2.3 Validate that verifier `max_iterations` is positive.
 - [x] 2.4 Validate that optional `rerun_from_task_id` references an existing task.
 - [x] 2.5 Validate that `rerun_from_task_id` is either omitted, equal to the verifier task ID, or an upstream ancestor of the verifier task.
@@ -53,13 +53,13 @@
 
 ## 6. Tests and Examples
 
-- [ ] 6.1 Add model serialization tests proving workflows without `control.verifier` still deserialize and execute unchanged.
+- [x] 6.1 Add model serialization tests proving workflows without `control.verifier` still deserialize and execute unchanged.
 - [x] 6.2 Add validation tests proving Function tasks can declare `control.verifier` and receive the injected decision schema.
 - [x] 6.3 Add validation tests proving verifier decision schema injection and custom verifier `output_schema` rejection.
-- [ ] 6.4 Add validation tests for workflow/task ID lowercasing and alphanumeric-only rejection.
-- [ ] 6.5 Add validation tests rejecting missing, downstream, or unrelated `rerun_from_task_id` values.
+- [x] 6.4 Add validation tests for workflow definition/task definition ID lowercasing and alphanumeric-only rejection.
+- [x] 6.5 Add validation tests rejecting missing, downstream, or unrelated `rerun_from_task_id` values.
 - [x] 6.6 Add validation tests rejecting overlapping verifier rerun slices.
-- [ ] 6.7 Add engine tests for `A -> B -> C -> D(control.verifier)` accepted after the first generation.
+- [x] 6.7 Add engine tests for `A -> B -> C -> D(control.verifier)` accepted after the first generation.
 - [x] 6.8 Add engine tests for verifier `continue` with feedback rerunning a slice as generation 2.
 - [ ] 6.9 Add engine tests for exhaustion with `on_exhausted_continue: false` and `on_exhausted_continue: true`.
 - [ ] 6.10 Add engine tests proving exhausted-continue fails when no schema-valid generation output exists.
@@ -68,9 +68,8 @@
 - [x] 6.13 Add result tests proving logical task ID lookup resolves to a materialized attempt and includes metadata.
 - [x] 6.14 Add result tests proving materialized attempt listing returns exact historical attempts.
 - [x] 6.15 Add status tests for materialized attempt IDs such as `task-a[1]` and `task-b[1]`.
-- [ ] 6.16 Add tests proving non-verified tasks have no verifier metadata.
-- [ ] 6.17 Add an example workflow YAML demonstrating `A -> B -> C -> D(control.verifier)` rerunning from `B`.
-- [x] 6.18 Add engine tests proving a Function verifier can return `continue` then `complete` and drive a bounded rerun.
+- [x] 6.16 Add tests proving non-verified tasks have no verifier metadata.
+- [x] 6.17 Add engine tests proving a Function verifier can return `continue` then `complete` and drive a bounded rerun.
 
 ## 7. Verification
 

@@ -981,6 +981,24 @@ mod tests {
         }
     }
 
+    struct CompleteVerifierExecutor;
+
+    #[async_trait]
+    impl ExecutorPort for CompleteVerifierExecutor {
+        async fn execute(
+            &self,
+            task: &TaskDef,
+            _inputs: &[serde_json::Value],
+            _metadata: &ExecutionMetadata,
+        ) -> anyhow::Result<ExecutionResult> {
+            if task_verifier(task).is_some() {
+                return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
+            }
+
+            Ok(ExecutionResult::Success(json!({})))
+        }
+    }
+
     fn task_def(id: &str, output_schema: serde_json::Value) -> TaskDef {
         TaskDef {
             id: id.to_string(),
@@ -1335,12 +1353,78 @@ mod tests {
                 TaskSatisfactionStatus::Satisfied
             );
         }
+        for task_id in ["task-a[1]", "task-b[1]", "task-a[2]", "task-b[2]"] {
+            assert!(instance.tasks[task_id].verifier_metadata.is_none());
+        }
+        assert!(instance.tasks["verify[1]"].verifier_metadata.is_some());
+        assert!(instance.tasks["verify[2]"].verifier_metadata.is_some());
         assert_eq!(
             instance.tasks["task-b[2]"].input_mapping,
             vec![TaskInputMapping {
                 task_id: "task-a".to_string(),
                 generation: 2,
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verifier_complete_accepts_first_generation() {
+        let engine = make_engine_with_executor(Arc::new(CompleteVerifierExecutor));
+        let def = WorkflowDef {
+            id: "def-first-generation-accepted".to_string(),
+            tasks: vec![
+                task_def("task-a", json!({ "type": "object" })),
+                task_def("task-b", json!({ "type": "object" })),
+                task_def("task-c", json!({ "type": "object" })),
+                agent_verifier_task("verify", Some("task-b")),
+            ],
+            data_bindings: vec![
+                DataBinding {
+                    source_task_id: "task-a".to_string(),
+                    target_task_id: "task-b".to_string(),
+                },
+                DataBinding {
+                    source_task_id: "task-b".to_string(),
+                    target_task_id: "task-c".to_string(),
+                },
+                DataBinding {
+                    source_task_id: "task-c".to_string(),
+                    target_task_id: "verify".to_string(),
+                },
+            ],
+        };
+
+        let instance_id = setup(&engine, def).await;
+        engine
+            .run_workflow_instance(instance_id.clone())
+            .await
+            .unwrap();
+        let instance = engine
+            .storage
+            .get_workflow_instance(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(instance.status, WorkflowStatus::Completed);
+        assert!(!instance.tasks.contains_key("task-b[2]"));
+        assert!(!instance.tasks.contains_key("task-c[2]"));
+        assert!(!instance.tasks.contains_key("verify[2]"));
+
+        for task_id in ["task-a[1]", "task-b[1]", "task-c[1]", "verify[1]"] {
+            assert_eq!(instance.tasks[task_id].status, TaskStatus::Completed);
+            assert_eq!(
+                instance.tasks[task_id].satisfaction_status,
+                TaskSatisfactionStatus::Satisfied
+            );
+        }
+        assert_eq!(
+            instance.verifier_states["verify"].status,
+            VerifierStateStatus::Accepted
+        );
+        assert_eq!(
+            instance.verifier_states["verify"].selected_generation,
+            Some(1)
         );
     }
 

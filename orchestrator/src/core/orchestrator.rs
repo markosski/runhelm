@@ -519,6 +519,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workflow_without_control_verifier_deserializes_and_executes() {
+        let (orchestrator, workflow_service, _) = orchestrator_with_services();
+        let workflow_def: WorkflowDef = serde_json::from_value(json!({
+            "id": "workflow1",
+            "tasks": [
+                {
+                    "id": "taska",
+                    "kind": {
+                        "Function": {
+                            "dependencies": [],
+                            "code": "export default async function run() { return {}; }"
+                        }
+                    },
+                    "output_schema": {
+                        "type": "object"
+                    },
+                    "required_credentials": []
+                }
+            ],
+            "data_bindings": []
+        }))
+        .unwrap();
+
+        assert!(workflow_def.tasks[0].control.is_none());
+
+        workflow_service
+            .create_workflow_def(workflow_def)
+            .await
+            .unwrap();
+        let instance_id = workflow_service
+            .create_workflow_instance_for_def("workflow1")
+            .await
+            .unwrap();
+
+        orchestrator
+            .run_workflow(instance_id.clone())
+            .await
+            .unwrap();
+
+        let report = orchestrator
+            .get_workflow_status(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.status, WorkflowStatus::Completed);
+        assert!(report.verifier_states.is_empty());
+        assert_eq!(report.tasks.len(), 1);
+        assert_eq!(report.tasks[0].task_attempt_id, "taska[1]");
+        assert_eq!(report.tasks[0].task_def_id, "taska");
+        assert_eq!(report.tasks[0].status, TaskStatus::Completed);
+        assert!(report.tasks[0].verifier_metadata.is_none());
+    }
+
+    #[tokio::test]
     async fn get_task_result_resolves_logical_task_id_to_generation_one() {
         let (orchestrator, workflow_service, _) = orchestrator_with_services();
         workflow_service
@@ -644,6 +698,146 @@ mod tests {
             error
                 .to_string()
                 .contains("control.verifier and must not declare output_schema")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_workflow_def_normalizes_workflow_def_task_def_and_binding_ids() {
+        let storage = Arc::new(MemoryStorage::new());
+        let workflow_service = WorkflowService::new(storage.clone());
+        let mut task_b = task("TaskB");
+        task_b.input_schemas = vec![json!({ "type": "object" })];
+
+        workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "WorkflowABC".to_string(),
+                tasks: vec![task("TaskA"), task_b],
+                data_bindings: vec![DataBinding {
+                    source_task_id: "TaskA".to_string(),
+                    target_task_id: "TaskB".to_string(),
+                }],
+            })
+            .await
+            .unwrap();
+
+        let stored = storage
+            .get_workflow_def("workflowabc")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(stored.id, "workflowabc");
+        assert_eq!(stored.tasks[0].id, "taska");
+        assert_eq!(stored.tasks[1].id, "taskb");
+        assert_eq!(stored.data_bindings[0].source_task_id, "taska");
+        assert_eq!(stored.data_bindings[0].target_task_id, "taskb");
+    }
+
+    #[tokio::test]
+    async fn create_workflow_def_rejects_non_alphanumeric_workflow_def_and_task_def_ids() {
+        let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
+
+        let workflow_error = workflow_service
+            .create_workflow_def(workflow("workflow-1", vec![task("taska")]))
+            .await
+            .unwrap_err();
+        assert!(
+            workflow_error
+                .to_string()
+                .contains("workflow id \"workflow-1\" must contain only ASCII alphanumeric characters")
+        );
+
+        let task_error = workflow_service
+            .create_workflow_def(workflow("workflow1", vec![task("task_a")]))
+            .await
+            .unwrap_err();
+        assert!(
+            task_error
+                .to_string()
+                .contains("task id \"task_a\" must contain only ASCII alphanumeric characters")
+        );
+    }
+
+    #[tokio::test]
+    async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
+        let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
+
+        let mut missing_target_verifier = task("verify");
+        missing_target_verifier.output_schema = None;
+        missing_target_verifier.control = Some(crate::core::models::TaskControl {
+            verifier: Some(crate::core::models::VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: Some("missing".to_string()),
+            }),
+        });
+        let missing_target_error = workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow1".to_string(),
+                tasks: vec![task("taska"), missing_target_verifier],
+                data_bindings: vec![DataBinding {
+                    source_task_id: "taska".to_string(),
+                    target_task_id: "verify".to_string(),
+                }],
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            missing_target_error
+                .to_string()
+                .contains("verifier rerun_from_task_id references unknown task id missing")
+        );
+
+        let mut downstream_target_verifier = task("taska");
+        downstream_target_verifier.output_schema = None;
+        downstream_target_verifier.control = Some(crate::core::models::TaskControl {
+            verifier: Some(crate::core::models::VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: Some("taskb".to_string()),
+            }),
+        });
+        let downstream_target_error = workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow2".to_string(),
+                tasks: vec![downstream_target_verifier, task("taskb")],
+                data_bindings: vec![DataBinding {
+                    source_task_id: "taska".to_string(),
+                    target_task_id: "taskb".to_string(),
+                }],
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            downstream_target_error
+                .to_string()
+                .contains("task taska verifier rerun task taskb is not an upstream ancestor")
+        );
+
+        let mut unrelated_target_verifier = task("verify");
+        unrelated_target_verifier.output_schema = None;
+        unrelated_target_verifier.control = Some(crate::core::models::TaskControl {
+            verifier: Some(crate::core::models::VerifierControlConfig {
+                max_iterations: 2,
+                on_exhausted_continue: false,
+                rerun_from_task_id: Some("taskb".to_string()),
+            }),
+        });
+        let unrelated_target_error = workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow3".to_string(),
+                tasks: vec![task("taska"), task("taskb"), unrelated_target_verifier],
+                data_bindings: vec![DataBinding {
+                    source_task_id: "taska".to_string(),
+                    target_task_id: "verify".to_string(),
+                }],
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            unrelated_target_error
+                .to_string()
+                .contains("task verify verifier rerun task taskb is not an upstream ancestor")
         );
     }
 

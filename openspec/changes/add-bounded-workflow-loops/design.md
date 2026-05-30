@@ -88,9 +88,9 @@ Agent workers append loop context to the prompt. Function and API tasks receive 
 
 Rejected generations remain observable. A schema-valid task attempt in a rejected generation still has lifecycle status `Completed`; `satisfaction_status` records whether the attempt may satisfy downstream bindings. RunHelm does not roll back side effects from rejected generations.
 
-**8. Normalize workflow and task IDs before persistence**
+**8. Normalize workflow and task definition IDs before persistence**
 
-Workflow IDs and task IDs are normalized to lowercase during registration and rejected unless they contain only ASCII alphanumeric characters. This reserves bracket syntax for generated attempt IDs such as `task[2]`.
+Workflow definition IDs and task definition IDs are normalized to lowercase during registration and rejected unless they contain only ASCII alphanumeric characters. Generated task attempt IDs such as `task[2]` are orchestrator-owned runtime identifiers, not user-authored definition IDs.
 
 **9. Reject overlapping verifier slices**
 
@@ -106,7 +106,7 @@ A task can belong to at most one verifier-controlled rerun slice. Back-to-back v
 ## Migration Plan
 
 - Add `control` and verifier fields with serde defaults so existing serialized workflow definitions remain valid.
-- Normalize workflow and task IDs at registration and reject non-alphanumeric IDs.
+- Normalize workflow definition and task definition IDs at registration and reject non-alphanumeric definition IDs.
 - Store materialized attempts under stable `task[generation]` IDs.
 - Add verifier generation state, satisfaction state, and input mapping with defaults so older workflow instances remain readable.
 - Roll back by rejecting workflows with `control.verifier` while leaving existing workflows unaffected.
