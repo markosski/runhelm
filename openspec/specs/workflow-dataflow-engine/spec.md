@@ -81,9 +81,10 @@ The orchestrator SHALL construct executable workflow dataflow from the `DataBind
 - **WHEN** Task C requires inputs from both Task A and Task B
 - **THEN** Task C SHALL NOT transition to `Running` until both Task A and Task B have successfully completed and populated their respective input bindings on Task C
 
-#### Scenario: Same-generation propagation inside rerun slice
-- **WHEN** rerun generation 2 includes `B[2] -> C[2] -> D[2]`
-- **THEN** `C[2]` receives output from `B[2]` and `D[2]` receives output from `C[2]`
+#### Scenario: Latest materialized propagation inside rerun slice
+- **WHEN** a verifier rerun slice contains source task `B` and target task `C`
+- **THEN** `C` resolves `B` to the latest materialized attempt for `B`
+- **THEN** `C` does not run until that latest materialized attempt is completed
 
 #### Scenario: Selected generation propagation after verifier
 - **WHEN** verifier task `D[2]` is accepted

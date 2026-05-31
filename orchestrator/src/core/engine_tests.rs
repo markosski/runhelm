@@ -474,6 +474,192 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
     );
 }
 
+#[test]
+fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
+    let engine = make_engine();
+    let verifier_task = agent_verifier_task("verify", Some("task-b"));
+    let def = WorkflowDef {
+        id: "def-verifier-latest-completed-source".to_string(),
+        tasks: vec![
+            task_def("task-b", json!({ "type": "object" })),
+            verifier_task.clone(),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-b".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+    let loop_slices = engine.compute_loop_slices(&def);
+    let instance = WorkflowInstance {
+        id: "inst-verifier-latest-completed-source".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([
+            (
+                "task-b[1]".to_string(),
+                TaskInstance {
+                    task_def_id: "task-b".to_string(),
+                    status: TaskStatus::InputNeeded {
+                        description: "need clarification".to_string(),
+                    },
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 1,
+                    verifier_metadata: None,
+                },
+            ),
+            (
+                "task-b[2]".to_string(),
+                TaskInstance {
+                    task_def_id: "task-b".to_string(),
+                    status: TaskStatus::Completed,
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: Some(json!({ "value": "after-human-input" })),
+                    generation_index: 2,
+                    verifier_metadata: None,
+                },
+            ),
+            (
+                "verify[1]".to_string(),
+                TaskInstance {
+                    task_def_id: "verify".to_string(),
+                    status: TaskStatus::Pending,
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 1,
+                    verifier_metadata: None,
+                },
+            ),
+        ]),
+        verifier_states: HashMap::from([(
+            "verify".to_string(),
+            VerifierGenerationState {
+                verifier_task_id: "verify".to_string(),
+                rerun_start_task_id: "task-b".to_string(),
+                latest_generation: 1,
+                selected_generation: None,
+                feedback_history: vec![],
+                status: VerifierStateStatus::Running,
+                exit_reason: None,
+            },
+        )]),
+    };
+
+    let resolved = engine
+        .resolve_inputs(
+            &instance,
+            &def,
+            &instance.tasks["verify[1]"],
+            &verifier_task,
+            &loop_slices,
+        )
+        .unwrap();
+
+    assert_eq!(
+        resolved.values,
+        vec![json!({ "value": "after-human-input" })]
+    );
+    assert_eq!(
+        resolved.mapping,
+        vec![TaskInputMapping {
+            task_id: "task-b".to_string(),
+            generation: 2,
+        }]
+    );
+}
+
+#[test]
+fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
+    let engine = make_engine();
+    let verifier_task = agent_verifier_task("verify", Some("task-b"));
+    let def = WorkflowDef {
+        id: "def-verifier-waits-current-source".to_string(),
+        tasks: vec![
+            task_def("task-b", json!({ "type": "object" })),
+            verifier_task.clone(),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-b".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+    let loop_slices = engine.compute_loop_slices(&def);
+    let instance = WorkflowInstance {
+        id: "inst-verifier-waits-current-source".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([
+            (
+                "task-b[1]".to_string(),
+                TaskInstance {
+                    task_def_id: "task-b".to_string(),
+                    status: TaskStatus::Completed,
+                    satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: Some(json!({ "value": "rejected" })),
+                    generation_index: 1,
+                    verifier_metadata: None,
+                },
+            ),
+            (
+                "task-b[2]".to_string(),
+                TaskInstance {
+                    task_def_id: "task-b".to_string(),
+                    status: TaskStatus::Pending,
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 2,
+                    verifier_metadata: None,
+                },
+            ),
+            (
+                "verify[2]".to_string(),
+                TaskInstance {
+                    task_def_id: "verify".to_string(),
+                    status: TaskStatus::Pending,
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 2,
+                    verifier_metadata: None,
+                },
+            ),
+        ]),
+        verifier_states: HashMap::from([(
+            "verify".to_string(),
+            VerifierGenerationState {
+                verifier_task_id: "verify".to_string(),
+                rerun_start_task_id: "task-b".to_string(),
+                latest_generation: 2,
+                selected_generation: None,
+                feedback_history: vec![],
+                status: VerifierStateStatus::Running,
+                exit_reason: None,
+            },
+        )]),
+    };
+
+    let resolved = engine.resolve_inputs(
+        &instance,
+        &def,
+        &instance.tasks["verify[2]"],
+        &verifier_task,
+        &loop_slices,
+    );
+
+    assert!(resolved.is_none());
+}
+
 #[tokio::test]
 async fn test_verifier_complete_accepts_first_generation() {
     let engine = make_engine_with_executor(Arc::new(CompleteVerifierExecutor));
@@ -610,7 +796,10 @@ async fn test_exhausted_verifier_fails_when_continue_policy_is_false() {
     assert_eq!(state.status, VerifierStateStatus::ExhaustedFailed);
     assert_eq!(state.latest_generation, 2);
     assert_eq!(state.selected_generation, None);
-    assert_eq!(state.exit_reason.as_deref(), Some("max_iterations_exhausted"));
+    assert_eq!(
+        state.exit_reason.as_deref(),
+        Some("max_iterations_exhausted")
+    );
     assert_eq!(instance.tasks["verify[2]"].status, TaskStatus::Failed);
     assert_eq!(
         instance.tasks["verify[2]"]
@@ -654,7 +843,10 @@ async fn test_exhausted_verifier_accepts_latest_generation_when_continue_policy_
     assert_eq!(state.status, VerifierStateStatus::ExhaustedAccepted);
     assert_eq!(state.latest_generation, 2);
     assert_eq!(state.selected_generation, Some(2));
-    assert_eq!(state.exit_reason.as_deref(), Some("max_iterations_exhausted"));
+    assert_eq!(
+        state.exit_reason.as_deref(),
+        Some("max_iterations_exhausted")
+    );
     assert_eq!(
         instance.tasks["verify[2]"].satisfaction_status,
         TaskSatisfactionStatus::Satisfied
@@ -676,7 +868,10 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
     verifier_task.output_schema = None;
     let def = WorkflowDef {
         id: "def-exhaustion-no-valid-output".to_string(),
-        tasks: vec![task_def("task-a", json!({ "type": "object" })), verifier_task],
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            verifier_task,
+        ],
         data_bindings: vec![DataBinding {
             source_task_id: "task-a".to_string(),
             target_task_id: "verify".to_string(),
@@ -732,11 +927,7 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
         )
         .unwrap_err();
 
-    assert!(
-        error
-            .to_string()
-            .contains("no schema-valid output")
-    );
+    assert!(error.to_string().contains("no schema-valid output"));
     assert_eq!(instance.status, WorkflowStatus::Failed);
     assert_eq!(
         instance.verifier_states["verify"].status,

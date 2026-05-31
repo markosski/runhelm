@@ -22,6 +22,7 @@ Create a new spec-style document at `docs/task-attempts-and-feedback-generations
   - `generation_index` is local per task, e.g. `B[2]` does not imply `V[2]`.
   - `VerifierGenerationState` or equivalent stores verifier iteration separately.
   - `input_mapping` records the exact source attempts consumed.
+  - Verifier slice input resolution should target the latest materialized source attempt and wait until that attempt completes, not assume the verifier and source task share the same generation number.
 
 - Include examples:
   - Human input retry:
@@ -69,6 +70,7 @@ It should also call out that this is a future design direction and differs from 
 
 - Human input on a normal task creates `task[2]` and preserves `task[1]` as `InputNeeded`.
 - Human input inside a verifier rerun slice does not force all tasks to share the same generation number.
+- Verifier tasks consume the latest materialized source attempts from their slice once those attempts complete and expose the exact consumed attempts through `input_mapping`.
 - Verifier rejection uses exact consumed attempts from `input_mapping`.
 - Downstream tasks consume only satisfied attempts.
 - Status APIs expose attempt cause metadata and source attempt mappings clearly.
