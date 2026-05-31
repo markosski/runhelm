@@ -568,6 +568,10 @@ impl WorkflowEngine {
             .any(|(_, slice)| slice.contains(&task_def_id.to_string()))
     }
 
+    // Resolve the concrete source attempt a target attempt should consume.
+    // Inside verifier slices, targets consume the latest materialized source
+    // attempt and wait until it completes. Outside verifier slices, targets
+    // consume the latest completed and satisfied source attempt.
     fn resolve_source_attempt_id(
         &self,
         instance: &WorkflowInstance,
@@ -575,19 +579,29 @@ impl WorkflowEngine {
         target_attempt_context: Option<(&str, u32)>,
         source_task_def_id: &str,
     ) -> Option<String> {
-        if let Some((target_task_def_id, generation_index)) = target_attempt_context
+        if let Some((target_task_def_id, _generation_index)) = target_attempt_context
             && let Some((_, slice)) = loop_slices
                 .iter()
                 .find(|(_, slice)| slice.contains(&target_task_def_id.to_string()))
             && slice.contains(&source_task_def_id.to_string())
         {
-            return Some(TaskInstance::make_task_attempt_id(
-                source_task_def_id,
-                generation_index,
-            ));
+            return self.latest_materialized_attempt_id(instance, source_task_def_id);
         }
 
         self.latest_satisfied_attempt_id(instance, source_task_def_id)
+    }
+
+    fn latest_materialized_attempt_id(
+        &self,
+        instance: &WorkflowInstance,
+        source_task_def_id: &str,
+    ) -> Option<String> {
+        instance
+            .tasks
+            .iter()
+            .filter(|(_, task)| task.task_def_id == source_task_def_id)
+            .max_by_key(|(_, task)| task.generation_index)
+            .map(|(task_attempt_id, _)| task_attempt_id.clone())
     }
 
     fn latest_satisfied_attempt_id(
