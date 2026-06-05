@@ -3,8 +3,8 @@
 - [x] 1.1 Add `reuse_session` to Agent task definitions with a default of `true`.
 - [x] 1.2 Add a core Agent session key type derived from workflow instance ID and task identity that is stable across workers and does not expose worker-local paths.
 - [x] 1.3 Extend execution metadata or executor payload models so attempts receive their `generation_index`, allowing workers to apply session conventions without explicit session policy metadata.
-- [ ] 1.4 Ensure the executor result model does not need to return opaque session IDs for the normal convention-derived reuse path.
-- [ ] 1.5 Add clear session-load diagnostics that can be logged by the worker without requiring task failure.
+- [x] 1.4 Ensure the executor result model does not need to return opaque session IDs for the normal convention-derived reuse path.
+- [x] 1.5 Add clear session-load diagnostics that can be logged by the worker without requiring task failure.
 
 ## 2. Orchestrator Behavior
 

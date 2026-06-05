@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import type { SessionData, SessionStore } from '../core/ports/SessionStore.js';
+import { SessionStoreError, type SessionData, type SessionStore } from '../core/ports/SessionStore.js';
 
 const RUNHELM_DIR = '.runhelm';
 const SESSIONS_DIR = 'agent_sessions';
@@ -23,7 +23,11 @@ export class FileSessionStore implements SessionStore {
             if (isNodeError(error) && error.code === 'ENOENT') {
                 return null;
             }
-            throw new Error(`Unable to read session file: ${filePath}`);
+            throw new SessionStoreError(
+                sessionKey,
+                `Unable to read session file: ${filePath}`,
+                { cause: error }
+            );
         }
     }
 
@@ -35,8 +39,12 @@ export class FileSessionStore implements SessionStore {
             await mkdir(this.rootDir, { recursive: true });
             await writeFile(tempPath, sessionData.lines, 'utf8');
             await rename(tempPath, filePath);
-        } catch {
-            throw new Error(`Unable to write session file: ${filePath}`);
+        } catch (error) {
+            throw new SessionStoreError(
+                sessionKey,
+                `Unable to write session file: ${filePath}`,
+                { cause: error }
+            );
         }
     }
 
