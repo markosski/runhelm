@@ -14,6 +14,10 @@ pub enum WorkflowStatus {
 
 pub type JsonSchema = serde_json::Value;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskTypeDef {
     ApiCall {
@@ -34,6 +38,9 @@ pub enum TaskTypeDef {
         ask: bool,
         // How many times agent should re-try when output does not match expected output_schema
         schema_failure_retry_times: Number,
+        // Whether or not harness session should be re-used across attempts
+        #[serde(default = "default_true")]
+        reuse_session: bool
     },
     Function(FunctionTaskDef),
 }

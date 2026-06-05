@@ -31,6 +31,7 @@ impl DockerExecutor {
 impl ExecutorPort for DockerExecutor {
     async fn execute(
         &self,
+        workflow_inst_id: &str,
         task: &TaskDef,
         inputs: &[Value],
         metadata: &ExecutionMetadata,
@@ -41,7 +42,7 @@ impl ExecutorPort for DockerExecutor {
             .unwrap_or(self.task_timeout);
 
         self.worker_pool
-            .enqueue_task(task, inputs, task_timeout, metadata.clone())
+            .enqueue_task(workflow_inst_id, task, inputs, task_timeout, metadata.clone())
             .await
     }
 }
@@ -79,7 +80,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_millis(30),
-            executor.execute(&task, &[], &ExecutionMetadata::default()),
+            executor.execute("123", &task, &[], &ExecutionMetadata::default()),
         )
         .await;
 
@@ -114,7 +115,7 @@ mod tests {
 
         let execution = tokio::spawn(async move {
             executor
-                .execute(&task, &[], &ExecutionMetadata::default())
+                .execute("123", &task, &[], &ExecutionMetadata::default())
                 .await
         });
         let claimed = worker_pool

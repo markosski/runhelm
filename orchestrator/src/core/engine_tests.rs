@@ -27,8 +27,9 @@ struct ContinueThenCompleteExecutor;
 impl ExecutorPort for ContinueThenCompleteExecutor {
     async fn execute(
         &self,
+        workflows_isnt_id: &str,
         task: &TaskDef,
-        _inputs: &[serde_json::Value],
+        inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
@@ -56,9 +57,10 @@ struct CompleteVerifierExecutor;
 impl ExecutorPort for CompleteVerifierExecutor {
     async fn execute(
         &self,
+        workflow_inst_id: &str,
         task: &TaskDef,
-        _inputs: &[serde_json::Value],
-        _metadata: &ExecutionMetadata,
+        inputs: &[serde_json::Value],
+        metadata: &ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
@@ -74,9 +76,10 @@ struct AlwaysContinueVerifierExecutor;
 impl ExecutorPort for AlwaysContinueVerifierExecutor {
     async fn execute(
         &self,
+        workflow_inst_id: &str,
         task: &TaskDef,
-        _inputs: &[serde_json::Value],
-        _metadata: &ExecutionMetadata,
+        inputs: &[serde_json::Value],
+        metadata: &ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({
@@ -132,6 +135,7 @@ fn agent_verifier_task(id: &str, rerun_from_task_id: Option<&str>) -> TaskDef {
         skills: vec![],
         ask: false,
         schema_failure_retry_times: Number::from(0),
+        reuse_session: false
     };
     task.output_schema = None;
     task.control = Some(TaskControl {

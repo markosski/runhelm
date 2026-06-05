@@ -182,7 +182,7 @@ impl Orchestrator {
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
         let task = self.resolve_task_function_ref(task).await?;
         self.executor
-            .execute(&task, inputs, &ExecutionMetadata::default())
+            .execute("123", &task, inputs, &ExecutionMetadata::default())
             .await
     }
 
