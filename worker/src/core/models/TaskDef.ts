@@ -50,6 +50,7 @@ export interface LoopExecutionContext {
 }
 
 export interface ExecutionMetadata {
+    generation_index?: number;
     loop_context?: LoopExecutionContext;
 }
 

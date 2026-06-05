@@ -40,7 +40,7 @@ pub enum TaskTypeDef {
         schema_failure_retry_times: Number,
         // Whether or not harness session should be re-used across attempts
         #[serde(default = "default_true")]
-        reuse_session: bool
+        reuse_session: bool,
     },
     Function(FunctionTaskDef),
 }
@@ -246,10 +246,25 @@ pub struct LoopExecutionContext {
     pub previous_output: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+fn default_generation_index() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionMetadata {
+    #[serde(default = "default_generation_index")]
+    pub generation_index: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<LoopExecutionContext>,
+}
+
+impl Default for ExecutionMetadata {
+    fn default() -> Self {
+        Self {
+            generation_index: default_generation_index(),
+            loop_context: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

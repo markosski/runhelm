@@ -10,7 +10,7 @@ Agent retries currently depend on reconstructing context through injected prompt
 - Derive stable Agent session keys from workflow instance and task identity so workers can load or create the correct session before execution without storing opaque session IDs on every attempt.
 - Change Agent task execution so retry/resume attempts append new prompt events, such as human responses or verifier feedback, to the existing session instead of reinjecting complete feedback history.
 - Preserve orchestrator-owned workflow truth for attempt lineage, budgets, statuses, and audit metadata while delegating conversational continuity to the agent session.
-- Fail clearly when a required durable session cannot be loaded, rather than silently continuing from a blank session.
+- Log clearly when an expected durable session cannot be loaded, then recover with a fresh session so verifier/dataflow behavior can determine whether another attempt is needed.
 
 ## Capabilities
 
@@ -20,8 +20,8 @@ Agent retries currently depend on reconstructing context through injected prompt
 
 ### Modified Capabilities
 
-- `task-executor`: Extend the execution contract so Agent executions can receive convention-derived session keys and session-related failures.
-- `workflow-dataflow-engine`: Derive Agent session keys from workflow instance and logical task identity, honor `reuse_session`, and preserve deterministic workflow behavior when Agent attempts are resumed or retried.
+- `task-executor`: Extend the execution contract with task attempt generation metadata while workers derive convention-based Agent session keys.
+- `workflow-dataflow-engine`: Provide stable workflow/task identity and generation metadata, honor `reuse_session`, and preserve deterministic workflow behavior when Agent attempts are resumed or retried.
 
 ## Impact
 
@@ -31,4 +31,4 @@ Agent retries currently depend on reconstructing context through injected prompt
 - Worker `AgentExecutor` session lifecycle, including load/create/persist behavior.
 - Pi session integration, likely through `SessionManager` file-backed sessions first.
 - Future storage adapters for local filesystem and cloud blob-backed session persistence.
-- Tests for session key derivation, `reuse_session` defaults, missing-session failures, and Agent retry/resume behavior.
+- Tests for session key derivation, `reuse_session` defaults, missing-session recovery, and Agent retry/resume behavior.

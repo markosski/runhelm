@@ -135,7 +135,7 @@ fn agent_verifier_task(id: &str, rerun_from_task_id: Option<&str>) -> TaskDef {
         skills: vec![],
         ask: false,
         schema_failure_retry_times: Number::from(0),
-        reuse_session: false
+        reuse_session: false,
     };
     task.output_schema = None;
     task.control = Some(TaskControl {
@@ -313,6 +313,42 @@ fn test_loop_execution_metadata_includes_feedback_history() {
         loop_context.previous_output,
         Some(json!({ "draft": "first" }))
     );
+}
+
+#[test]
+fn test_execution_metadata_default_generation_index_is_one() {
+    assert_eq!(ExecutionMetadata::default().generation_index, 1);
+}
+
+#[test]
+fn test_execution_metadata_includes_task_instance_generation_index() {
+    let engine = make_engine();
+    let def = WorkflowDef {
+        id: "def-generation-metadata".to_string(),
+        tasks: vec![task_def("task-a", json!({ "type": "object" }))],
+        data_bindings: vec![],
+    };
+    let task_instance = TaskInstance {
+        task_def_id: "task-a".to_string(),
+        status: TaskStatus::Pending,
+        satisfaction_status: TaskSatisfactionStatus::Pending,
+        input_data: vec![],
+        input_mapping: vec![],
+        output_data: None,
+        generation_index: 2,
+        verifier_metadata: None,
+    };
+    let instance = WorkflowInstance {
+        id: "inst-generation-metadata".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([("task-a[2]".to_string(), task_instance.clone())]),
+        verifier_states: HashMap::new(),
+    };
+
+    let metadata = engine.execution_metadata(&instance, &def, &task_instance);
+
+    assert_eq!(metadata.generation_index, 2);
 }
 
 /// A single task with no dependencies should run and complete the workflow.

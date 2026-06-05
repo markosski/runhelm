@@ -10,10 +10,10 @@ Pi already supports persistent JSONL sessions through `SessionManager`, includin
 - Persist Agent conversation sessions durably enough that later attempts can load the same session.
 - Add an Agent task `reuse_session` setting that defaults to `true`.
 - Derive stable session keys from workflow instance and task identity rather than storing opaque session IDs on every task attempt.
-- Propagate derived session keys and continuation requirements through the executor payload boundary.
+- Propagate attempt `generation_index` through the executor payload boundary so workers can apply session conventions without explicit session policy metadata.
 - Let Agent retry/resume attempts append only the new event prompt, such as human input or verifier feedback, instead of reinjecting full history.
 - Keep workflow truth in the orchestrator: attempt lineage, task status, satisfaction, budgets, input mappings, and current waiting questions remain structured orchestration state.
-- Fail clearly when a required existing session cannot be loaded.
+- Log clearly when an expected reusable session cannot be loaded and allow the Agent attempt to continue with a fresh session.
 - Start with a file-backed session store and leave room for cloud blob-backed storage.
 
 **Non-Goals:**
@@ -45,11 +45,11 @@ Alternative considered: store raw Pi session JSONL in orchestrator task metadata
 
 Add `reuse_session` to Agent task definitions. The field defaults to `true`.
 
-When `reuse_session` is `true`, all materialized attempts for the same workflow instance and logical Agent task use the same durable session key. The first attempt creates the session if it is missing. Later continuation attempts, such as human-input or verifier-feedback attempts, require the existing session and fail clearly if it cannot be loaded.
+When `reuse_session` is `true`, all materialized attempts for the same workflow instance and logical Agent task use the same durable session key. The worker derives that key from the workflow instance ID and logical task ID. The first attempt creates the session if it is missing. Later continuation attempts, such as human-input or verifier-feedback attempts, try to load the same session and log a clear diagnostic before creating a fresh replacement if the stored session is missing or unreadable.
 
 When `reuse_session` is `false`, attempts do not reuse the logical task session. The implementation may use an attempt-scoped durable session key for observability or run the Agent without durable reuse, but it must not load previous conversation history for the logical task.
 
-For ask and verifier interactions, the orchestrator should continue creating materialized attempts with explicit causes, previous attempt IDs, and budget metadata. The derived session key is the continuity handle, not the source of truth for orchestration decisions.
+For ask and verifier interactions, the orchestrator should continue creating materialized attempts with explicit causes, previous attempt IDs, generation indexes, and budget metadata. The convention-derived session key is the continuity handle, not the source of truth for orchestration decisions.
 
 Alternative considered: persist a worker-returned opaque session reference on every task attempt. That makes the handle explicit in workflow state, but it adds metadata churn and carry-forward logic when the required continuity is already expressible as workflow instance plus logical task identity.
 
@@ -65,12 +65,12 @@ initial attempt:
 
 human-input attempt:
   derive same session key when reuse_session is true
-  load existing session
+  load existing session, or log and create a fresh one if it is unavailable
   prompt with the submitted human response and any small structured instruction
 
 verifier-feedback attempt:
   derive same session key when reuse_session is true
-  load existing session
+  load existing session, or log and create a fresh one if it is unavailable
   prompt with verifier feedback and any small structured instruction
 ```
 
@@ -78,13 +78,13 @@ The original task prompt, previous user/assistant turns, tool calls, and prior c
 
 Alternative considered: keep injecting ordered ask and verifier history into every attempt. That is provider-neutral and easy to inspect, but it duplicates session functionality, increases prompt size, and makes the engine responsible for conversational memory.
 
-### Treat missing required sessions as execution failures
+### Treat missing sessions as recoverable degradation
 
-If a continuation attempt with `reuse_session` enabled requires an existing session and the worker cannot load it from durable storage, the Agent task should fail with a clear session-load error. It must not silently create a blank session for a continuation attempt because that would lose prior human input or verifier feedback while preserving the appearance of a valid retry.
+If a continuation attempt with `reuse_session` enabled expects an existing session and the worker cannot load it from durable storage, the worker should log a clear diagnostic including the logical session key and create a fresh session. Session loss should be rare, and a fresh attempt can still proceed using structured workflow inputs, verifier feedback, or human response data that the orchestrator sends for the current attempt. If the lost conversation context matters, the verifier can reject the result and drive another attempt.
 
-The system can later add an explicit recovery policy that rebuilds a minimal session from structured workflow events, but that should be opt-in and visible in metadata.
+The system can later add stricter policies that fail continuation attempts when a session is unavailable, but that policy can be derived from attempt generation (`generation_index > 1`) and does not require an explicit `require_existing_session` payload field.
 
-Alternative considered: recreate a session from stored prompt fragments whenever loading fails. That could improve availability, but it makes session loss hard to detect and would require storing enough complete prompt history to defeat the purpose of this change.
+Alternative considered: fail continuation attempts whenever loading fails. That makes session loss highly visible, but it adds failure coupling for a rare storage problem and is not required for the convention-derived key design.
 
 ### Keep storage implementation pluggable
 
@@ -103,9 +103,10 @@ The orchestrator should own:
 - ask/verifier budgets
 - current `InputNeeded` description
 - Agent `reuse_session` policy
-- convention-derived session key metadata in execution payloads and status reports
+- attempt generation metadata in execution payloads and convention-derived session key metadata in status reports
 
 The worker and session store should own:
+- convention-derived Agent session key resolution from workflow instance ID and task ID
 - Pi session file loading and persistence
 - conversation messages
 - tool call history
@@ -116,7 +117,7 @@ This keeps the core engine observable and deterministic while allowing Agent imp
 
 ## Risks / Trade-offs
 
-- [Risk] Session files become unavailable or corrupted -> Mitigation: fail continuation attempts with explicit session-load errors and keep structured attempt metadata for diagnosis.
+- [Risk] Session files become unavailable or corrupted -> Mitigation: log the session key and recover with a fresh session; verifier feedback can reject weak outputs and drive another attempt.
 - [Risk] Local file-backed storage does not work for distributed workers -> Mitigation: define the storage boundary before implementation and treat local files as the first adapter, not the only design.
 - [Risk] Concurrent attempts mutate the same session -> Mitigation: serialize attempts for a logical Agent session initially, and require optimistic concurrency controls for blob-backed storage.
 - [Risk] Session content can contain sensitive user data and tool outputs -> Mitigation: keep session storage configurable, document retention expectations, and avoid copying session contents into broad workflow status APIs.
@@ -126,12 +127,12 @@ This keeps the core engine observable and deterministic while allowing Agent imp
 ## Migration Plan
 
 1. Add `reuse_session` to Agent task definitions with a default of `true`.
-2. Add derived Agent session key metadata to executor payload models.
+2. Add task attempt generation metadata to executor payload models.
 3. Add a file-backed Agent session store configuration for workers.
 4. Update `AgentExecutor` to create a persistent session for initial reusable Agent attempts.
 5. Update continuation attempts to load the existing session and append only the new human-input or verifier-feedback prompt event.
-6. Add clear failures for missing or unreadable continuation sessions.
-7. Add tests for default reuse behavior, session key derivation, continuation loading, opt-out behavior, and missing-session failure.
+6. Add clear diagnostics and fresh-session recovery for missing or unreadable continuation sessions.
+7. Add tests for default reuse behavior, session key derivation, continuation loading, opt-out behavior, and missing-session recovery.
 8. Later, add a blob-backed session store adapter without changing orchestrator task semantics.
 
 Rollback before launch can disable durable session reuse and return Agent execution to fresh-session prompt reconstruction. Once workflows rely on session continuity for correctness, rollback requires either preserving the session store or adding an explicit reconstruction path from structured events.

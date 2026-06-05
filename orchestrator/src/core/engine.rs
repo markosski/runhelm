@@ -1,7 +1,10 @@
 use crate::api::models::{TaskStatusReport, VerifierStatusReport, WorkflowStatusReport};
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{
-    ExecutionMetadata, LoopExecutionContext, LoopFeedbackEntry, TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus, VerifierControlConfig, VerifierDecision, VerifierExecutionResult, VerifierGenerationState, VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus
+    ExecutionMetadata, LoopExecutionContext, LoopFeedbackEntry, TaskInputMapping, TaskInstance,
+    TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus,
+    VerifierControlConfig, VerifierDecision, VerifierExecutionResult, VerifierGenerationState,
+    VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
@@ -87,7 +90,11 @@ impl WorkflowEngine {
     }
 
     pub async fn run_workflow_instance(&self, workflow_inst_id: String) -> anyhow::Result<()> {
-        let mut workflow_instance = match self.storage.get_workflow_instance(&workflow_inst_id).await? {
+        let mut workflow_instance = match self
+            .storage
+            .get_workflow_instance(&workflow_inst_id)
+            .await?
+        {
             Some(i) => i,
             None => anyhow::bail!("Workflow instance not found"),
         };
@@ -151,7 +158,13 @@ impl WorkflowEngine {
                         .unwrap();
 
                     let can_run = self
-                        .resolve_inputs(&workflow_instance, &def, task_instance, task_def, &loop_slices)
+                        .resolve_inputs(
+                            &workflow_instance,
+                            &def,
+                            task_instance,
+                            task_def,
+                            &loop_slices,
+                        )
                         .is_some();
 
                     if can_run {
@@ -167,7 +180,11 @@ impl WorkflowEngine {
                 }
                 progress_made = true;
 
-                let task_instance = workflow_instance.tasks.get(&task_attempt_id).cloned().unwrap();
+                let task_instance = workflow_instance
+                    .tasks
+                    .get(&task_attempt_id)
+                    .cloned()
+                    .unwrap();
                 let task_def = def
                     .tasks
                     .iter()
@@ -175,7 +192,13 @@ impl WorkflowEngine {
                     .unwrap();
 
                 let resolved_inputs = self
-                    .resolve_inputs(&workflow_instance, &def, &task_instance, task_def, &loop_slices)
+                    .resolve_inputs(
+                        &workflow_instance,
+                        &def,
+                        &task_instance,
+                        task_def,
+                        &loop_slices,
+                    )
                     .unwrap_or_default();
                 let inputs = resolved_inputs.values;
 
@@ -214,14 +237,18 @@ impl WorkflowEngine {
                         let output = match result {
                             ExecutionResult::Success(output) => output,
                             ExecutionResult::InputNeeded(description) => {
-                                if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
+                                if let Some(task) =
+                                    workflow_instance.tasks.get_mut(&task_attempt_id)
+                                {
                                     task.status = TaskStatus::InputNeeded { description };
                                 }
                                 workflow_instance.status = WorkflowStatus::InputNeeded;
                                 continue;
                             }
                             ExecutionResult::Failure(reason) => {
-                                if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
+                                if let Some(task) =
+                                    workflow_instance.tasks.get_mut(&task_attempt_id)
+                                {
                                     task.status = TaskStatus::Failed;
                                     task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
                                 }
@@ -258,7 +285,8 @@ impl WorkflowEngine {
                                 let verifier_result = match verifier_result_from_output(&output) {
                                     Ok(verifier_result) => verifier_result,
                                     Err(error) => {
-                                        if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id)
+                                        if let Some(task) =
+                                            workflow_instance.tasks.get_mut(&task_attempt_id)
                                         {
                                             task.status = TaskStatus::Failed;
                                             task.satisfaction_status =
@@ -335,7 +363,9 @@ impl WorkflowEngine {
             });
         if all_completed {
             workflow_instance.status = WorkflowStatus::Completed;
-            self.storage.save_workflow_instance(workflow_instance).await?;
+            self.storage
+                .save_workflow_instance(workflow_instance)
+                .await?;
         }
 
         Ok(())
@@ -639,19 +669,33 @@ impl WorkflowEngine {
         def: &WorkflowDef,
         task_instance: &TaskInstance,
     ) -> ExecutionMetadata {
+        let loop_context = self.loop_execution_context(instance, def, task_instance);
+
+        ExecutionMetadata {
+            generation_index: task_instance.generation_index,
+            loop_context,
+        }
+    }
+
+    fn loop_execution_context(
+        &self,
+        instance: &WorkflowInstance,
+        def: &WorkflowDef,
+        task_instance: &TaskInstance,
+    ) -> Option<LoopExecutionContext> {
         let generation_index = task_instance.generation_index;
         let loop_slices = self.compute_loop_slices(def);
         let Some((verifier_id, _)) = loop_slices
             .iter()
             .find(|(_, slice)| slice.contains(&task_instance.task_def_id))
         else {
-            return ExecutionMetadata::default();
+            return None;
         };
         let Some(verifier_task) = def.tasks.iter().find(|task| task.id == *verifier_id) else {
-            return ExecutionMetadata::default();
+            return None;
         };
         let Some(verifier) = task_verifier(verifier_task) else {
-            return ExecutionMetadata::default();
+            return None;
         };
 
         let feedback_history = instance
@@ -682,16 +726,12 @@ impl WorkflowEngine {
                     .and_then(|task| task.output_data.clone())
             });
 
-        let loop_context = LoopExecutionContext {
+        Some(LoopExecutionContext {
             generation: generation_index,
             max_iterations: verifier.max_iterations,
             feedback_history,
             previous_output,
-        };
-
-        ExecutionMetadata {
-            loop_context: Some(loop_context),
-        }
+        })
     }
 
     fn apply_verifier_result(

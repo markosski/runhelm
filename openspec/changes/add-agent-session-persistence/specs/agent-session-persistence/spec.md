@@ -9,11 +9,11 @@ The system SHALL provide a durable Agent session store that can create, load, an
 - **THEN** the session is addressable through the derived session key
 
 #### Scenario: Existing session is loaded
-- **WHEN** an Agent continuation attempt starts with a derived session key that requires an existing session
+- **WHEN** an Agent continuation attempt starts and a session exists for the derived session key
 - **THEN** the worker loads the keyed session from the configured session store before prompting the Agent
 
 #### Scenario: Session key is storage-independent
-- **WHEN** a session key is exposed or passed through workflow execution metadata
+- **WHEN** the worker derives a session key from workflow instance ID and logical task ID
 - **THEN** the key identifies the session through the RunHelm session store boundary rather than requiring a worker-local filesystem path
 
 ### Requirement: Agent Session Reuse Policy
@@ -54,17 +54,17 @@ Agent retry and resume attempts SHALL continue the convention-derived Agent sess
 - **WHEN** an Agent continuation attempt is executed with a loaded session
 - **THEN** the orchestrator does not need to inject complete prior ask or verifier feedback history into the prompt
 
-### Requirement: Missing Session Failure
-The system SHALL fail Agent continuation attempts clearly when a required durable session cannot be loaded.
+### Requirement: Missing Session Recovery
+The system SHALL log clear diagnostics and recover with a fresh session when a reusable durable session cannot be loaded.
 
-#### Scenario: Required session is missing
+#### Scenario: Expected session is missing
 - **WHEN** a reusable Agent continuation attempt references a derived session key that the worker cannot load
-- **THEN** the task execution fails with a clear session-load error
-- **THEN** the worker MUST NOT create a blank replacement session for that continuation attempt
+- **THEN** the worker logs a clear session-load diagnostic
+- **THEN** the worker creates a fresh replacement session and continues execution
 
 #### Scenario: Missing session is observable
-- **WHEN** a session-load failure is reported
-- **THEN** the failure identifies the session key that could not be loaded
+- **WHEN** a session-load diagnostic is reported
+- **THEN** the diagnostic identifies the session key that could not be loaded
 
 ### Requirement: Session Store Extensibility
 The Agent session store SHALL support a file-backed implementation initially and SHALL allow future storage implementations without changing workflow attempt semantics.

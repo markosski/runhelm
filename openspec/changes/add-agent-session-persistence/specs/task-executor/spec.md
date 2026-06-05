@@ -1,17 +1,15 @@
 ## ADDED Requirements
 
-### Requirement: Session-Aware Agent Execution Payload
-The task execution payload SHALL support Agent session continuation metadata without requiring non-Agent task kinds to use sessions.
+### Requirement: Attempt-Aware Task Execution Payload
+The task execution payload SHALL include task attempt generation metadata without requiring explicit Agent session policy metadata.
 
-#### Scenario: Initial reusable Agent task has a derived session key
-- **WHEN** the engine dispatches an initial Agent task attempt with `reuse_session` true
-- **THEN** the payload includes the session key derived from workflow instance ID and logical task ID
-- **THEN** the payload marks that an existing session is not required
+#### Scenario: Initial task attempt is dispatched
+- **WHEN** the engine dispatches an initial task attempt
+- **THEN** the payload includes `generation_index` equal to `1`
 
-#### Scenario: Reusable Agent continuation has a required session key
-- **WHEN** the engine dispatches an Agent continuation attempt with `reuse_session` true
-- **THEN** the payload includes the session key derived from workflow instance ID and logical task ID
-- **THEN** the payload marks that an existing session is required
+#### Scenario: Continuation task attempt is dispatched
+- **WHEN** the engine dispatches a later task attempt
+- **THEN** the payload includes that attempt's `generation_index`
 
 #### Scenario: Non-Agent task is dispatched
 - **WHEN** the engine dispatches a Function or API call task
@@ -26,19 +24,19 @@ The task execution contract SHALL use RunHelm-derived session keys for the norma
 
 #### Scenario: New reusable Agent session is created
 - **WHEN** a worker creates a new durable Agent session while executing an initial reusable Agent task
-- **THEN** the session is persisted under the session key supplied in the payload
+- **THEN** the session is persisted under the session key derived from workflow instance ID and logical task ID
 
 #### Scenario: Existing reusable Agent session is reused
-- **WHEN** a worker executes an Agent task using an existing session key
+- **WHEN** a worker executes an Agent task using an existing derived session key
 - **THEN** the worker persists updates back to the same session key
 
-### Requirement: Session Load Failure Reporting
-The task executor SHALL report missing or unreadable Agent sessions as execution failures with a clear error.
+### Requirement: Session Load Recovery Diagnostics
+The task executor SHALL report missing or unreadable Agent sessions as diagnostics and continue with a fresh session.
 
-#### Scenario: Required session key cannot be loaded
-- **WHEN** the worker receives an Agent task payload with a required existing session key that cannot be loaded
-- **THEN** the worker returns a task execution failure that identifies the session-load problem
+#### Scenario: Expected session key cannot be loaded
+- **WHEN** the worker derives an Agent session key that cannot be loaded
+- **THEN** the worker logs a diagnostic that identifies the session-load problem
 
-#### Scenario: Blank continuation session is not created
-- **WHEN** the worker cannot load a required existing Agent session
-- **THEN** the worker MUST NOT create a new empty session and continue execution
+#### Scenario: Fresh replacement session is created
+- **WHEN** the worker cannot load an expected existing Agent session
+- **THEN** the worker creates a fresh session and continues execution
