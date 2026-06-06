@@ -1,15 +1,17 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { RUNHELM_DIR, SESSION_FILE_EXTENSION, SessionStoreError, writeTempSessionFile, encodeSessionKey,
+import { SESSION_FILE_EXTENSION, SessionStoreError, encodeSessionKey,
     type SessionData, type SessionStore } from '../core/ports/SessionStore.js';
 import { serializeAgentSessionKey, type AgentSessionKey } from '../core/models/AgentSession.js';
 
+const CACHE_DIR = '.cache';
+const RUNHELM_CACHE_DIR = 'runhelm';
 const SESSIONS_DIR = 'file_session_store';
 
 // Path for session store specific to this session store implementation
 export function defaultSessionStoreDir(): string {
-    return join(homedir(), RUNHELM_DIR, SESSIONS_DIR);
+    return join(homedir(), CACHE_DIR, RUNHELM_CACHE_DIR, SESSIONS_DIR);
 }
 
 export class FileSessionStore implements SessionStore {

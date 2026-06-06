@@ -8,8 +8,8 @@ Function and API call tasks do not receive Agent session keys, transcript conten
 
 Session stores return `null` for missing sessions and throw typed `SessionStoreError` values for unreadable sessions. Agent executors can log the session key from those load outcomes and continue with a fresh session.
 
-The default worker file session store writes complete session documents under `$HOME/.runhelm/agent_sessions`. Session keys are encoded into single `.jsonl` filenames, so keys such as `workflow_instance_id/task_id` do not create nested paths or expose worker-local paths.
+The default worker file session store writes complete session documents under `$HOME/.cache/runhelm/file_session_store`. This keeps Agent session persistence worker-local and writable in container deployments where `$HOME/.runhelm` is mounted read-only for credentials. Session keys are serialized from `workflow_instance_id` and `task_id`, then encoded into single `.jsonl` filenames, so logical keys never create nested paths or expose worker-local paths.
 
-The file-backed adapter also exposes an atomic string-file writer for local JSONL materialization, such as preparing a runtime session file for an Agent session manager before persisting the updated JSONL back through `SessionStore`.
+The worker materializes loaded JSONL into transient Pi session files under `$HOME/.cache/runhelm/temp_session` and creates fresh Pi native sessions under `$HOME/.cache/runhelm/native_session`. These paths are worker-local implementation details; task payloads, task results, and orchestrator state use logical RunHelm session keys rather than raw filesystem paths.
 
 This storage is intended to persist agent session data across attempts handled by the same live worker container. It is not durable storage: session files can disappear when the container or its filesystem is removed.

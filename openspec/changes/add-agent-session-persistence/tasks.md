@@ -12,28 +12,28 @@
 - [x] 2.2 Add session-handling support for future human-input-created Agent attempts so they use the same workflow instance ID and logical task ID when `reuse_session` is true; end-to-end human-input submission and resume remains out of scope for this change.
 - [x] 2.3 Dispatch verifier-feedback-created Agent attempts with the same logical-task session key when `reuse_session` is true.
 - [x] 2.4 Ensure Function and API call attempts do not require or receive Agent session metadata.
-- [ ] 2.5 Treat missing or unreadable reusable sessions as worker-side recoverable conditions that are logged before creating a fresh session.
-- [ ] 2.6 Keep downstream binding resolution based on completed and satisfied task attempts, not session transcript contents.
-- [ ] 2.7 Expose derived session key metadata in status/result reporting without exposing session transcripts.
+- [x] 2.5 Treat missing or unreadable reusable sessions as worker-side recoverable conditions that are logged before creating a fresh session.
+- [x] 2.6 Keep downstream binding resolution based on completed and satisfied task attempts, not session transcript contents.
+- [x] 2.7 Defer exposing derived session key metadata in status/result reporting; current workflows do not need public session-key visibility and transcripts remain unexposed.
 - [x] 2.8 Ensure `reuse_session = false` does not reuse the logical-task session across attempts.
 
 ## 3. Worker Session Store
 
 - [x] 3.1 Add a worker-side Agent session store interface for create, load, and persist operations.
 - [x] 3.2 Implement a file-backed Agent session store compatible with Pi persistent session files.
-- [ ] 3.3 Add worker configuration for the file-backed session storage location.
-- [ ] 3.4 Resolve stable RunHelm session keys to worker-local Pi session files without exposing raw worker-local paths.
-- [ ] 3.5 Add missing-session and unreadable-session diagnostics that include the failed session key.
+- [x] 3.3 Use a fixed worker-local file-backed session storage location under `$HOME/.cache/runhelm/file_session_store`.
+- [x] 3.4 Resolve stable RunHelm session keys to worker-local Pi session files without exposing raw worker-local paths.
+- [x] 3.5 Add missing-session and unreadable-session diagnostics that include the failed session key.
 
 ## 4. Agent Executor Integration
 
 - [x] 4.1 Update `AgentExecutor` to create a durable session for initial reusable Agent attempts when the derived session key is missing.
 - [x] 4.2 Update `AgentExecutor` to load an existing session before continuation attempts.
 - [x] 4.3 Prompt initial sessions with the task prompt and resolved upstream inputs.
-- [ ] 4.4 Prompt human-input continuation attempts with the submitted human response as the next session event.
+- [x] 4.4 Prompt human-input continuation attempts with the submitted human response as the next session event.
 - [x] 4.5 Prompt verifier-feedback continuation attempts with verifier feedback as the next session event.
 - [ ] 4.6 Stop reinjecting complete prior ask or verifier feedback history when a durable session is loaded, while still rebuilding full current context when no session is available.
-- [ ] 4.7 Ensure missing or unreadable continuation sessions are logged clearly before creating a fresh replacement session with the full task prompt and current attempt event.
+- [x] 4.7 Ensure missing or unreadable continuation sessions are logged clearly before creating a fresh replacement session with the full task prompt and current attempt event.
 - [x] 4.8 Persist the updated session after successful, failed, or input-needed Agent execution when a session was opened.
 
 ## 5. Tests

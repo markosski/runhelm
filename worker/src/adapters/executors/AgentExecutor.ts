@@ -16,7 +16,7 @@ import { PiResourceToolProvider } from './agent_tools/PiResourceToolProvider.js'
 import { selectApprovedTools } from './agent_tools/toolSelection.js';
 import { selectApprovedSkills } from './agent_tools/skillSelection.js';
 import type { SessionStore } from '../../core/ports/SessionStore.js';
-import { nativeSessionDir, persistSessionBestEffort, writeTempSessionFile } from '../../core/ports/SessionStore.js';
+import { nativeSessionDir, persistSessionBestEffort, materializePiSessionFile } from '../../core/ports/SessionStore.js';
 import { agentSessionKey } from '../../core/models/AgentSession.js';
 
 function extractAssistantText(agent: Agent): string {
@@ -145,21 +145,31 @@ export class AgentExecutor implements TaskExecutor {
         let reuseSession = ('Agent' in payload.task.kind && payload.task.kind.Agent.reuse_session !== false) ? true : false;
 
         if (reuseSession) {
-            let attempt = payload.execution_metadata?.generation_index;
+            let attempt = payload.execution_metadata?.generation_index ?? 1;
 
-            if (attempt != undefined && attempt > 1) {
-                logger.info("Will attempt to fetch session");
+            if (attempt > 1) {
                 try {
                     let session_data = await sessionStore.load(sessionKey);
                     if (session_data !== null) {
-                        logger.info("Loading existing agent session");
                         sessionReused = true;
-                        const tempSessionFilePath = await writeTempSessionFile(sessionKey, session_data.content);
+                        const tempSessionFilePath = await materializePiSessionFile(sessionKey, session_data.content);
                         sessionManager = SessionManager.open(tempSessionFilePath);
+                        logger.info(
+                            { sessionKey, attempt },
+                            "Loaded existing agent session"
+                        )
+                    } else {
+                        logger.warn(
+                            { sessionKey, attempt },
+                            "Agent session missing; creating fresh session"
+                        )
                     }
 
                 } catch (error: unknown) {
-                    logger.warn("Could not load agent session");
+                    logger.warn(
+                        { sessionKey, attempt, error },
+                        "Agent session unreadable; creating fresh session"
+                    );
                 }
             }
         }
