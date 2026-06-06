@@ -18,11 +18,11 @@ test('derives the same logical session key for a human-input continuation-shaped
 
     assert.equal(
         serializeAgentSessionKey(agentSessionKey(initialPayload)),
-        'workflow-1/draft-response'
+        'workflow-1$draft-response'
     );
     assert.equal(
         serializeAgentSessionKey(agentSessionKey(humanInputPayload)),
-        'workflow-1/draft-response'
+        'workflow-1$draft-response'
     );
 });
 
@@ -51,11 +51,21 @@ test('derives the same logical session key for a verifier-feedback continuation-
 
     assert.equal(
         serializeAgentSessionKey(agentSessionKey(initialPayload)),
-        'workflow-1/draft-response'
+        'workflow-1$draft-response'
     );
     assert.equal(
         serializeAgentSessionKey(agentSessionKey(verifierFeedbackPayload)),
-        'workflow-1/draft-response'
+        'workflow-1$draft-response'
+    );
+});
+
+test('serializes logical session key without filesystem path separators', () => {
+    assert.equal(
+        serializeAgentSessionKey({
+            workflowInstId: 'workflow-1',
+            taskId: 'draftresponse',
+        }),
+        'workflow-1$draftresponse'
     );
 });
 

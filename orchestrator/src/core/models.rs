@@ -291,3 +291,66 @@ pub fn verifier_decision_schema() -> serde_json::Value {
         "additionalProperties": true
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn agent_reuse_session_defaults_to_true_when_omitted() {
+        let task: TaskDef = serde_json::from_value(json!({
+            "id": "agenttask",
+            "kind": {
+                "Agent": {
+                    "model_id": "test/model",
+                    "provider_url": "",
+                    "prompt": "Do the work.",
+                    "tools": [],
+                    "skills": [],
+                    "ask": false,
+                    "schema_failure_retry_times": 0
+                }
+            },
+            "output_schema": null,
+            "required_credentials": []
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            task.kind,
+            TaskTypeDef::Agent {
+                reuse_session: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn agent_reuse_session_serializes_explicit_false() {
+        let task: TaskDef = serde_json::from_value(json!({
+            "id": "agenttask",
+            "kind": {
+                "Agent": {
+                    "model_id": "test/model",
+                    "provider_url": "",
+                    "prompt": "Do the work.",
+                    "tools": [],
+                    "skills": [],
+                    "ask": false,
+                    "schema_failure_retry_times": 0,
+                    "reuse_session": false
+                }
+            },
+            "output_schema": null,
+            "required_credentials": []
+        }))
+        .unwrap();
+
+        let serialized = serde_json::to_value(task).unwrap();
+        assert_eq!(
+            serialized["kind"]["Agent"]["reuse_session"],
+            json!(false)
+        );
+    }
+}

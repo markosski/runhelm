@@ -1,4 +1,9 @@
-## ADDED Requirements
+# Capability: agent-session-persistence
+
+## Purpose
+Defines durable Agent session storage and continuation semantics for Agent task execution.
+
+## Requirements
 
 ### Requirement: Durable Agent Session Store
 The system SHALL provide a durable Agent session store that can create, load, and persist Agent conversation sessions using stable RunHelm session keys.

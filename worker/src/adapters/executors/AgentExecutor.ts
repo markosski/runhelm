@@ -1,9 +1,9 @@
 import type { TaskExecutor, JsonValue, TaskExecutionResult } from '../../core/ports/TaskExecutor.js';
 import type { TaskExecutionPayload } from '../../core/models/TaskDef.js';
 import type { CredentialsPort } from '../../core/ports/CredentialsPort.js';
-import { getModel, streamSimple } from '@earendil-works/pi-ai';
+import { getModel } from '@earendil-works/pi-ai';
 import { Agent } from '@earendil-works/pi-agent-core';
-import { createAgentSession, createCodingTools, formatSkillsForPrompt, SessionManager } from '@earendil-works/pi-coding-agent';
+import { AuthStorage, createAgentSession, createCodingTools, formatSkillsForPrompt, SessionManager, type Skill } from '@earendil-works/pi-coding-agent';
 import { Ajv } from 'ajv';
 import { logger } from '../../utils/logger.js';
 import { createBraveSearchTool } from './agent_tools/braveSearchTool.js';
@@ -95,6 +95,158 @@ function parseRetryTimes(value: unknown): number {
     return Math.max(0, Math.floor(value));
 }
 
+export function shouldReuseAgentSession(payload: TaskExecutionPayload): boolean {
+    return 'Agent' in payload.task.kind && payload.task.kind.Agent.reuse_session !== false;
+}
+
+export function shouldLoadExistingAgentSession(payload: TaskExecutionPayload): boolean {
+    const attempt = payload.execution_metadata?.generation_index ?? 1;
+    return shouldReuseAgentSession(payload) && attempt > 1;
+}
+
+export function sessionLoadDiagnostic(
+    problem: 'missing' | 'unreadable',
+    sessionKey: unknown,
+    attempt: number,
+    error?: unknown
+): { fields: Record<string, unknown>; message: string } {
+    return {
+        fields: problem === 'unreadable'
+            ? { sessionKey, attempt, error }
+            : { sessionKey, attempt },
+        message: problem === 'unreadable'
+            ? 'Agent session unreadable; creating fresh session'
+            : 'Agent session missing; creating fresh session',
+    };
+}
+
+type PromptTool = {
+    name: string;
+    description: string;
+};
+
+type ExecutionLoopContext = NonNullable<NonNullable<TaskExecutionPayload['execution_metadata']>['loop_context']>;
+
+export type AgentPromptParts = {
+    systemContext: string;
+    freshContext: string;
+    currentEventContext: string;
+    finalPrompt: string;
+};
+
+export function buildAgentPromptParts(args: {
+    prompt: string;
+    inputs: unknown[];
+    loopContext: ExecutionLoopContext | undefined;
+    inputProvided: string | undefined;
+    outputSchema: unknown | undefined;
+    ask: boolean;
+    sessionReused: boolean;
+    approvedTools: PromptTool[];
+    approvedSkills: Skill[];
+    canLoadSkills: boolean;
+}): AgentPromptParts {
+    let systemContext = "";
+    let freshContext = "";
+    let currentEventContext = "";
+
+    if (args.inputs.length > 0) {
+        freshContext += `\n\nUpstream task data:\n`;
+        for (const input of args.inputs) {
+            freshContext += `${JSON.stringify(input, null, 2)}\n`;
+        }
+    }
+
+    const loopContext = args.loopContext;
+    const latestFeedback = loopContext?.feedback_history?.at(-1)?.feedback;
+    const feedbackHistory = loopContext?.feedback_history?.slice(0, -1) || [];
+
+    if (latestFeedback || loopContext?.previous_output !== undefined) {
+        currentEventContext += `
+                \n\n
+                VERIFIER-GUIDED RETRY:
+                This execution includes verifier feedback from a previous rejected generation.
+                Treat that feedback as orchestration guidance for revising your result.
+                The most recent feedback identifies the current issue to fix.
+                Prior feedback records earlier corrections to preserve when applicable.
+                Do not include the feedback text in the final output unless the task explicitly asks for it.\n`;
+
+        if (latestFeedback) {
+            currentEventContext += `
+                    \n\n
+                    **Most recent verifier feedback:**\n
+                    ${latestFeedback}\n`;
+        }
+
+        if (!args.sessionReused && feedbackHistory.length > 0) {
+            currentEventContext += `
+                    \n\n
+                    **Prior verifier feedback history:**\n`;
+
+            feedbackHistory.forEach((entry) => {
+                currentEventContext += `- Generation ${entry.generation}: ${entry.feedback}\n`;
+            });
+        }
+
+        if (!args.sessionReused && loopContext?.previous_output !== undefined) {
+            currentEventContext += `
+                    \n\n
+                    **Most recent previous output from this same task:**\n
+                    ${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
+        }
+    }
+
+    if (args.inputProvided) {
+        currentEventContext += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${args.inputProvided}\n`;
+    }
+
+    if (!args.sessionReused) {
+        const toolAvailabilityPrompt = args.approvedTools.length > 0
+            ? `You have access to the following approved tools:\n${args.approvedTools.map((approvedTool) => `- ${approvedTool.name} - ${approvedTool.description}`).join('\n')}`
+            : "You do not have access to any tools for this task.";
+
+        const skillsPrompt = args.approvedSkills.length > 0 && args.canLoadSkills
+            ? `\n\n${formatSkillsForPrompt(args.approvedSkills)}`
+            : '';
+
+        systemContext += `
+                ${args.ask ? "CRITICAL: If you cannot complete the task because you need more information or clarification from the user, you MUST call the 'ask_user' tool. DO NOT return a JSON object with a response that asks a question. Calling 'ask_user' is the ONLY way to request more information." : ""}
+
+                You are an autonomous AI agent.
+                ${toolAvailabilityPrompt}
+                ${skillsPrompt}
+
+                NOTE: You are allowed and encouraged to use approved tools to gather information FIRST before producing the final response. 
+                DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
+                `;
+    }
+
+    if (args.outputSchema) {
+        currentEventContext += `
+            \n\n
+            IMPORTANT: Your FINAL response must be valid JSON that adheres to the following schema:
+            \n
+            ${JSON.stringify(args.outputSchema, null, 2)}
+
+            CRITICAL: When you have gathered all information and are ready to provide the final answer, you MUST output ONLY the raw JSON object. 
+            - Do NOT include any conversational text or explanations.
+            - Do NOT include any preamble like "Here is the result".
+            - Do NOT wrap the JSON in markdown code blocks (e.g., no \`\`\`json).
+            - The entire response must be parseable by JSON.parse().
+            If output_schema validation fails, you will be asked to correct the JSON.
+            ${args.ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool (if enabled) instead of returning JSON." : ""}`;
+    }
+
+    return {
+        systemContext,
+        freshContext,
+        currentEventContext,
+        finalPrompt: args.sessionReused
+            ? currentEventContext
+            : systemContext + args.prompt + freshContext + currentEventContext,
+    };
+}
+
 export class AgentExecutor implements TaskExecutor {
     async execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort, sessionStore: SessionStore): Promise<TaskExecutionResult> {
         const agentDef = (payload.task.kind as any).Agent;
@@ -128,6 +280,9 @@ export class AgentExecutor implements TaskExecutor {
         const parts = modelIdFull.split('/');
         const providerName = parts[0];
         const modelName = parts.slice(1).join('/');
+        if (!providerName) {
+            throw new Error(`Invalid model_id format: '${modelIdFull}'. Expected a non-empty provider name.`);
+        }
 
         let model = getModel(providerName as any, modelName as any);
         if (!model) {
@@ -142,12 +297,12 @@ export class AgentExecutor implements TaskExecutor {
         let sessionKey = agentSessionKey(payload);
         let sessionReused = false;
         let sessionManager = null;
-        let reuseSession = ('Agent' in payload.task.kind && payload.task.kind.Agent.reuse_session !== false) ? true : false;
+        let reuseSession = shouldReuseAgentSession(payload);
 
         if (reuseSession) {
             let attempt = payload.execution_metadata?.generation_index ?? 1;
 
-            if (attempt > 1) {
+            if (shouldLoadExistingAgentSession(payload)) {
                 try {
                     let session_data = await sessionStore.load(sessionKey);
                     if (session_data !== null) {
@@ -159,17 +314,13 @@ export class AgentExecutor implements TaskExecutor {
                             "Loaded existing agent session"
                         )
                     } else {
-                        logger.warn(
-                            { sessionKey, attempt },
-                            "Agent session missing; creating fresh session"
-                        )
+                        const diagnostic = sessionLoadDiagnostic('missing', sessionKey, attempt);
+                        logger.warn(diagnostic.fields, diagnostic.message)
                     }
 
                 } catch (error: unknown) {
-                    logger.warn(
-                        { sessionKey, attempt, error },
-                        "Agent session unreadable; creating fresh session"
-                    );
+                    const diagnostic = sessionLoadDiagnostic('unreadable', sessionKey, attempt, error);
+                    logger.warn(diagnostic.fields, diagnostic.message);
                 }
             }
         }
@@ -179,15 +330,19 @@ export class AgentExecutor implements TaskExecutor {
             sessionManager = SessionManager.create(process.cwd(), nativeSessionDir())
         }
 
+        const authStorage = AuthStorage.inMemory();
+        if (apiKey) {
+            authStorage.setRuntimeApiKey(providerName, apiKey);
+        }
+
         // Consider moving tool registration in here
         const { session } = await createAgentSession({
             sessionManager,
             model,
+            authStorage,
         });
 
         const agent = session.agent;
-        agent.streamFn = streamSimple;
-        agent.getApiKey = () => apiKey
 
         // Tool use event handling
         agent.subscribe((event) => {
@@ -248,106 +403,27 @@ export class AgentExecutor implements TaskExecutor {
         agent.state.tools = approvedTools.map((approvedTool) => approvedTool.tool);
         // END - Configure Agent
 
-        let systemContext = "";
-        let freshContext = "";
-        let currentEventContext = "";
-        let finalPrompt = "";
-
-        if (payload.inputs.length > 0) {
-            freshContext += `\n\nUpstream task data:\n`;
-            for (const input of payload.inputs) {
-                freshContext += `${JSON.stringify(input, null, 2)}\n`;
-            }
-        }
-
         const loopContext = payload.execution_metadata?.loop_context;
-        const latestFeedback = loopContext?.feedback_history?.at(-1)?.feedback;
-        const feedbackHistory = loopContext?.feedback_history?.slice(0, -1) || [];
-
-        if (latestFeedback || loopContext?.previous_output !== undefined) {
+        if (loopContext?.feedback_history?.at(-1)?.feedback || loopContext?.previous_output !== undefined) {
             logger.info('[AgentExecutor] Verifier feedback provided')
-
-            currentEventContext += `
-                \n\n
-                VERIFIER-GUIDED RETRY:
-                This execution includes verifier feedback from a previous rejected generation.
-                Treat that feedback as orchestration guidance for revising your result.
-                The most recent feedback identifies the current issue to fix.
-                Prior feedback records earlier corrections to preserve when applicable.
-                Do not include the feedback text in the final output unless the task explicitly asks for it.\n`;
-
-            if (latestFeedback) {
-                currentEventContext += `
-                    \n\n
-                    **Most recent verifier feedback:**\n
-                    ${latestFeedback}\n`;
-            }
-            if (!sessionReused && feedbackHistory.length > 0) {
-                currentEventContext += `
-                    \n\n
-                    **Prior verifier feedback history:**\n`;
-
-                feedbackHistory.forEach((entry) => {
-                    currentEventContext += `- Generation ${entry.generation}: ${entry.feedback}\n`;
-                });
-            }
-
-            if (!sessionReused && loopContext.previous_output !== undefined) {
-                currentEventContext += `
-                    \n\n
-                    **Most recent previous output from this same task:**\n
-                    ${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
-            }
         }
 
         if (payload.input_provided) {
             logger.info('[AgentExecutor] User response provided')
-            currentEventContext += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${payload.input_provided}\n`;
         }
 
-        if (!sessionReused) {
-            const toolAvailabilityPrompt = approvedTools.length > 0
-                ? `You have access to the following approved tools:\n${approvedTools.map((approvedTool) => `- ${approvedTool.name} - ${approvedTool.description}`).join('\n')}`
-                : "You do not have access to any tools for this task.";
-
-            const skillsPrompt = approvedSkills.length > 0 && canLoadSkills
-                ? `\n\n${formatSkillsForPrompt(approvedSkills)}`
-                : '';
-
-            systemContext += `
-                ${ask ? "CRITICAL: If you cannot complete the task because you need more information or clarification from the user, you MUST call the 'ask_user' tool. DO NOT return a JSON object with a response that asks a question. Calling 'ask_user' is the ONLY way to request more information." : ""}
-
-                You are an autonomous AI agent.
-                ${toolAvailabilityPrompt}
-                ${skillsPrompt}
-
-                NOTE: You are allowed and encouraged to use approved tools to gather information FIRST before producing the final response. 
-                DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
-                `;
-        }
-
-        if (payload.task.output_schema) {
-            systemContext += `
-            \n\n
-            IMPORTANT: Your FINAL response must be valid JSON that adheres to the following schema:
-            \n
-            ${JSON.stringify(payload.task.output_schema, null, 2)}
-
-            CRITICAL: When you have gathered all information and are ready to provide the final answer, you MUST output ONLY the raw JSON object. 
-            - Do NOT include any conversational text or explanations.
-            - Do NOT include any preamble like "Here is the result".
-            - Do NOT wrap the JSON in markdown code blocks (e.g., no \`\`\`json).
-            - The entire response must be parseable by JSON.parse().
-            If output_schema validation fails, you will be asked to correct the JSON.
-            ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool (if enabled) instead of returning JSON." : ""}`;
-        }
-
-        // If session re-used do not use initial prompt anymore
-        if (sessionReused) {
-            finalPrompt = systemContext + currentEventContext;
-        } else {
-            finalPrompt = systemContext + prompt + freshContext + currentEventContext;
-        }
+        const { finalPrompt } = buildAgentPromptParts({
+            prompt,
+            inputs: payload.inputs,
+            loopContext,
+            inputProvided: payload.input_provided,
+            outputSchema: payload.task.output_schema,
+            ask,
+            sessionReused,
+            approvedTools,
+            approvedSkills,
+            canLoadSkills,
+        });
 
         logger.info(
             {

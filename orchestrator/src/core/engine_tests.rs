@@ -9,6 +9,7 @@ use serde_json::Number;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 fn make_engine() -> WorkflowEngine {
     WorkflowEngine::new(
@@ -92,6 +93,70 @@ impl ExecutorPort for AlwaysContinueVerifierExecutor {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedExecution {
+    workflow_inst_id: String,
+    task_id: String,
+    generation_index: u32,
+    reuse_session: Option<bool>,
+    feedback_count: usize,
+}
+
+struct RecordingContinueExecutor {
+    records: StdMutex<Vec<RecordedExecution>>,
+}
+
+impl RecordingContinueExecutor {
+    fn new() -> Self {
+        Self {
+            records: StdMutex::new(vec![]),
+        }
+    }
+
+    fn records(&self) -> Vec<RecordedExecution> {
+        self.records.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ExecutorPort for RecordingContinueExecutor {
+    async fn execute(
+        &self,
+        workflow_inst_id: &str,
+        task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        metadata: &ExecutionMetadata,
+    ) -> anyhow::Result<ExecutionResult> {
+        let reuse_session = match &task.kind {
+            TaskTypeDef::Agent { reuse_session, .. } => Some(*reuse_session),
+            _ => None,
+        };
+        self.records.lock().unwrap().push(RecordedExecution {
+            workflow_inst_id: workflow_inst_id.to_string(),
+            task_id: task.id.clone(),
+            generation_index: metadata.generation_index,
+            reuse_session,
+            feedback_count: metadata
+                .loop_context
+                .as_ref()
+                .map(|context| context.feedback_history.len())
+                .unwrap_or(0),
+        });
+
+        if task_verifier(task).is_some() {
+            if metadata.generation_index == 1 {
+                return Ok(ExecutionResult::Success(json!({
+                    "decision": "continue",
+                    "feedback": "revise task-a"
+                })));
+            }
+            return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
+        }
+
+        Ok(ExecutionResult::Success(json!({ "ok": true })))
+    }
+}
+
 fn task_def(id: &str, output_schema: serde_json::Value) -> TaskDef {
     TaskDef {
         id: id.to_string(),
@@ -103,6 +168,27 @@ fn task_def(id: &str, output_schema: serde_json::Value) -> TaskDef {
         timeout_secs: None,
         input_schemas: vec![],
         output_schema: Some(output_schema),
+        required_credentials: vec![],
+    }
+}
+
+fn agent_task(id: &str, reuse_session: bool) -> TaskDef {
+    TaskDef {
+        id: id.to_string(),
+        kind: TaskTypeDef::Agent {
+            model_id: "test/model".to_string(),
+            provider_url: "".to_string(),
+            prompt: "draft".to_string(),
+            tools: vec![],
+            skills: vec![],
+            ask: false,
+            schema_failure_retry_times: Number::from(0),
+            reuse_session,
+        },
+        control: None,
+        timeout_secs: None,
+        input_schemas: vec![],
+        output_schema: Some(json!({ "type": "object" })),
         required_credentials: vec![],
     }
 }
@@ -511,6 +597,57 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
             task_id: "task-a".to_string(),
             generation: 2,
         }]
+    );
+}
+
+#[tokio::test]
+async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
+    let executor = Arc::new(RecordingContinueExecutor::new());
+    let engine = make_engine_with_executor(executor.clone());
+    let def = WorkflowDef {
+        id: "def-agent-session-identity".to_string(),
+        tasks: vec![
+            agent_task("task-a", true),
+            agent_verifier_task("verify", Some("task-a")),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "verify".to_string(),
+        }],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let agent_records: Vec<_> = executor
+        .records()
+        .into_iter()
+        .filter(|record| record.task_id == "task-a")
+        .collect();
+
+    assert_eq!(agent_records.len(), 2);
+    assert_eq!(
+        agent_records[0],
+        RecordedExecution {
+            workflow_inst_id: instance_id.clone(),
+            task_id: "task-a".to_string(),
+            generation_index: 1,
+            reuse_session: Some(true),
+            feedback_count: 0,
+        }
+    );
+    assert_eq!(
+        agent_records[1],
+        RecordedExecution {
+            workflow_inst_id: instance_id,
+            task_id: "task-a".to_string(),
+            generation_index: 2,
+            reuse_session: Some(true),
+            feedback_count: 1,
+        }
     );
 }
 

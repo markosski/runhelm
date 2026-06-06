@@ -61,6 +61,7 @@ tasks:
         skills: []
         ask: false
         schema_failure_retry_times: 2
+        reuse_session: false
     control:
       verifier:
         max_iterations: 3

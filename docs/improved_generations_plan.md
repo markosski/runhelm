@@ -42,6 +42,8 @@ Create a new spec-style document at `docs/task-attempts-and-feedback-generations
   - Human `ask` does not mean the previous attempt was bad; it means incomplete.
   - Verifier `continue` means reviewed work was unsatisfied.
   - Both create new attempts, but with different cause metadata.
+  - Durable Agent sessions can preserve conversational continuity for Agent retries and human-input resumes. When a reusable session is loaded, the worker appends only the current event, such as the submitted human response or latest verifier feedback, instead of reinjecting the complete prior prompt history.
+  - Verifier Agent tasks should normally opt out of session reuse with `reuse_session: false` so each verifier attempt evaluates the latest upstream output as a fresh judgment.
 
 ## Interface Notes
 
