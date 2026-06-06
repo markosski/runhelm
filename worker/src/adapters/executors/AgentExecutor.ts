@@ -3,7 +3,7 @@ import type { TaskExecutionPayload } from '../../core/models/TaskDef.js';
 import type { CredentialsPort } from '../../core/ports/CredentialsPort.js';
 import { getModel, streamSimple } from '@earendil-works/pi-ai';
 import { Agent } from '@earendil-works/pi-agent-core';
-import { createCodingTools, formatSkillsForPrompt } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, createCodingTools, formatSkillsForPrompt, SessionManager } from '@earendil-works/pi-coding-agent';
 import { Ajv } from 'ajv';
 import { logger } from '../../utils/logger.js';
 import { createBraveSearchTool } from './agent_tools/braveSearchTool.js';
@@ -15,6 +15,9 @@ import { ToolRegistry } from './agent_tools/ToolRegistry.js';
 import { PiResourceToolProvider } from './agent_tools/PiResourceToolProvider.js';
 import { selectApprovedTools } from './agent_tools/toolSelection.js';
 import { selectApprovedSkills } from './agent_tools/skillSelection.js';
+import type { SessionStore } from '../../core/ports/SessionStore.js';
+import { nativeSessionDir, persistSessionBestEffort, writeTempSessionFile } from '../../core/ports/SessionStore.js';
+import { agentSessionKey } from '../../core/models/AgentSession.js';
 
 function extractAssistantText(agent: Agent): string {
     let resultText = '';
@@ -93,30 +96,17 @@ function parseRetryTimes(value: unknown): number {
 }
 
 export class AgentExecutor implements TaskExecutor {
-    async execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort): Promise<TaskExecutionResult> {
+    async execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort, sessionStore: SessionStore): Promise<TaskExecutionResult> {
         const agentDef = (payload.task.kind as any).Agent;
         const ask = (agentDef.ask ?? (payload.task as any).ask) === true;
         const modelIdFull = agentDef.model_id as string;
         const providerUrl = agentDef.provider_url as string;
         const prompt = agentDef.prompt as string;
+
         logger.info(`[AgentExecutor] Running agent model: ${modelIdFull} with provider: ${providerUrl}`);
 
         if (!modelIdFull.includes('/')) {
             throw new Error(`Invalid model_id format: '${modelIdFull}'. Expected format 'provider/model' (e.g., 'google/gemini-2.5-flash').`);
-        }
-
-        const parts = modelIdFull.split('/');
-        const providerName = parts[0];
-        const modelName = parts.slice(1).join('/');
-
-        let model = getModel(providerName as any, modelName as any);
-        if (!model) {
-            throw new Error(`Model not found for ${providerName}/${modelName}`);
-        }
-
-        // Override the baseUrl with the one provided in the task definition
-        if (providerUrl) {
-            model = { ...model, baseUrl: providerUrl };
         }
 
         let apiKey: string | undefined = undefined;
@@ -134,47 +124,62 @@ export class AgentExecutor implements TaskExecutor {
             }
         }
 
-        let contextPrompt = "";
+        // START - Configure Agent
+        const parts = modelIdFull.split('/');
+        const providerName = parts[0];
+        const modelName = parts.slice(1).join('/');
 
-        if (payload.inputs.length > 0) {
-            contextPrompt += `\n\nUpstream task data:\n`;
-            for (const input of payload.inputs) {
-                contextPrompt += `${JSON.stringify(input, null, 2)}\n`;
-            }
+        let model = getModel(providerName as any, modelName as any);
+        if (!model) {
+            throw new Error(`Model not found for ${providerName}/${modelName}`);
         }
 
-        const loopContext = payload.execution_metadata?.loop_context;
-        const latestFeedback = loopContext?.feedback_history?.at(-1)?.feedback;
-        const feedbackHistory = loopContext?.feedback_history?.slice(0, -1) || [];
-        if (latestFeedback || loopContext?.previous_output !== undefined) {
-            logger.info('[AgentExecutor] Verifier feedback provided')
-            contextPrompt += `\n\nVERIFIER-GUIDED RETRY CONTEXT:\n`;
-            contextPrompt += `This task is being re-executed because a downstream verifier rejected the previous generation. Use the verifier feedback to revise the result, preserve earlier corrections from the feedback history, and use the previous output as the most recent version produced by this same task.\n`;
-            if (latestFeedback) {
-                contextPrompt += `\nMost recent verifier feedback:\n${latestFeedback}\n`;
-            }
-            if (feedbackHistory.length > 0) {
-                contextPrompt += `\nPrior verifier feedback history:\n`;
-                feedbackHistory.forEach((entry) => {
-                    contextPrompt += `- Generation ${entry.generation}: ${entry.feedback}\n`;
-                });
-            }
-            if (loopContext.previous_output !== undefined) {
-                contextPrompt += `\nMost recent previous output from this same task:\n${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
-            }
+        // Override the baseUrl with the one provided in the task definition
+        if (providerUrl) {
+            model = { ...model, baseUrl: providerUrl };
         }
 
-        if (payload.input_provided) {
-            logger.info('[AgentExecutor] User response provided')
-            contextPrompt += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${payload.input_provided}\n`;
+        let sessionKey = agentSessionKey(payload);
+        let sessionReused = false;
+        let sessionManager = null;
+        let reuseSession = ('Agent' in payload.task.kind && payload.task.kind.Agent.reuse_session !== false) ? true : false;
+
+        if (reuseSession) {
+            let attempt = payload.execution_metadata?.generation_index;
+
+            if (attempt != undefined && attempt > 1) {
+                logger.info("Will attempt to fetch session");
+                try {
+                    let session_data = await sessionStore.load(sessionKey);
+                    if (session_data !== null) {
+                        logger.info("Loading existing agent session");
+                        sessionReused = true;
+                        const tempSessionFilePath = await writeTempSessionFile(sessionKey, session_data.content);
+                        sessionManager = SessionManager.open(tempSessionFilePath);
+                    }
+
+                } catch (error: unknown) {
+                    logger.warn("Could not load agent session");
+                }
+            }
+        }
+        
+        if (sessionManager == null) {
+            logger.info("Creating new agent session");
+            sessionManager = SessionManager.create(process.cwd(), nativeSessionDir())
         }
 
-        const finalPrompt = prompt + contextPrompt;
-        const agentOpts: any = {
-            streamFn: streamSimple,
-            getApiKey: () => apiKey,
-        };
-        const agent = new Agent(agentOpts);
+        // Consider moving tool registration in here
+        const { session } = await createAgentSession({
+            sessionManager,
+            model,
+        });
+
+        const agent = session.agent;
+        agent.streamFn = streamSimple;
+        agent.getApiKey = () => apiKey
+
+        // Tool use event handling
         agent.subscribe((event) => {
             if (event.type === 'tool_execution_start') {
                 logger.info({ toolName: event.toolName, args: event.args }, '[AgentExecutor] Agent tool started');
@@ -186,6 +191,7 @@ export class AgentExecutor implements TaskExecutor {
             }
         });
 
+        // Tool setup
         const toolRegistry = new ToolRegistry();
         toolRegistry.registerTools([
             createFetchUrlTool(),
@@ -225,44 +231,74 @@ export class AgentExecutor implements TaskExecutor {
             throw new Error(`Requested agent skills are not available: ${unavailableApprovedSkillNames.join(', ')}`);
         }
 
-        const toolAvailabilityPrompt = approvedTools.length > 0
-            ? `You have access to the following approved tools:\n${approvedTools.map((approvedTool) => `- ${approvedTool.name} - ${approvedTool.description}`).join('\n')}`
-            : "You do not have access to any tools for this task.";
         const canLoadSkills = approvedTools.some((approvedTool) => approvedTool.name === 'read');
         if (approvedSkills.length > 0 && !canLoadSkills) {
             throw new Error('Agent skills require the read tool so the agent can load SKILL.md content');
         }
+        agent.state.tools = approvedTools.map((approvedTool) => approvedTool.tool);
+        // END - Configure Agent
 
-        const skillsPrompt = approvedSkills.length > 0 && canLoadSkills
-            ? `\n\n${formatSkillsForPrompt(approvedSkills)}`
-            : '';
+        let systemContext = "";
+        let newContext = "";
+        let finalPrompt = "";
 
-        agent.state.model = model;
-        agent.state.systemPrompt = `
-            ${ask ? "CRITICAL: If you cannot complete the task because you need more information or clarification from the user, you MUST call the 'ask_user' tool. DO NOT return a JSON object with a response that asks a question. Calling 'ask_user' is the ONLY way to request more information." : ""}
+        if (payload.inputs.length > 0) {
+            newContext += `\n\nUpstream task data:\n`;
+            for (const input of payload.inputs) {
+                newContext += `${JSON.stringify(input, null, 2)}\n`;
+            }
+        }
 
-            You are an autonomous AI agent.
-            ${toolAvailabilityPrompt}
-            ${skillsPrompt}
-
-            Use the approved tools available to you to gather the needed information.
-            DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
-            `;
+        const loopContext = payload.execution_metadata?.loop_context;
+        const latestFeedback = loopContext?.feedback_history?.at(-1)?.feedback;
+        const feedbackHistory = loopContext?.feedback_history?.slice(0, -1) || [];
 
         if (latestFeedback || loopContext?.previous_output !== undefined) {
-            agent.state.systemPrompt += `
-            \n\n
-            VERIFIER-GUIDED RETRY:
-            This execution includes verifier feedback from a previous rejected generation.
-            Treat that feedback as orchestration guidance for revising your result.
-            The most recent feedback identifies the current issue to fix.
-            Prior feedback records earlier corrections to preserve when applicable.
-            Do not include the feedback text in the final output unless the task explicitly asks for it.
-            `;
+            logger.info('[AgentExecutor] Verifier feedback provided')
+            newContext += `\n\nVERIFIER-GUIDED RETRY CONTEXT:\n`;
+            newContext += `This task is being re-executed because a downstream verifier rejected the previous generation. Use the verifier feedback to revise the result, preserve earlier corrections from the feedback history, and use the previous output as the most recent version produced by this same task.\n`;
+            if (latestFeedback) {
+                newContext += `\nMost recent verifier feedback:\n${latestFeedback}\n`;
+            }
+            if (feedbackHistory.length > 0) {
+                newContext += `\nPrior verifier feedback history:\n`;
+                feedbackHistory.forEach((entry) => {
+                    newContext += `- Generation ${entry.generation}: ${entry.feedback}\n`;
+                });
+            }
+            if (loopContext.previous_output !== undefined) {
+                newContext += `\nMost recent previous output from this same task:\n${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
+            }
+        }
+
+        if (payload.input_provided) {
+            logger.info('[AgentExecutor] User response provided')
+            newContext += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${payload.input_provided}\n`;
+        }
+
+        if (!sessionReused) {
+            const toolAvailabilityPrompt = approvedTools.length > 0
+                ? `You have access to the following approved tools:\n${approvedTools.map((approvedTool) => `- ${approvedTool.name} - ${approvedTool.description}`).join('\n')}`
+                : "You do not have access to any tools for this task.";
+
+            const skillsPrompt = approvedSkills.length > 0 && canLoadSkills
+                ? `\n\n${formatSkillsForPrompt(approvedSkills)}`
+                : '';
+
+            systemContext += `
+                ${ask ? "CRITICAL: If you cannot complete the task because you need more information or clarification from the user, you MUST call the 'ask_user' tool. DO NOT return a JSON object with a response that asks a question. Calling 'ask_user' is the ONLY way to request more information." : ""}
+
+                You are an autonomous AI agent.
+                ${toolAvailabilityPrompt}
+                ${skillsPrompt}
+
+                NOTE: You are allowed and encouraged to use approved tools to gather information FIRST before producing the final response. 
+                DO NOT ask for permission before using your approved tools. Execute them right away and use the results to answer the user.
+                `;
         }
 
         if (payload.task.output_schema) {
-            agent.state.systemPrompt += `
+            systemContext += `
             \n\n
             IMPORTANT: Your FINAL response must be valid JSON that adheres to the following schema:
             \n
@@ -277,10 +313,24 @@ export class AgentExecutor implements TaskExecutor {
             ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool (if enabled) instead of returning JSON." : ""}`;
         }
 
-        agent.state.systemPrompt += `
+        if (latestFeedback || loopContext?.previous_output !== undefined) {
+            newContext += `
             \n\n
-            NOTE: You are allowed and encouraged to use approved tools to gather information FIRST before producing the final response. 
-        `;
+            VERIFIER-GUIDED RETRY:
+            This execution includes verifier feedback from a previous rejected generation.
+            Treat that feedback as orchestration guidance for revising your result.
+            The most recent feedback identifies the current issue to fix.
+            Prior feedback records earlier corrections to preserve when applicable.
+            Do not include the feedback text in the final output unless the task explicitly asks for it.
+            `;
+        }
+
+        // If session re-used do not use initial prompt anymore
+        if (sessionReused) {
+            finalPrompt = systemContext + newContext;
+        } else {
+            finalPrompt = systemContext + prompt + newContext;
+        }
 
         logger.info(
             {
@@ -290,87 +340,85 @@ export class AgentExecutor implements TaskExecutor {
             "[AgentExecutor] Final agent prompt"
         );
 
-        agent.state.tools = approvedTools.map((approvedTool) => approvedTool.tool);
-
         try {
-            await agent.prompt(finalPrompt);
+            await session.prompt(finalPrompt);
+
+            if (inputNeededQuestion) {
+                return { status: 'input_needed', description: inputNeededQuestion };
+            }
+
+            if (agent.state.errorMessage) {
+                throw new Error(`Agent failed: ${agent.state.errorMessage}`);
+            }
+
+            if (payload.task.output_schema) {
+                const retryTimes = parseRetryTimes(agentDef.schema_failure_retry_times);
+                const ajv = new Ajv();
+                const validate = ajv.compile(payload.task.output_schema);
+
+                for (let attempt = 0; attempt <= retryTimes; attempt++) {
+                    const resultText = extractAssistantText(agent);
+                    let parsed: JsonValue = null;
+                    let parseErrorMessage: string | undefined;
+
+                    const rawExtracted = extractJsonString(resultText);
+                    const repaired = repairJson(rawExtracted);
+
+                    try {
+                        if (repaired) {
+                            parsed = JSON.parse(repaired);
+                        } else if (payload.task.output_schema?.properties?.response) {
+                            // FALLBACK: If no JSON found but we expect a 'response' string, wrap the raw text
+                            logger.info("[AgentExecutor] No JSON found, applying auto-wrap fallback");
+                            parsed = { response: resultText.trim() };
+                        } else {
+                            throw new Error("No JSON object found in response");
+                        }
+                    } catch (err) {
+                        parseErrorMessage = err instanceof Error ? err.message : String(err);
+                    }
+
+                    if (parseErrorMessage === undefined) {
+                        if (validate(parsed)) {
+                            return await finalizeAgentOutput(payload, parsed);
+                        }
+
+                        const validationMessage = ajv.errorsText(validate.errors);
+                        if (attempt >= retryTimes) {
+                            logger.error({ validationMessage, rawResponse: resultText }, "[AgentExecutor] JSON response failed output_schema validation");
+                            throw new Error(`Agent JSON response failed output_schema validation: ${validationMessage}`);
+                        }
+
+                        await session.prompt(`
+                            Your previous response failed output_schema validation:
+                            ${validationMessage}
+
+                            Return ONLY a corrected raw JSON object that satisfies the schema.
+                        `);
+                    } else {
+                        if (attempt >= retryTimes) {
+                            logger.error({ parseErrorMessage, rawResponse: resultText }, "[AgentExecutor] Failed to parse expected JSON");
+                            throw new Error(`Failed to parse JSON response from agent. Expected schema: ${JSON.stringify(payload.task.output_schema)}`);
+                        }
+
+                        await session.prompt(`
+                            Your previous response was not valid parseable JSON:
+                            ${parseErrorMessage}
+
+                            Return ONLY a corrected raw JSON object that satisfies the schema.
+                        `);
+                    }
+                }
+            }
         } catch (e) {
             logger.error({ error: e, message: (e as any).message, stack: (e as any).stack }, "[AgentExecutor] Error during agent execution");
             if (e instanceof InputNeededError || inputNeededQuestion) {
                 return { status: 'input_needed', description: inputNeededQuestion || (e as any).question || "Input needed" };
             }
             throw e;
-        }
-
-        if (inputNeededQuestion) {
-            return { status: 'input_needed', description: inputNeededQuestion };
-        }
-
-        if (agent.state.errorMessage) {
-            throw new Error(`Agent failed: ${agent.state.errorMessage}`);
-        }
-
-        if (payload.task.output_schema) {
-            const retryTimes = parseRetryTimes(agentDef.schema_failure_retry_times);
-            const ajv = new Ajv();
-            const validate = ajv.compile(payload.task.output_schema);
-
-            for (let attempt = 0; attempt <= retryTimes; attempt++) {
-                const resultText = extractAssistantText(agent);
-                let parsed: JsonValue = null;
-                let parseErrorMessage: string | undefined;
-
-                const rawExtracted = extractJsonString(resultText);
-                const repaired = repairJson(rawExtracted);
-
-                try {
-                    if (repaired) {
-                        parsed = JSON.parse(repaired);
-                    } else if (payload.task.output_schema?.properties?.response) {
-                        // FALLBACK: If no JSON found but we expect a 'response' string, wrap the raw text
-                        logger.info("[AgentExecutor] No JSON found, applying auto-wrap fallback");
-                        parsed = { response: resultText.trim() };
-                    } else {
-                        throw new Error("No JSON object found in response");
-                    }
-                } catch (err) {
-                    parseErrorMessage = err instanceof Error ? err.message : String(err);
-                }
-
-                if (parseErrorMessage === undefined) {
-                    if (validate(parsed)) {
-                        return await finalizeAgentOutput(payload, parsed);
-                    }
-
-                    const validationMessage = ajv.errorsText(validate.errors);
-                    if (attempt >= retryTimes) {
-                        logger.error({ validationMessage, rawResponse: resultText }, "[AgentExecutor] JSON response failed output_schema validation");
-                        throw new Error(`Agent JSON response failed output_schema validation: ${validationMessage}`);
-                    }
-
-                    await agent.prompt(`
-                        Your previous response failed output_schema validation:
-                        ${validationMessage}
-
-                        Return ONLY a corrected raw JSON object that satisfies the schema.
-                    `);
-                } else {
-                    if (attempt >= retryTimes) {
-                        logger.error({ parseErrorMessage, rawResponse: resultText }, "[AgentExecutor] Failed to parse expected JSON");
-                        throw new Error(`Failed to parse JSON response from agent. Expected schema: ${JSON.stringify(payload.task.output_schema)}`);
-                    }
-
-                    await agent.prompt(`
-                        Your previous response was not valid parseable JSON:
-                        ${parseErrorMessage}
-
-                        Return ONLY a corrected raw JSON object that satisfies the schema.
-                    `);
-                }
-
-                if (agent.state.errorMessage) {
-                    throw new Error(`Agent failed: ${agent.state.errorMessage}`);
-                }
+        } finally {
+            if (reuseSession) {
+                await persistSessionBestEffort(sessionKey, session, sessionStore);
             }
         }
 

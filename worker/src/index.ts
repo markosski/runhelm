@@ -1,8 +1,10 @@
 import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
 import { FileCredentialsAdapter, defaultCredentialsFilePath } from './adapters/FileCredentialsAdapter.js';
+import { FileSessionStore } from './adapters/FileSessionStore.js';
 import type { TaskExecutionPayload } from './core/models/TaskDef.js';
 import type { CredentialsPort } from './core/ports/CredentialsPort.js';
+import type { SessionStore } from './core/ports/SessionStore.js';
 import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
 
 import * as os from 'os';
@@ -79,6 +81,7 @@ async function processTask(
     payload: TaskExecutionPayload,
     executorFactory: ExecutorFactory,
     credentialsAdapter: CredentialsPort,
+    sessionStore: SessionStore,
     ajv: Ajv
 ): Promise<WorkerExecutionResult> {
     try {
@@ -86,7 +89,7 @@ async function processTask(
 
         // Get the appropriate executor based on task kind
         const executor = executorFactory.getExecutor(payload.task.kind);
-        const result = await executor.execute(payload, credentialsAdapter);
+        const result = await executor.execute(payload, credentialsAdapter, sessionStore);
 
         if (result.status === 'ok') {
             // Validate the result against the output_schema if provided
@@ -217,6 +220,7 @@ async function runWorker(
     workerId: string,
     executorFactory: ExecutorFactory,
     credentialsAdapter: CredentialsPort,
+    sessionStore: SessionStore,
     ajv: Ajv
 ) {
     const baseUrl = (process.env.RUNHELM_ORCHESTRATOR_HTTP_URL || DEFAULT_ORCHESTRATOR_HTTP_URL)
@@ -253,7 +257,7 @@ async function runWorker(
 
         logger.info({ taskId: message.task_id }, "Claimed task dispatch");
         // TODO: consider adding a timeout for task execution and implement a heartbeat mechanism to let the orchestrator know the worker is still alive and working on the task, especially for long-running tasks
-        const result = await processTask(message, executorFactory, credentialsAdapter, ajv);
+        const result = await processTask(message, executorFactory, credentialsAdapter, sessionStore, ajv);
         await postTaskResultUntilAck(baseUrl, message.task_id, result);
         logger.info({ taskId: message.task_id, resultKind: result.kind }, "Task result acknowledged");
     }
@@ -265,11 +269,12 @@ async function main() {
     const executorFactory = new ExecutorFactory();
     const credentialsFilePath = defaultCredentialsFilePath();
     const credentialsAdapter = await FileCredentialsAdapter.fromFile(credentialsFilePath);
+    const sessionStore = new FileSessionStore();
 
     const ajv = new Ajv();
     const workerId = createWorkerId();
 
-    await runWorker(workerId, executorFactory, credentialsAdapter, ajv);
+    await runWorker(workerId, executorFactory, credentialsAdapter, sessionStore, ajv);
 }
 
 main().catch((err) => {

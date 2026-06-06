@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { FileSessionStore } from '../dist/adapters/FileSessionStore.js';
+import { FileSessionStore, writeStringFile } from '../dist/adapters/FileSessionStore.js';
 import { SessionStoreError } from '../dist/core/ports/SessionStore.js';
 
 test('returns null when a session file does not exist', async () => {
@@ -58,6 +58,20 @@ test('overwrites existing session content', async () => {
         await store.write('workflow/task', { lines: '{"type":"new"}\n' });
 
         assert.deepEqual(await store.load('workflow/task'), { lines: '{"type":"new"}\n' });
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('writeStringFile creates parent directories and writes exact string content', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'runhelm-sessions-'));
+    const filePath = join(dir, 'nested', 'session.jsonl');
+    const contents = '{"type":"entry","text":"hello"}\n';
+
+    try {
+        await writeStringFile(filePath, contents);
+
+        assert.equal(await readFile(filePath, 'utf8'), contents);
     } finally {
         await rm(dir, { recursive: true, force: true });
     }

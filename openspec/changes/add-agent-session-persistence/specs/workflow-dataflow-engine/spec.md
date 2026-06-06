@@ -12,6 +12,11 @@ The orchestrator SHALL provide stable task execution identity that allows worker
 - **THEN** the later attempt carries its `generation_index`
 - **THEN** the worker can derive the same session key for that logical Agent task when `reuse_session` is true
 
+#### Scenario: Human-input continuation API is deferred
+- **WHEN** this change prepares session handling for human-input-created Agent attempts
+- **THEN** the public human-input submission API and end-to-end resume flow are completed by a separate change
+- **THEN** this change still requires future human-input continuation attempts to preserve workflow instance ID and logical task ID for session key derivation
+
 #### Scenario: Agent session reuse is disabled
 - **WHEN** an Agent task attempt has `reuse_session` set to `false`
 - **THEN** the worker does not load prior logical-task conversation history

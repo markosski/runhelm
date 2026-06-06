@@ -1,6 +1,7 @@
 import type { TaskExecutionPayload } from '../models/TaskDef.js';
 import type { CredentialsPort } from './CredentialsPort.js';
 import type { JsonValue } from 'type-fest';
+import type { SessionStore } from './SessionStore.js';
 export type { JsonValue };
 
 export type TaskExecutionResult =
@@ -9,5 +10,5 @@ export type TaskExecutionResult =
     | { status: 'input_needed'; description: string };
 
 export interface TaskExecutor {
-    execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort): Promise<TaskExecutionResult>;
+    execute(payload: TaskExecutionPayload, credentialsPort: CredentialsPort, sessionStore: SessionStore): Promise<TaskExecutionResult>;
 }

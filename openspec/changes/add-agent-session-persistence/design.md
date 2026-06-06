@@ -51,6 +51,8 @@ When `reuse_session` is `false`, attempts do not reuse the logical task session.
 
 For ask and verifier interactions, the orchestrator should continue creating materialized attempts with explicit causes, previous attempt IDs, generation indexes, and budget metadata. The convention-derived session key is the continuity handle, not the source of truth for orchestration decisions.
 
+This change only introduces the session-handling contracts needed by human-input-created Agent attempts. The public API and service flow that accepts human input, materializes the continuation attempt, and resumes the workflow is intentionally left to a separate human-input change. When that later flow creates a continuation attempt, it must preserve the same workflow instance ID and logical task ID so the worker derives the same reusable session key.
+
 Alternative considered: persist a worker-returned opaque session reference on every task attempt. That makes the handle explicit in workflow state, but it adds metadata churn and carry-forward logic when the required continuity is already expressible as workflow instance plus logical task identity.
 
 ### Append event prompts instead of replaying full history
@@ -65,22 +67,22 @@ initial attempt:
 
 human-input attempt:
   derive same session key when reuse_session is true
-  load existing session, or log and create a fresh one if it is unavailable
-  prompt with the submitted human response and any small structured instruction
+  if the session exists, load it and append the submitted human response as the next session event
+  if the session is missing or unreadable, log it, create a fresh session, and prompt with the full task prompt, resolved upstream inputs, and submitted human response
 
 verifier-feedback attempt:
   derive same session key when reuse_session is true
-  load existing session, or log and create a fresh one if it is unavailable
-  prompt with verifier feedback and any small structured instruction
+  if the session exists, load it and append verifier feedback as the next session event
+  if the session is missing or unreadable, log it, create a fresh session, and prompt with the full task prompt, resolved inputs or previous output, and verifier feedback
 ```
 
-The original task prompt, previous user/assistant turns, tool calls, and prior corrections should already be in the session. The orchestrator may still send structured event metadata for audit and executor behavior, but it should not synthesize a complete conversation transcript as the normal path.
+The original task prompt, previous user/assistant turns, tool calls, and prior corrections should already be in the session when a durable session is loaded. The orchestrator may still send structured event metadata for audit and executor behavior, but it should not synthesize a complete conversation transcript as the normal loaded-session path. When a session is unavailable, the worker rebuilds enough current context for that attempt instead of relying on prior session history.
 
 Alternative considered: keep injecting ordered ask and verifier history into every attempt. That is provider-neutral and easy to inspect, but it duplicates session functionality, increases prompt size, and makes the engine responsible for conversational memory.
 
 ### Treat missing sessions as recoverable degradation
 
-If a continuation attempt with `reuse_session` enabled expects an existing session and the worker cannot load it from durable storage, the worker should log a clear diagnostic including the logical session key and create a fresh session. Session loss should be rare, and a fresh attempt can still proceed using structured workflow inputs, verifier feedback, or human response data that the orchestrator sends for the current attempt. If the lost conversation context matters, the verifier can reject the result and drive another attempt.
+If a continuation attempt with `reuse_session` enabled expects an existing session and the worker cannot load it from durable storage, the worker should log a clear diagnostic including the logical session key and create a fresh session. Session loss should be rare, and a fresh attempt must still proceed using the full task prompt plus structured workflow inputs, verifier feedback, or human response data that the orchestrator sends for the current attempt. If the lost conversation context matters, the verifier can reject the result and drive another attempt.
 
 The system can later add stricter policies that fail continuation attempts when a session is unavailable, but that policy can be derived from attempt generation (`generation_index > 1`) and does not require an explicit `require_existing_session` payload field.
 

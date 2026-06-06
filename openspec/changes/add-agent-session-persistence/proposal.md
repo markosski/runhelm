@@ -32,3 +32,7 @@ Agent retries currently depend on reconstructing context through injected prompt
 - Pi session integration, likely through `SessionManager` file-backed sessions first.
 - Future storage adapters for local filesystem and cloud blob-backed session persistence.
 - Tests for session key derivation, `reuse_session` defaults, missing-session recovery, and Agent retry/resume behavior.
+
+## Out of Scope Clarification
+
+This change prepares Agent session handling for human-input-created continuation attempts, but it does not complete the public human-input submission API or the full end-to-end resume flow. A later human-input change will create and verify the API path that materializes the continuation attempt and supplies the submitted human response.

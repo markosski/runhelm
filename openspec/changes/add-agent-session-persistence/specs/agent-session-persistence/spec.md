@@ -42,13 +42,25 @@ Agent retry and resume attempts SHALL continue the convention-derived Agent sess
 
 #### Scenario: Human-input attempt continues a session
 - **WHEN** a human-input-created Agent attempt has `reuse_session` set to `true`
-- **THEN** the worker loads the session identified by the workflow instance ID and logical task ID
+- **THEN** the worker loads the session identified by the workflow instance ID and logical task ID when it exists
 - **THEN** the worker prompts the Agent with the submitted human response as the next session event
 
 #### Scenario: Verifier-feedback attempt continues a session
 - **WHEN** a verifier-feedback-created Agent attempt has `reuse_session` set to `true`
-- **THEN** the worker loads the session identified by the workflow instance ID and logical task ID
+- **THEN** the worker loads the session identified by the workflow instance ID and logical task ID when it exists
 - **THEN** the worker prompts the Agent with the verifier feedback as the next session event
+
+#### Scenario: Human-input continuation recovers without a session
+- **WHEN** a human-input-created Agent attempt has `reuse_session` set to `true`
+- **AND** the worker cannot load the session identified by the workflow instance ID and logical task ID
+- **THEN** the worker creates a fresh replacement session
+- **THEN** the worker prompts the Agent with the task prompt, resolved upstream inputs, and submitted human response
+
+#### Scenario: Verifier-feedback continuation recovers without a session
+- **WHEN** a verifier-feedback-created Agent attempt has `reuse_session` set to `true`
+- **AND** the worker cannot load the session identified by the workflow instance ID and logical task ID
+- **THEN** the worker creates a fresh replacement session
+- **THEN** the worker prompts the Agent with the task prompt, resolved inputs or previous output, and verifier feedback
 
 #### Scenario: Full history is not reinjected
 - **WHEN** an Agent continuation attempt is executed with a loaded session
@@ -61,6 +73,7 @@ The system SHALL log clear diagnostics and recover with a fresh session when a r
 - **WHEN** a reusable Agent continuation attempt references a derived session key that the worker cannot load
 - **THEN** the worker logs a clear session-load diagnostic
 - **THEN** the worker creates a fresh replacement session and continues execution
+- **THEN** the worker includes the full task prompt and current attempt event in the replacement session prompt
 
 #### Scenario: Missing session is observable
 - **WHEN** a session-load diagnostic is reported

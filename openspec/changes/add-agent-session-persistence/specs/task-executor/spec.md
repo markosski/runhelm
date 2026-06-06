@@ -40,3 +40,4 @@ The task executor SHALL report missing or unreadable Agent sessions as diagnosti
 #### Scenario: Fresh replacement session is created
 - **WHEN** the worker cannot load an expected existing Agent session
 - **THEN** the worker creates a fresh session and continues execution
+- **THEN** the worker prompts with the full task context plus the current human-input or verifier-feedback event

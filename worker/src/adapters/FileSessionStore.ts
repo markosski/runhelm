@@ -1,12 +1,13 @@
-import { mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { SessionStoreError, type SessionData, type SessionStore } from '../core/ports/SessionStore.js';
+import { RUNHELM_DIR, SESSION_FILE_EXTENSION, SessionStoreError, writeTempSessionFile, encodeSessionKey,
+    type SessionData, type SessionStore } from '../core/ports/SessionStore.js';
+import { serializeAgentSessionKey, type AgentSessionKey } from '../core/models/AgentSession.js';
 
-const RUNHELM_DIR = '.runhelm';
-const SESSIONS_DIR = 'agent_sessions';
-const SESSION_FILE_EXTENSION = '.jsonl';
+const SESSIONS_DIR = 'file_session_store';
 
+// Path for session store specific to this session store implementation
 export function defaultSessionStoreDir(): string {
     return join(homedir(), RUNHELM_DIR, SESSIONS_DIR);
 }
@@ -14,35 +15,35 @@ export function defaultSessionStoreDir(): string {
 export class FileSessionStore implements SessionStore {
     constructor(private readonly rootDir = defaultSessionStoreDir()) {}
 
-    async load(sessionKey: string): Promise<SessionData | null> {
-        const filePath = this.sessionFilePath(sessionKey);
+    async load(sessionKey: AgentSessionKey): Promise<SessionData | null> {
+        const serializedSK = serializeAgentSessionKey(sessionKey);
+        const filePath = this.sessionFilePath(serializedSK);
 
         try {
-            return { lines: await readFile(filePath, 'utf8') };
+            return { content: await readFile(filePath, 'utf8') };
         } catch (error) {
             if (isNodeError(error) && error.code === 'ENOENT') {
                 return null;
             }
             throw new SessionStoreError(
-                sessionKey,
+                serializedSK,
                 `Unable to read session file: ${filePath}`,
                 { cause: error }
             );
         }
     }
 
-    async write(sessionKey: string, sessionData: SessionData): Promise<void> {
-        const filePath = this.sessionFilePath(sessionKey);
-        const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    async write(sessionKey: AgentSessionKey, sessionData: SessionData): Promise<void> {
+        const serializedSK = serializeAgentSessionKey(sessionKey);
+        const filePath = this.sessionFilePath(serializedSK);
 
         try {
             await mkdir(this.rootDir, { recursive: true });
-            await writeFile(tempPath, sessionData.lines, 'utf8');
-            await rename(tempPath, filePath);
+            await writeFile(filePath, sessionData.content, 'utf8');
         } catch (error) {
             throw new SessionStoreError(
-                sessionKey,
-                `Unable to write session file: ${filePath}`,
+                serializeAgentSessionKey(sessionKey),
+                `Unable to write session file`,
                 { cause: error }
             );
         }
@@ -51,10 +52,6 @@ export class FileSessionStore implements SessionStore {
     private sessionFilePath(sessionKey: string): string {
         return join(this.rootDir, `${encodeSessionKey(sessionKey)}${SESSION_FILE_EXTENSION}`);
     }
-}
-
-function encodeSessionKey(sessionKey: string): string {
-    return Buffer.from(sessionKey, 'utf8').toString('base64url');
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
