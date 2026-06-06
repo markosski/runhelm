@@ -32,7 +32,7 @@
 - [x] 4.3 Prompt initial sessions with the task prompt and resolved upstream inputs.
 - [x] 4.4 Prompt human-input continuation attempts with the submitted human response as the next session event.
 - [x] 4.5 Prompt verifier-feedback continuation attempts with verifier feedback as the next session event.
-- [ ] 4.6 Stop reinjecting complete prior ask or verifier feedback history when a durable session is loaded, while still rebuilding full current context when no session is available.
+- [x] 4.6 Stop reinjecting complete prior ask or verifier feedback history when a durable session is loaded, while still rebuilding full current context when no session is available.
 - [x] 4.7 Ensure missing or unreadable continuation sessions are logged clearly before creating a fresh replacement session with the full task prompt and current attempt event.
 - [x] 4.8 Persist the updated session after successful, failed, or input-needed Agent execution when a session was opened.
 

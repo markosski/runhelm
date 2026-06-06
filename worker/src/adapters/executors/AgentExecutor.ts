@@ -249,13 +249,14 @@ export class AgentExecutor implements TaskExecutor {
         // END - Configure Agent
 
         let systemContext = "";
-        let newContext = "";
+        let freshContext = "";
+        let currentEventContext = "";
         let finalPrompt = "";
 
         if (payload.inputs.length > 0) {
-            newContext += `\n\nUpstream task data:\n`;
+            freshContext += `\n\nUpstream task data:\n`;
             for (const input of payload.inputs) {
-                newContext += `${JSON.stringify(input, null, 2)}\n`;
+                freshContext += `${JSON.stringify(input, null, 2)}\n`;
             }
         }
 
@@ -265,25 +266,43 @@ export class AgentExecutor implements TaskExecutor {
 
         if (latestFeedback || loopContext?.previous_output !== undefined) {
             logger.info('[AgentExecutor] Verifier feedback provided')
-            newContext += `\n\nVERIFIER-GUIDED RETRY CONTEXT:\n`;
-            newContext += `This task is being re-executed because a downstream verifier rejected the previous generation. Use the verifier feedback to revise the result, preserve earlier corrections from the feedback history, and use the previous output as the most recent version produced by this same task.\n`;
+
+            currentEventContext += `
+                \n\n
+                VERIFIER-GUIDED RETRY:
+                This execution includes verifier feedback from a previous rejected generation.
+                Treat that feedback as orchestration guidance for revising your result.
+                The most recent feedback identifies the current issue to fix.
+                Prior feedback records earlier corrections to preserve when applicable.
+                Do not include the feedback text in the final output unless the task explicitly asks for it.\n`;
+
             if (latestFeedback) {
-                newContext += `\nMost recent verifier feedback:\n${latestFeedback}\n`;
+                currentEventContext += `
+                    \n\n
+                    **Most recent verifier feedback:**\n
+                    ${latestFeedback}\n`;
             }
-            if (feedbackHistory.length > 0) {
-                newContext += `\nPrior verifier feedback history:\n`;
+            if (!sessionReused && feedbackHistory.length > 0) {
+                currentEventContext += `
+                    \n\n
+                    **Prior verifier feedback history:**\n`;
+
                 feedbackHistory.forEach((entry) => {
-                    newContext += `- Generation ${entry.generation}: ${entry.feedback}\n`;
+                    currentEventContext += `- Generation ${entry.generation}: ${entry.feedback}\n`;
                 });
             }
-            if (loopContext.previous_output !== undefined) {
-                newContext += `\nMost recent previous output from this same task:\n${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
+
+            if (!sessionReused && loopContext.previous_output !== undefined) {
+                currentEventContext += `
+                    \n\n
+                    **Most recent previous output from this same task:**\n
+                    ${JSON.stringify(loopContext.previous_output, null, 2)}\n`;
             }
         }
 
         if (payload.input_provided) {
             logger.info('[AgentExecutor] User response provided')
-            newContext += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${payload.input_provided}\n`;
+            currentEventContext += `\n\nUSER RESPONSE TO PREVIOUS INQUIRY:\n${payload.input_provided}\n`;
         }
 
         if (!sessionReused) {
@@ -323,23 +342,11 @@ export class AgentExecutor implements TaskExecutor {
             ${ask ? "REMINDER: If you are missing information to fulfill the request, use the 'ask_user' tool (if enabled) instead of returning JSON." : ""}`;
         }
 
-        if (latestFeedback || loopContext?.previous_output !== undefined) {
-            newContext += `
-            \n\n
-            VERIFIER-GUIDED RETRY:
-            This execution includes verifier feedback from a previous rejected generation.
-            Treat that feedback as orchestration guidance for revising your result.
-            The most recent feedback identifies the current issue to fix.
-            Prior feedback records earlier corrections to preserve when applicable.
-            Do not include the feedback text in the final output unless the task explicitly asks for it.
-            `;
-        }
-
         // If session re-used do not use initial prompt anymore
         if (sessionReused) {
-            finalPrompt = systemContext + newContext;
+            finalPrompt = systemContext + currentEventContext;
         } else {
-            finalPrompt = systemContext + prompt + newContext;
+            finalPrompt = systemContext + prompt + freshContext + currentEventContext;
         }
 
         logger.info(
