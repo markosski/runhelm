@@ -1,0 +1,153 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+    buildAgentPromptParts,
+    sessionLoadDiagnostic,
+    shouldLoadExistingAgentSession,
+    shouldReuseAgentSession,
+} from '../dist/adapters/executors/AgentExecutor.js';
+
+test('session load decision is attempt-aware and honors reuse_session false', () => {
+    assert.equal(shouldReuseAgentSession(payload({ generation_index: 1 })), true);
+    assert.equal(shouldLoadExistingAgentSession(payload({ generation_index: 1 })), false);
+    assert.equal(shouldLoadExistingAgentSession(payload({ generation_index: 2 })), true);
+
+    const nonReusable = payload({
+        generation_index: 2,
+        reuse_session: false,
+    });
+
+    assert.equal(shouldReuseAgentSession(nonReusable), false);
+    assert.equal(shouldLoadExistingAgentSession(nonReusable), false);
+});
+
+test('session load diagnostics include session key and attempt', () => {
+    const sessionKey = {
+        workflowInstId: 'workflow-1',
+        taskId: 'draft',
+    };
+    const missing = sessionLoadDiagnostic('missing', sessionKey, 2);
+
+    assert.equal(missing.message, 'Agent session missing; creating fresh session');
+    assert.deepEqual(missing.fields, { sessionKey, attempt: 2 });
+
+    const cause = new Error('permission denied');
+    const unreadable = sessionLoadDiagnostic('unreadable', sessionKey, 3, cause);
+
+    assert.equal(unreadable.message, 'Agent session unreadable; creating fresh session');
+    assert.deepEqual(unreadable.fields, { sessionKey, attempt: 3, error: cause });
+});
+
+test('fresh initial prompt includes task prompt and upstream inputs', () => {
+    const parts = buildAgentPromptParts({
+        prompt: 'Draft the response.',
+        inputs: [{ customer: 'Ada' }],
+        ask: false,
+        sessionReused: false,
+        approvedTools: [],
+        approvedSkills: [],
+        canLoadSkills: false,
+    });
+
+    assert.match(parts.finalPrompt, /Draft the response/);
+    assert.match(parts.finalPrompt, /Upstream task data/);
+    assert.match(parts.finalPrompt, /"customer": "Ada"/);
+});
+
+test('loaded human-input continuation appends only submitted response event', () => {
+    const parts = buildAgentPromptParts({
+        prompt: 'Original prompt should already be in the session.',
+        inputs: [{ customer: 'Ada' }],
+        inputProvided: 'The customer prefers a concise answer.',
+        ask: true,
+        sessionReused: true,
+        approvedTools: [],
+        approvedSkills: [],
+        canLoadSkills: false,
+    });
+
+    assert.match(parts.finalPrompt, /USER RESPONSE TO PREVIOUS INQUIRY/);
+    assert.match(parts.finalPrompt, /concise answer/);
+    assert.doesNotMatch(parts.finalPrompt, /Original prompt should already be in the session/);
+    assert.doesNotMatch(parts.finalPrompt, /Upstream task data/);
+});
+
+test('loaded verifier continuation appends latest feedback without replaying history', () => {
+    const parts = buildAgentPromptParts({
+        prompt: 'Original task prompt.',
+        inputs: [{ source: 'upstream' }],
+        loopContext: {
+            generation: 3,
+            max_iterations: 3,
+            feedback_history: [
+                { generation: 1, feedback: 'Prior feedback' },
+                { generation: 2, feedback: 'Fix the latest issue' },
+            ],
+            previous_output: { draft: 'previous output' },
+        },
+        ask: false,
+        sessionReused: true,
+        approvedTools: [],
+        approvedSkills: [],
+        canLoadSkills: false,
+    });
+
+    assert.match(parts.finalPrompt, /Fix the latest issue/);
+    assert.doesNotMatch(parts.finalPrompt, /Prior verifier feedback history/);
+    assert.doesNotMatch(parts.finalPrompt, /Generation 1: Prior feedback/);
+    assert.doesNotMatch(parts.finalPrompt, /previous output/);
+    assert.doesNotMatch(parts.finalPrompt, /Upstream task data/);
+    assert.doesNotMatch(parts.finalPrompt, /Original task prompt/);
+});
+
+test('fresh verifier fallback rebuilds full context and current event', () => {
+    const parts = buildAgentPromptParts({
+        prompt: 'Original task prompt.',
+        inputs: [{ source: 'upstream' }],
+        loopContext: {
+            generation: 3,
+            max_iterations: 3,
+            feedback_history: [
+                { generation: 1, feedback: 'Prior feedback' },
+                { generation: 2, feedback: 'Fix the latest issue' },
+            ],
+            previous_output: { draft: 'previous output' },
+        },
+        ask: false,
+        sessionReused: false,
+        approvedTools: [],
+        approvedSkills: [],
+        canLoadSkills: false,
+    });
+
+    assert.match(parts.finalPrompt, /Original task prompt/);
+    assert.match(parts.finalPrompt, /Upstream task data/);
+    assert.match(parts.finalPrompt, /Prior verifier feedback history/);
+    assert.match(parts.finalPrompt, /Prior feedback/);
+    assert.match(parts.finalPrompt, /previous output/);
+    assert.match(parts.finalPrompt, /Fix the latest issue/);
+});
+
+function payload(overrides) {
+    return {
+        workflow_inst_id: 'workflow-1',
+        task: {
+            id: 'draft',
+            kind: {
+                Agent: {
+                    model_id: 'test/model',
+                    provider_url: '',
+                    prompt: 'Draft a response.',
+                    tools: [],
+                    skills: [],
+                    reuse_session: overrides.reuse_session,
+                },
+            },
+            required_credentials: [],
+        },
+        inputs: [],
+        execution_metadata: {
+            generation_index: overrides.generation_index,
+        },
+    };
+}

@@ -64,9 +64,10 @@ impl CountingExecutor {
 impl ExecutorPort for CountingExecutor {
     async fn execute(
         &self,
-        _task: &TaskDef,
-        _inputs: &[serde_json::Value],
-        _metadata: &ExecutionMetadata,
+        workflow_def_id: &str,
+        task: &TaskDef,
+        inputs: &[serde_json::Value],
+        metadata: &ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);

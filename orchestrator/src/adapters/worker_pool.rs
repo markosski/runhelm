@@ -19,6 +19,7 @@ pub struct WorkerRegistration {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDispatch {
+    pub workflow_inst_id: String,
     pub task_id: String,
     pub task: TaskDef,
     #[serde(default)]
@@ -148,6 +149,7 @@ impl WorkerPool {
     /// Execution timeout is tracked separately after the task is claimed.
     pub async fn enqueue_task(
         &self,
+        workflow_inst_id: &str,
         task: &TaskDef,
         inputs: &[serde_json::Value],
         timeout: Duration,
@@ -164,6 +166,7 @@ impl WorkerPool {
 
         self.pending_tasks.lock().await.push_back(PendingTask {
             dispatch: TaskDispatch {
+                workflow_inst_id: workflow_inst_id.to_string(),
                 task_id: task_id.clone(),
                 task: task.clone(),
                 inputs: inputs.to_vec(),
@@ -348,6 +351,7 @@ mod tests {
         let execution = tokio::spawn(async move {
             execution_pool
                 .enqueue_task(
+                    "123",
                     &task,
                     &[],
                     Duration::from_secs(5),
@@ -395,6 +399,7 @@ mod tests {
         let execution = tokio::spawn(async move {
             execution_pool
                 .enqueue_task(
+                    "123",
                     &task,
                     &[],
                     Duration::from_millis(10),
@@ -443,6 +448,7 @@ mod tests {
         let execution = tokio::spawn(async move {
             execution_pool
                 .enqueue_task(
+                    "123",
                     &task,
                     &[],
                     Duration::from_secs(5),
@@ -475,6 +481,7 @@ mod tests {
         let execution = tokio::spawn(async move {
             execution_pool
                 .enqueue_task(
+                    "123",
                     &task,
                     &[],
                     Duration::from_millis(10),

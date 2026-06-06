@@ -1,5 +1,6 @@
 export type TaskKind =
-    | { Agent: { model_id: string; provider_url: string; prompt: string; tools: string[]; skills: string[]; ask?: boolean; schema_failure_retry_times?: number } }
+    | { Agent: { model_id: string; provider_url: string; prompt: string; tools: string[]; skills: string[]; 
+        ask?: boolean; schema_failure_retry_times?: number, reuse_session?: boolean} }
     | { ApiCall: { url: string; method: string } }
     | { Function: InlineFunctionTask | ReferencedFunctionTask };
 
@@ -50,10 +51,12 @@ export interface LoopExecutionContext {
 }
 
 export interface ExecutionMetadata {
+    generation_index?: number;
     loop_context?: LoopExecutionContext;
 }
 
 export interface TaskExecutionPayload {
+    workflow_inst_id: string;
     task: TaskDef;
     inputs: any[];
     execution_metadata?: ExecutionMetadata;

@@ -503,6 +503,7 @@ kind:
 | `RUNHELM_PI_AGENT_DIR` | `$HOME/.pi/agent` | Pi resource-loader agent directory used for user-level extension discovery metadata. |
 
 Credential values are not read from environment variables. Put credential values in `~/.runhelm/file_credentials.json`.
+Agent session JSONL files are stored under `$HOME/.cache/runhelm/file_session_store`. This worker-local cache is used to reuse Agent sessions across attempts handled by the same live worker container.
 
 ## Docker
 

@@ -84,9 +84,10 @@ fn schema_default(schema: &Value) -> Value {
 impl ExecutorPort for FakeExecutor {
     async fn execute(
         &self,
+        workflow_inst_id: &str,
         task: &TaskDef,
-        _inputs: &[Value],
-        _metadata: &ExecutionMetadata,
+        inputs: &[Value],
+        metadata: &ExecutionMetadata,
     ) -> anyhow::Result<ExecutionResult> {
         Ok(ExecutionResult::Success(match &task.output_schema {
             Some(schema) => schema_default(schema),
@@ -123,7 +124,7 @@ mod tests {
     async fn test_empty_object_schema() {
         let task = task_with_schema(json!({"type": "object"}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -143,7 +144,7 @@ mod tests {
             }
         }));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -158,7 +159,7 @@ mod tests {
     async fn test_string_schema() {
         let task = task_with_schema(json!({"type": "string"}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -171,7 +172,7 @@ mod tests {
     async fn test_integer_schema() {
         let task = task_with_schema(json!({"type": "integer"}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -184,7 +185,7 @@ mod tests {
     async fn test_number_schema() {
         let task = task_with_schema(json!({"type": "number"}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -197,7 +198,7 @@ mod tests {
     async fn test_boolean_schema() {
         let task = task_with_schema(json!({"type": "boolean"}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -210,7 +211,7 @@ mod tests {
     async fn test_array_schema() {
         let task = task_with_schema(json!({"type": "array"}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -223,7 +224,7 @@ mod tests {
     async fn test_null_schema() {
         let task = task_with_schema(json!({"type": "null"}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -236,7 +237,7 @@ mod tests {
     async fn test_no_type_schema() {
         let task = task_with_schema(json!({}));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -251,7 +252,7 @@ mod tests {
             "oneOf": [{"type": "string"}, {"type": "integer"}]
         }));
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         match result {
@@ -264,11 +265,12 @@ mod tests {
     async fn test_inputs_do_not_affect_output() {
         let task = task_with_schema(json!({"type": "string"}));
         let res1 = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         let res2 = fake()
             .execute(
+                "123",
                 &task,
                 &[json!("anything"), json!(42)],
                 &ExecutionMetadata::default(),
@@ -294,7 +296,7 @@ mod tests {
         });
         let task = task_with_schema(schema.clone());
         let result = fake()
-            .execute(&task, &[], &ExecutionMetadata::default())
+            .execute("123", &task, &[], &ExecutionMetadata::default())
             .await
             .unwrap();
         let output = match result {

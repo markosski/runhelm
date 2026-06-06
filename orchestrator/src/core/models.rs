@@ -14,6 +14,10 @@ pub enum WorkflowStatus {
 
 pub type JsonSchema = serde_json::Value;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskTypeDef {
     ApiCall {
@@ -34,6 +38,9 @@ pub enum TaskTypeDef {
         ask: bool,
         // How many times agent should re-try when output does not match expected output_schema
         schema_failure_retry_times: Number,
+        // Whether or not harness session should be re-used across attempts
+        #[serde(default = "default_true")]
+        reuse_session: bool,
     },
     Function(FunctionTaskDef),
 }
@@ -239,10 +246,25 @@ pub struct LoopExecutionContext {
     pub previous_output: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+fn default_generation_index() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionMetadata {
+    #[serde(default = "default_generation_index")]
+    pub generation_index: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<LoopExecutionContext>,
+}
+
+impl Default for ExecutionMetadata {
+    fn default() -> Self {
+        Self {
+            generation_index: default_generation_index(),
+            loop_context: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -268,4 +290,67 @@ pub fn verifier_decision_schema() -> serde_json::Value {
         },
         "additionalProperties": true
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn agent_reuse_session_defaults_to_true_when_omitted() {
+        let task: TaskDef = serde_json::from_value(json!({
+            "id": "agenttask",
+            "kind": {
+                "Agent": {
+                    "model_id": "test/model",
+                    "provider_url": "",
+                    "prompt": "Do the work.",
+                    "tools": [],
+                    "skills": [],
+                    "ask": false,
+                    "schema_failure_retry_times": 0
+                }
+            },
+            "output_schema": null,
+            "required_credentials": []
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            task.kind,
+            TaskTypeDef::Agent {
+                reuse_session: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn agent_reuse_session_serializes_explicit_false() {
+        let task: TaskDef = serde_json::from_value(json!({
+            "id": "agenttask",
+            "kind": {
+                "Agent": {
+                    "model_id": "test/model",
+                    "provider_url": "",
+                    "prompt": "Do the work.",
+                    "tools": [],
+                    "skills": [],
+                    "ask": false,
+                    "schema_failure_retry_times": 0,
+                    "reuse_session": false
+                }
+            },
+            "output_schema": null,
+            "required_credentials": []
+        }))
+        .unwrap();
+
+        let serialized = serde_json::to_value(task).unwrap();
+        assert_eq!(
+            serialized["kind"]["Agent"]["reuse_session"],
+            json!(false)
+        );
+    }
 }
