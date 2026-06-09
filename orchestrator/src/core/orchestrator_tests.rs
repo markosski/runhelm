@@ -1,17 +1,17 @@
 use super::*;
-use crate::ports::executor::ExecutorPort;
-use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus, WorkflowStatus};
-use crate::api::models::{WorkflowQueueStatus};
 use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+use crate::api::models::WorkflowQueueStatus;
 use crate::core::function_service::FunctionService;
 use crate::core::models::{
     DataBinding, FunctionDef, FunctionTaskDef, TaskTypeDef, WorkflowDef, WorkflowInstance,
-    verifier_decision_schema,
+    Workspace, verifier_decision_schema,
 };
+use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus, WorkflowStatus};
 use crate::core::workflow_service::WorkflowService;
 use crate::ports::executor::ExecutionResult;
+use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
 use async_trait::async_trait;
 use serde_json::json;
@@ -94,6 +94,7 @@ fn task(id: &str) -> TaskDef {
                 "ok": { "type": "boolean" }
             }
         })),
+        workspace: None,
         required_credentials: vec![],
     }
 }
@@ -114,6 +115,7 @@ fn function_ref_task(id: &str, reference: &str) -> TaskDef {
                 "ok": { "type": "boolean" }
             }
         })),
+        workspace: None,
         required_credentials: vec![],
     }
 }
@@ -519,56 +521,77 @@ async fn verifier_control_rejects_user_output_schema() {
 async fn create_workflow_def_normalizes_workflow_def_task_def_and_binding_ids() {
     let storage = Arc::new(MemoryStorage::new());
     let workflow_service = WorkflowService::new(storage.clone());
-    let mut task_b = task("TaskB");
+    let mut task_a = task("Task_A");
+    task_a.workspace = Some(Workspace {
+        group_name: "Repo_Cache".to_string(),
+    });
+    let mut task_b = task("Task-B");
     task_b.input_schemas = vec![json!({ "type": "object" })];
 
     workflow_service
         .create_workflow_def(WorkflowDef {
-            id: "WorkflowABC".to_string(),
-            tasks: vec![task("TaskA"), task_b],
+            id: "Workflow_ABC-1".to_string(),
+            tasks: vec![task_a, task_b],
             data_bindings: vec![DataBinding {
-                source_task_id: "TaskA".to_string(),
-                target_task_id: "TaskB".to_string(),
+                source_task_id: "Task_A".to_string(),
+                target_task_id: "Task-B".to_string(),
             }],
         })
         .await
         .unwrap();
 
     let stored = storage
-        .get_workflow_def("workflowabc")
+        .get_workflow_def("workflow_abc-1")
         .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(stored.id, "workflowabc");
-    assert_eq!(stored.tasks[0].id, "taska");
-    assert_eq!(stored.tasks[1].id, "taskb");
-    assert_eq!(stored.data_bindings[0].source_task_id, "taska");
-    assert_eq!(stored.data_bindings[0].target_task_id, "taskb");
+    assert_eq!(stored.id, "workflow_abc-1");
+    assert_eq!(stored.tasks[0].id, "task_a");
+    assert_eq!(
+        stored.tasks[0]
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.group_name.as_str()),
+        Some("repo_cache")
+    );
+    assert_eq!(stored.tasks[1].id, "task-b");
+    assert_eq!(stored.data_bindings[0].source_task_id, "task_a");
+    assert_eq!(stored.data_bindings[0].target_task_id, "task-b");
 }
 
 #[tokio::test]
-async fn create_workflow_def_rejects_non_alphanumeric_workflow_def_and_task_def_ids() {
+async fn create_workflow_def_rejects_invalid_identifier_characters() {
     let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
     let workflow_error = workflow_service
-        .create_workflow_def(workflow("workflow-1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow.1", vec![task("taska")]))
         .await
         .unwrap_err();
-    assert!(
-        workflow_error
-            .to_string()
-            .contains("workflow id \"workflow-1\" must contain only ASCII alphanumeric characters")
-    );
+    assert!(workflow_error.to_string().contains(
+        "workflow id \"workflow.1\" must contain only ASCII alphanumeric characters, '-' or '_'"
+    ));
 
     let task_error = workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("task_a")]))
+        .create_workflow_def(workflow("workflow1", vec![task("task a")]))
+        .await
+        .unwrap_err();
+    assert!(task_error.to_string().contains(
+        "task id \"task a\" must contain only ASCII alphanumeric characters, '-' or '_'"
+    ));
+
+    let mut task_with_workspace = task("taska");
+    task_with_workspace.workspace = Some(Workspace {
+        group_name: "repo.cache".to_string(),
+    });
+    let workspace_error = workflow_service
+        .create_workflow_def(workflow("workflow1", vec![task_with_workspace]))
         .await
         .unwrap_err();
     assert!(
-        task_error
+        workspace_error
             .to_string()
-            .contains("task id \"task_a\" must contain only ASCII alphanumeric characters")
+            .contains("workspace group id \"repo.cache\" must contain only ASCII alphanumeric characters, '-' or '_'")
     );
 }
 

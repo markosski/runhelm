@@ -35,7 +35,7 @@ Each logical task within a workflow run should receive a private workspace alloc
 
 This makes task execution easier to reason about for agentic and verifier-driven workflows: task-local files persist across that task's attempts, while downstream tasks still cannot see those files unless they are configured to use the same workspace group. Structured outputs remain the source of scheduling and binding truth.
 
-Private task workspace should be created by default. Workflow authors should not need to opt each task into a basic task-level workspace. If a task declares `workspace.group`, that group workspace replaces the default private workspace exposed to the task.
+Private task workspace should be created by default. Workflow authors should not need to opt each task into a basic task-level workspace. If a task declares `workspace.group_name`, that group workspace replaces the default private workspace exposed to the task.
 
 Alternatives considered:
 
@@ -44,7 +44,7 @@ Alternatives considered:
 
 ### Model sharing as declared workspace groups
 
-Workflow definitions should support named workspace groups with explicit task membership through a nested task field such as `workspace.group: "foobar"`. A task either uses its default private workspace or the declared shared group workspace. It should not receive both, and it should not receive multiple workspace groups in the initial implementation. Group names should be validated during workflow registration and should use the same conservative identifier style as workflow and task ids.
+Workflow definitions should support named workspace groups with explicit task membership through a nested task field such as `workspace.group_name: "foobar"`. A task either uses its default private workspace or the declared shared group workspace. It should not receive both, and it should not receive multiple workspace groups in the initial implementation. Group names should be validated during workflow registration and should use the same conservative identifier style as workflow and task ids.
 
 Workspace group membership should not create scheduling dependencies. If task B needs files produced by task A, the workflow still needs normal dataflow or control dependencies to ensure B runs after A. The group only defines filesystem visibility when B executes.
 
@@ -104,7 +104,7 @@ Alternatives considered:
 
 ## Migration Plan
 
-1. Add the nested task-level `workspace.group` workflow definition field for optional workspace group membership, with registration-time validation.
+1. Add the nested task-level `workspace.group_name` workflow definition field for optional workspace group membership, with registration-time validation.
 2. Add orchestrator models for the selected logical-task or group workspace path that materialized attempts reference in executor payloads.
 3. Add workflow-instance state for workspace group name to local directory path mappings.
 4. Add `WorkspaceManager` creation and cleanup operations backed by worker-local filesystem directory management, including timestamped directory names.

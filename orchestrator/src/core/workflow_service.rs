@@ -326,20 +326,24 @@ fn verifier_rerun_start_task_id(
 }
 
 fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<WorkflowDef> {
-    validate_ascii_alphanumeric_id("workflow", &def.id)?;
+    validate_identifier("workflow", &def.id)?;
     def.id = def.id.to_ascii_lowercase();
 
     let mut original_to_normalized = HashMap::new();
     let mut normalized_task_ids = HashSet::new();
 
     for task in &mut def.tasks {
-        validate_ascii_alphanumeric_id("task", &task.id)?;
+        validate_identifier("task", &task.id)?;
         let normalized = task.id.to_ascii_lowercase();
         if !normalized_task_ids.insert(normalized.clone()) {
             anyhow::bail!("duplicate task id after normalization: {normalized}");
         }
         original_to_normalized.insert(task.id.clone(), normalized.clone());
         task.id = normalized;
+        if let Some(workspace) = task.workspace.as_mut() {
+            validate_identifier("workspace group", &workspace.group_name)?;
+            workspace.group_name = workspace.group_name.to_ascii_lowercase();
+        }
     }
 
     for binding in &mut def.data_bindings {
@@ -407,9 +411,15 @@ fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<W
     Ok(def)
 }
 
-fn validate_ascii_alphanumeric_id(kind: &str, id: &str) -> anyhow::Result<()> {
-    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        anyhow::bail!("{kind} id {id:?} must contain only ASCII alphanumeric characters");
+fn validate_identifier(kind: &str, id: &str) -> anyhow::Result<()> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        anyhow::bail!(
+            "{kind} id {id:?} must contain only ASCII alphanumeric characters, '-' or '_'"
+        );
     }
     Ok(())
 }
@@ -419,7 +429,7 @@ fn normalize_task_reference(
     id: &str,
     field: &str,
 ) -> anyhow::Result<String> {
-    validate_ascii_alphanumeric_id(field, id)?;
+    validate_identifier(field, id)?;
     original_to_normalized
         .get(id)
         .cloned()
@@ -535,6 +545,7 @@ mod tests {
                 timeout_secs: None,
                 input_schemas: vec![],
                 output_schema: Some(json!({ "type": "object" })),
+                workspace: None,
                 required_credentials: vec![],
             }],
             data_bindings: vec![],

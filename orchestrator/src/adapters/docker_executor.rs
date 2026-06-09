@@ -42,7 +42,13 @@ impl ExecutorPort for DockerExecutor {
             .unwrap_or(self.task_timeout);
 
         self.worker_pool
-            .enqueue_task(workflow_inst_id, task, inputs, task_timeout, metadata.clone())
+            .enqueue_task(
+                workflow_inst_id,
+                task,
+                inputs,
+                task_timeout,
+                metadata.clone(),
+            )
             .await
     }
 }
@@ -75,6 +81,7 @@ mod tests {
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
+            workspace: None,
             required_credentials: vec![],
         };
 
@@ -110,6 +117,7 @@ mod tests {
             timeout_secs: Some(1),
             input_schemas: vec![],
             output_schema: None,
+            workspace: None,
             required_credentials: vec![],
         };
 

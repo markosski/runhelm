@@ -528,6 +528,7 @@ mod tests {
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
+            workspace: None,
             required_credentials: vec![],
         }
     }

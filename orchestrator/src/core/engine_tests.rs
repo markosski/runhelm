@@ -168,6 +168,7 @@ fn task_def(id: &str, output_schema: serde_json::Value) -> TaskDef {
         timeout_secs: None,
         input_schemas: vec![],
         output_schema: Some(output_schema),
+        workspace: None,
         required_credentials: vec![],
     }
 }
@@ -189,6 +190,7 @@ fn agent_task(id: &str, reuse_session: bool) -> TaskDef {
         timeout_secs: None,
         input_schemas: vec![],
         output_schema: Some(json!({ "type": "object" })),
+        workspace: None,
         required_credentials: vec![],
     }
 }
@@ -490,6 +492,7 @@ async fn test_fan_in_workflow_completes_with_propagation() {
                     json!({ "type": "object" }), // from task-b
                 ],
                 output_schema: Some(json!({ "type": "object" })),
+                workspace: None,
                 required_credentials: vec![],
             },
         ],

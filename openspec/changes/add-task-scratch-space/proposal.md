@@ -5,7 +5,7 @@ RunHelm tasks are currently best suited to structured JSON inputs and outputs, b
 ## What Changes
 
 - Add default private workspace for each logical task within a workflow run so retries, verifier reruns, and continuations for that task can reuse the same files without relying on ambient worker filesystem paths.
-- Allow workflows to declare explicit workspace groups with nested task configuration such as `workspace.group`, replacing the default private workspace for selected tasks when a pipeline needs repository checkouts, downloaded data, generated artifacts, or intermediate directories to survive task boundaries.
+- Allow workflows to declare explicit workspace groups with nested task configuration such as `workspace.group_name`, replacing the default private workspace for selected tasks when a pipeline needs repository checkouts, downloaded data, generated artifacts, or intermediate directories to survive task boundaries.
 - Expose workspace locations through the task execution contract in a way that workers and file tools can enforce path boundaries.
 - Keep workspace sharing opt-in; tasks use an isolated private workspace by default, or one declared shared workspace group when configured.
 
