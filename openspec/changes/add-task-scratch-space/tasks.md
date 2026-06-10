@@ -3,7 +3,7 @@
 - [x] 1.1 Add `workspace` / `workspace.group_name` fields to orchestrator `TaskDef` models with serde defaults that preserve existing workflow YAML compatibility.
 - [x] 1.2 Add workspace group identifier validation during workflow registration, rejecting invalid group names and multiple workspace groups per task.
 - [x] 1.3 Define stable workspace identity keys for private task workspaces and shared workspace groups without persisting worker-local paths in workflow instance state.
-- [ ] 1.4 Add tests for default private workspace selection, `workspace.group_name` override selection, invalid group rejection, and one-workspace-per-task validation.
+- [x] 1.4 Add tests for default private workspace selection, `workspace.group_name` override selection, invalid group rejection, and one-workspace-per-task validation.
 
 ## 2. Workspace Manager
 

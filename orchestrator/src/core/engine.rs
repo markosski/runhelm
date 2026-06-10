@@ -6,7 +6,8 @@ use crate::core::models::{
     VerifierControlConfig, VerifierDecision, VerifierExecutionResult,
 };
 use crate::core::workflow::models::{
-    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus
+    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowDef,
+    WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
@@ -811,13 +812,11 @@ impl WorkflowEngine {
                     anyhow::bail!("Verifier continue decision requires non-empty feedback");
                 }
 
-                state
-                    .feedback_history
-                    .push(VerifierFeedbackEntry {
-                        generation_index: generation,
-                        feedback: feedback.clone(),
-                        verifier_output: verifier_result.output.clone(),
-                    });
+                state.feedback_history.push(VerifierFeedbackEntry {
+                    generation_index: generation,
+                    feedback: feedback.clone(),
+                    verifier_output: verifier_result.output.clone(),
+                });
 
                 if generation < verifier.max_iterations {
                     state.latest_generation = generation + 1;

@@ -2,9 +2,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
-use crate::core::models::{
-    FunctionDef, TaskStatus, 
-};
+use crate::core::models::{FunctionDef, TaskStatus};
 use crate::core::workflow::models::{
     VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus,
 };

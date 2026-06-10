@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn task_workspace_rejects_unknown_fields() {
+    fn task_workspace_rejects_multiple_group_declaration_fields() {
         let error = serde_json::from_value::<TaskDef>(json!({
             "id": "task",
             "kind": {

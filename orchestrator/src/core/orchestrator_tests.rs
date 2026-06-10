@@ -5,13 +5,11 @@ use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::api::models::WorkflowQueueStatus;
 use crate::core::function_service::FunctionService;
 use crate::core::models::{
-    FunctionDef, FunctionTaskDef, TaskTypeDef, Workspace, verifier_decision_schema,
-    ExecutionMetadata, TaskDef, TaskStatus
+    ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskStatus, TaskTypeDef, Workspace,
+    verifier_decision_schema,
 };
+use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
-use crate::core::workflow::models::{
-    DataBinding, WorkflowDef, WorkflowInstance
-};
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};

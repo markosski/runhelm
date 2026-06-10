@@ -1,6 +1,7 @@
-use crate::core::{models::{
-    TaskInputMapping, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata,
-}, workflow::models::{VerifierStateStatus, WorkflowStatus}};
+use crate::core::{
+    models::{TaskInputMapping, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata},
+    workflow::models::{VerifierStateStatus, WorkflowStatus},
+};
 use serde::{Deserialize, Serialize};
 
 /// A lightweight read model describing the current state of a workflow instance.

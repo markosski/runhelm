@@ -2,7 +2,7 @@ use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
-use crate::core::workflow::models::{WorkflowStatus};
+use crate::core::workflow::models::WorkflowStatus;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::StoragePort;
 use crate::ports::workflow_queue::WorkflowQueuePort;

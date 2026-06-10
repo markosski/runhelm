@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{models::TaskDef, workflow::models::WorkspaceKey};
 
-pub mod workflow_service;
 pub mod models;
+pub mod workflow_service;
 
 pub fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
     match &task.workspace {
@@ -20,25 +20,33 @@ pub fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> Workspa
 
 pub fn workspace_path(root: &Path, key: &WorkspaceKey) -> PathBuf {
     match key {
-        WorkspaceKey::Task { workflow_inst_id, task_id } => {
-            root.join(workflow_inst_id).join(format!("taskid-{}", task_id)).to_path_buf()
-        },
-        WorkspaceKey::Group {workflow_inst_id, group_name } => {
-            root.join(workflow_inst_id).join(format!("taskgroup-{}", group_name)).to_path_buf()
-        }
+        WorkspaceKey::Task {
+            workflow_inst_id,
+            task_id,
+        } => root
+            .join(workflow_inst_id)
+            .join(format!("taskid-{}", task_id))
+            .to_path_buf(),
+        WorkspaceKey::Group {
+            workflow_inst_id,
+            group_name,
+        } => root
+            .join(workflow_inst_id)
+            .join(format!("taskgroup-{}", group_name))
+            .to_path_buf(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use serde_json::json;
     use crate::core::{
-        models::{FunctionTaskDef, TaskDef, TaskTypeDef, Workspace}, 
-        workflow::{models::WorkspaceKey, workspace_key_for_task, workspace_path}
+        models::{FunctionTaskDef, TaskDef, TaskTypeDef, Workspace},
+        workflow::{models::WorkspaceKey, workspace_key_for_task, workspace_path},
     };
+    use serde_json::json;
+    use std::path::Path;
 
-    fn task(id: &str, is_group: bool) -> TaskDef {
+    fn task(id: &str, group_name: Option<&str>) -> TaskDef {
         TaskDef {
             id: id.to_string(),
             kind: TaskTypeDef::Function(FunctionTaskDef::Inline {
@@ -55,48 +63,92 @@ mod tests {
                     "ok": { "type": "boolean" }
                 }
             })),
-            workspace: if is_group {
-               Some(Workspace { group_name: "foobar".to_string() }) 
-            } else {
-                None
-            },
+            workspace: group_name.map(|group_name| Workspace {
+                group_name: group_name.to_string(),
+            }),
             required_credentials: vec![],
         }
     }
 
     #[test]
-    fn test_create_workspace_key_for_task() {
-        let task = task("foo", false);
+    fn default_private_workspace_selection_uses_task_key() {
+        let task = task("foo", None);
         let key = workspace_key_for_task("123", &task);
 
-        assert!(matches!(key, WorkspaceKey::Task { workflow_inst_id, task_id } if workflow_inst_id == "123" && task_id == "foo"));
+        assert_eq!(
+            key,
+            WorkspaceKey::Task {
+                workflow_inst_id: "123".to_string(),
+                task_id: "foo".to_string(),
+            }
+        );
     }
 
     #[test]
-    fn test_create_workspace_key_for_task_group() {
-        let task = task("bar", true);
+    fn workspace_group_override_selection_uses_group_key() {
+        let task = task("bar", Some("foobar"));
         let key = workspace_key_for_task("123", &task);
 
-        assert!(matches!(key, WorkspaceKey::Group { workflow_inst_id, group_name } if workflow_inst_id == "123" && group_name == "foobar"));
+        assert_eq!(
+            key,
+            WorkspaceKey::Group {
+                workflow_inst_id: "123".to_string(),
+                group_name: "foobar".to_string(),
+            }
+        );
     }
 
     #[test]
-    fn test_workspace_path_task() {
+    fn same_workspace_group_resolves_to_same_key_across_tasks() {
+        let first_task = task("clone", Some("repo"));
+        let second_task = task("inspect", Some("repo"));
+
+        assert_eq!(
+            workspace_key_for_task("workflow1", &first_task),
+            workspace_key_for_task("workflow1", &second_task)
+        );
+    }
+
+    #[test]
+    fn workspace_path_for_private_task_uses_task_namespace() {
         let expected = "/root/workspace/1234/taskid-123";
 
-        let workspace_key = WorkspaceKey::Task { workflow_inst_id: "1234".to_string(), task_id: "123".to_owned() };
+        let workspace_key = WorkspaceKey::Task {
+            workflow_inst_id: "1234".to_string(),
+            task_id: "123".to_owned(),
+        };
         let given = workspace_path(Path::new("/root/workspace"), &workspace_key);
 
         assert_eq!(expected.to_string(), given.to_str().to_owned().unwrap());
     }
 
     #[test]
-    fn test_workspace_path_group() {
+    fn workspace_path_for_group_uses_group_namespace() {
         let expected = "/root/workspace/1234/taskgroup-foobar";
 
-        let workspace_key = WorkspaceKey::Group { workflow_inst_id: "1234".to_string(), group_name: "foobar".to_string() };
+        let workspace_key = WorkspaceKey::Group {
+            workflow_inst_id: "1234".to_string(),
+            group_name: "foobar".to_string(),
+        };
         let given = workspace_path(Path::new("/root/workspace"), &workspace_key);
 
         assert_eq!(expected.to_string(), given.to_str().to_owned().unwrap());
+    }
+
+    #[test]
+    fn task_and_group_with_same_name_do_not_share_workspace_path() {
+        let private_task_key = WorkspaceKey::Task {
+            workflow_inst_id: "workflow1".to_string(),
+            task_id: "repo".to_string(),
+        };
+        let group_key = WorkspaceKey::Group {
+            workflow_inst_id: "workflow1".to_string(),
+            group_name: "repo".to_string(),
+        };
+
+        assert_ne!(
+            workspace_path(Path::new("/root/workspace"), &private_task_key),
+            workspace_path(Path::new("/root/workspace"), &group_key)
+        );
     }
 }

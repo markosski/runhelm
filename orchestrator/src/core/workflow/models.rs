@@ -69,7 +69,7 @@ pub struct WorkflowDef {
     pub data_bindings: Vec<DataBinding>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkspaceKey {
     Task {
         workflow_inst_id: String,
