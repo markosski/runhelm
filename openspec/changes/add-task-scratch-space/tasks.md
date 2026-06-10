@@ -2,17 +2,17 @@
 
 - [x] 1.1 Add `workspace` / `workspace.group_name` fields to orchestrator `TaskDef` models with serde defaults that preserve existing workflow YAML compatibility.
 - [x] 1.2 Add workspace group identifier validation during workflow registration, rejecting invalid group names and multiple workspace groups per task.
-- [ ] 1.3 Add workflow-instance state for workspace group name to selected local directory path mappings.
+- [x] 1.3 Define stable workspace identity keys for private task workspaces and shared workspace groups without persisting worker-local paths in workflow instance state.
 - [ ] 1.4 Add tests for default private workspace selection, `workspace.group_name` override selection, invalid group rejection, and one-workspace-per-task validation.
 
 ## 2. Workspace Manager
 
 - [ ] 2.1 Add an orchestrator-side `WorkspaceManager` component with configuration for worker-local workspace root, workspace TTL, and cleanup interval.
-- [ ] 2.2 Implement `WorkspaceManager` creation/resolution for default logical-task workspaces scoped by workflow instance ID and task ID.
-- [ ] 2.3 Implement `WorkspaceManager` creation/resolution for workflow-instance workspace groups using the persisted group-to-path mapping.
+- [ ] 2.2 Implement `WorkspaceManager` creation/resolution for default logical-task workspaces using a stable key derived from workflow instance ID and task ID.
+- [ ] 2.3 Implement `WorkspaceManager` creation/resolution for workflow-instance workspace groups using a stable key derived from workflow instance ID and normalized workspace group name.
 - [ ] 2.4 Ensure workspace physical directory names include a creation timestamp for stale cleanup.
 - [ ] 2.5 Implement explicit cleanup for RunHelm-owned workspace directories without adding the background TTL monitor yet.
-- [ ] 2.6 Add unit tests for path construction, stable task workspace reuse across attempts, stable group workspace reuse across tasks, and explicit cleanup.
+- [ ] 2.6 Add unit tests for workspace key derivation, path construction, stable task workspace reuse across attempts, stable group workspace reuse across tasks, and explicit cleanup.
 
 ## 3. Executor Payload Contract
 

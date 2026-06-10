@@ -20,7 +20,7 @@ The system SHALL allow a task to declare `workspace.group_name` to replace its d
 
 #### Scenario: Task declares workspace group
 - **WHEN** a task declares `workspace.group_name: "repo"`
-- **THEN** the task execution uses the workflow instance workspace path for group `repo`
+- **THEN** the task execution uses the selected workspace derived from the workflow instance id and group `repo`
 - **THEN** the task does not receive its default private workspace path
 
 #### Scenario: Multiple tasks declare same workspace group
@@ -34,28 +34,36 @@ The system SHALL allow a task to declare `workspace.group_name` to replace its d
 ### Requirement: Worker-Local Workspace Directories
 The system SHALL create workspace directories under a configured worker-local workspace root using RunHelm-owned path construction.
 
+#### Scenario: Private workspace key is derived
+- **WHEN** a task without `workspace.group_name` is prepared for execution
+- **THEN** the system derives a stable private workspace key from the workflow instance id and logical task id
+
+#### Scenario: Group workspace key is derived
+- **WHEN** a task with `workspace.group_name` is prepared for execution
+- **THEN** the system derives a stable group workspace key from the workflow instance id and normalized workspace group name
+
 #### Scenario: Private workspace path is created
 - **WHEN** a task without `workspace.group_name` is prepared for execution
 - **THEN** the system creates or resolves a directory under the worker-local workspace root for the workflow instance and logical task ID
 
 #### Scenario: Group workspace path is created
-- **WHEN** a task with `workspace.group_name` is prepared for execution and the workflow instance has no path for that group
-- **THEN** the system creates a directory under the worker-local workspace root for that workflow instance and group name
+- **WHEN** a task with `workspace.group_name` is prepared for execution
+- **THEN** the system creates or resolves a directory under the worker-local workspace root from the derived group workspace key
 
 #### Scenario: Workspace directory includes timestamp
 - **WHEN** the system creates a workspace directory
 - **THEN** the physical directory name includes a creation timestamp usable by later stale-directory cleanup
 
 ### Requirement: Workspace Manager Lifecycle
-The system SHALL provide an orchestrator-side `WorkspaceManager` component for creating selected workspaces, resolving workflow-instance group workspaces, and cleaning RunHelm-owned workspaces.
+The system SHALL provide an orchestrator-side `WorkspaceManager` component for deriving workspace keys, creating selected workspaces, resolving workflow-instance group workspaces, and cleaning RunHelm-owned workspaces.
 
 #### Scenario: Workspace manager creates task workspace
 - **WHEN** a task execution is prepared
 - **THEN** `WorkspaceManager` creates or resolves the selected workspace directory for that task
 
-#### Scenario: Workspace manager resolves group mapping
-- **WHEN** a workflow instance already has a workspace path mapped to a group name
-- **THEN** `WorkspaceManager` returns that existing path for later tasks in the same group
+#### Scenario: Workspace manager resolves group key
+- **WHEN** a later task in the same workflow instance declares the same normalized group name
+- **THEN** `WorkspaceManager` derives the same group workspace key and resolves the same selected workspace path
 
 #### Scenario: Workspace manager cleans workspace
 - **WHEN** cleanup is requested for a RunHelm-owned workspace

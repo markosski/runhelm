@@ -24,12 +24,12 @@ The workflow engine SHALL select either the default private workspace or the dec
 
 #### Scenario: Task has workspace group
 - **WHEN** a task definition declares `workspace.group_name`
-- **THEN** the workflow engine selects the workflow-instance workspace path mapped to that group
+- **THEN** the workflow engine selects a group workspace identity derived from the workflow instance id and normalized group name
 - **THEN** the task's private logical-task workspace is not selected for that execution
 
-#### Scenario: Same group resolves same path
+#### Scenario: Same group resolves same workspace identity
 - **WHEN** multiple task definitions in a workflow instance declare the same `workspace.group_name`
-- **THEN** the workflow engine resolves those tasks to the same group workspace path
+- **THEN** the workflow engine resolves those tasks to the same group workspace identity
 
 ### Requirement: Workspace Groups Do Not Define Scheduling
 Workspace group membership SHALL NOT create implicit task dependencies or change data binding scheduling behavior.

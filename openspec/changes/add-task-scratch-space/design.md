@@ -48,7 +48,9 @@ Workflow definitions should support named workspace groups with explicit task me
 
 Workspace group membership should not create scheduling dependencies. If task B needs files produced by task A, the workflow still needs normal dataflow or control dependencies to ensure B runs after A. The group only defines filesystem visibility when B executes.
 
-At runtime, the workflow instance should maintain a mapping from declared workspace group name to its local directory path. This lets every task in the same workflow instance and group resolve the same shared location across task runs. The physical directory name can include the group name, workflow instance id, and creation timestamp, such as `foobar-<workflow_inst_id>-<timestamp>`.
+At runtime, workspace identity should be deterministic rather than stored as local paths on the workflow instance. A private workspace key is derived from workflow instance id and logical task id. A group workspace key is derived from workflow instance id and normalized workspace group name. `WorkspaceManager` owns conversion from those stable keys to local filesystem paths under the configured workspace root, similar to how Agent session storage derives worker-local files from logical session keys.
+
+This lets every task in the same workflow instance and group resolve the same shared location across task runs without persisting worker-local paths in orchestrator workflow state. Physical directory names may include encoded workspace identity and creation timestamp metadata for cleanup, but that layout remains a `WorkspaceManager` implementation detail.
 
 Alternatives considered:
 
@@ -74,9 +76,9 @@ Alternatives considered:
 
 ### Manage workspace under a worker-local filesystem root
 
-The orchestrator side should expose a `WorkspaceManager` component responsible for workspace lifecycle decisions. It should create the selected workspace for a task, resolve an existing group workspace for a workflow instance, and clean up RunHelm-owned workspace directories.
+The orchestrator side should expose a `WorkspaceManager` component responsible for workspace lifecycle decisions. It should derive stable workspace keys from workflow/task/group identity, create or resolve selected workspace directories for those keys, and clean up RunHelm-owned workspace directories.
 
-Workers should create workspace directories under a configured local root, using a RunHelm-owned layout for workflow instance id, logical task id, workspace group name, and creation timestamp. This should remain ordinary filesystem management rather than a generalized storage abstraction.
+Workers should create workspace directories under a configured local root, using a RunHelm-owned layout derived from workflow instance id, logical task id, workspace group name, and creation timestamp. This should remain ordinary filesystem management rather than a generalized storage abstraction.
 
 The directory manager should enforce path containment by construction. Task code may receive a root directory, but worker cleanup should operate on RunHelm-owned directories rather than trusting arbitrary paths returned by task code.
 
@@ -106,8 +108,8 @@ Alternatives considered:
 
 1. Add the nested task-level `workspace.group_name` workflow definition field for optional workspace group membership, with registration-time validation.
 2. Add orchestrator models for the selected logical-task or group workspace path that materialized attempts reference in executor payloads.
-3. Add workflow-instance state for workspace group name to local directory path mappings.
-4. Add `WorkspaceManager` creation and cleanup operations backed by worker-local filesystem directory management, including timestamped directory names.
+3. Define stable workspace identity keys for private task workspaces and shared workspace groups without persisting worker-local paths in workflow instance state.
+4. Add `WorkspaceManager` creation and cleanup operations backed by worker-local filesystem directory management, including deterministic path derivation and timestamped directory names.
 5. Thread workspace context through Agent, Function, Docker, and fake executors.
 6. Add file tool path validation against allowed workspace directories where those tools are available.
 7. Add basic explicit cleanup for RunHelm-owned workspace allocations.

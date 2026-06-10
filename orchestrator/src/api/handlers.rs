@@ -9,7 +9,8 @@ use tracing::info;
 use crate::adapters::worker_pool::{
     TaskResult, WorkerExecutionResult, WorkerRegistration, WorkerResponse,
 };
-use crate::core::models::{FunctionDef, WorkflowDef, WorkflowStatus};
+use crate::core::models::{FunctionDef};
+use crate::core::workflow::models::{WorkflowDef, WorkflowStatus};
 use crate::ports::executor::ExecutionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};

@@ -3,8 +3,10 @@ use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{
     ExecutionMetadata, LoopExecutionContext, LoopFeedbackEntry, TaskInputMapping, TaskInstance,
     TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus,
-    VerifierControlConfig, VerifierDecision, VerifierExecutionResult, VerifierGenerationState,
-    VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus,
+    VerifierControlConfig, VerifierDecision, VerifierExecutionResult,
+};
+use crate::core::workflow::models::{
+    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowDef, WorkflowInstance, WorkflowStatus
 };
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
@@ -811,7 +813,7 @@ impl WorkflowEngine {
 
                 state
                     .feedback_history
-                    .push(crate::core::models::VerifierFeedbackEntry {
+                    .push(VerifierFeedbackEntry {
                         generation_index: generation,
                         feedback: feedback.clone(),
                         verifier_output: verifier_result.output.clone(),

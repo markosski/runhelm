@@ -15,7 +15,7 @@ use crate::adapters::worker_pool::WorkerPool;
 use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
-use crate::core::workflow_service::WorkflowService;
+use crate::core::workflow::workflow_service::WorkflowService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
