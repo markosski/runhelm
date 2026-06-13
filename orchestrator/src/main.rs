@@ -3,7 +3,9 @@ mod api;
 mod core;
 mod ports;
 
+use std::path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -16,6 +18,7 @@ use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
+use crate::core::workspace_manager::{WorkspaceManager, WorkspaceManagerConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,6 +30,12 @@ async fn main() -> anyhow::Result<()> {
     // Initialize dependencies (Adapters)
     let storage = Arc::new(MemoryStorage::new());
     let worker_pool = WorkerPool::new();
+    let workspace_manager = WorkspaceManager::new(
+        WorkspaceManagerConfig { 
+            root: path::Path::join(""), 
+            ttl: Duration::from_mins(5), 
+            vacuum_interval: Duration::from_mins(15) }
+    );
     let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
 
