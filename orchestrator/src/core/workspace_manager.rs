@@ -31,7 +31,16 @@ impl WorkspaceManager {
         todo!();
     }
 
-    pub fn get_path(&self, key: &WorkspaceKey) -> Result<PathBuf> {
+    pub fn default() -> WorkspaceManager {
+        WorkspaceManager::new(WorkspaceManagerConfig {
+            root: PathBuf::from("/tmp/workspaces"),
+            ttl: Duration::from_secs(3600),
+            vacuum_interval: Duration::from_secs(60),
+        })
+    }
+
+    pub fn ensure_workspace(&self, workflow_inst_id: &str, task: &TaskDef) -> Result<PathBuf> {
+        let key = workspace_key_for_task(workflow_inst_id, task);
         todo!();
     }
 
@@ -40,7 +49,7 @@ impl WorkspaceManager {
     }
 }
 
-pub fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
+fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
     match &task.workspace {
         Some(workspace) => WorkspaceKey::Group {
             workflow_inst_id: workflow_inst_id.to_string(),

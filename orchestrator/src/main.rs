@@ -3,12 +3,12 @@ mod api;
 mod core;
 mod ports;
 
-use std::path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use std::{path::{PathBuf}};
 
 use crate::adapters::docker_executor::DockerExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
@@ -30,17 +30,17 @@ async fn main() -> anyhow::Result<()> {
     // Initialize dependencies (Adapters)
     let storage = Arc::new(MemoryStorage::new());
     let worker_pool = WorkerPool::new();
-    let workspace_manager = WorkspaceManager::new(
+    let workspace_manager = Arc::new(WorkspaceManager::new(
         WorkspaceManagerConfig { 
-            root: path::Path::join(""), 
-            ttl: Duration::from_mins(5), 
-            vacuum_interval: Duration::from_mins(15) }
-    );
+            root: PathBuf::from("/tmp/workspaces"), 
+            ttl: Duration::from_secs(300), 
+            vacuum_interval: Duration::from_secs(900) }
+    ));
     let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
 
     // Initialize Orchestrator (Application Layer)
-    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor, workflow_queue));
+    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor, workflow_queue, workspace_manager));
     let workflow_service = Arc::new(WorkflowService::new(storage.clone()));
     let function_service = Arc::new(FunctionService::new(storage.clone()));
     let recovered = orchestrator.synchronize_startup_tasks().await?;

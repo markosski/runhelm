@@ -24,6 +24,7 @@ fn orchestrator() -> Orchestrator {
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
         Arc::new(MemoryWorkflowQueue::new(10)),
+        Arc::new(WorkspaceManager::default()),
     )
 }
 
@@ -34,6 +35,7 @@ fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionServi
             storage.clone(),
             Arc::new(FakeExecutor::new()),
             Arc::new(MemoryWorkflowQueue::new(10)),
+            Arc::new(WorkspaceManager::default()),
         ),
         WorkflowService::new(storage.clone()),
         FunctionService::new(storage),
@@ -238,7 +240,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
     let storage = Arc::new(MemoryStorage::new());
     let executor = Arc::new(CountingExecutor::new(Duration::from_millis(50)));
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue));
+    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue, Arc::new(WorkspaceManager::default())));
     let scheduler = tokio::spawn(orchestrator.clone().run_scheduler(2));
 
     for id in ["workflow-1", "workflow-2", "workflow-3"] {
@@ -729,7 +731,7 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
 async fn queue_status_lists_pending_workflows() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue, Arc::new(WorkspaceManager::default()));
 
     let mut running = workflow_instance("running-workflow", "workflow-1");
     running.status = WorkflowStatus::Running;

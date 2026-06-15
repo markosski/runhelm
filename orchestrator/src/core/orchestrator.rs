@@ -3,6 +3,7 @@ use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::workflow::models::WorkflowStatus;
+use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::StoragePort;
 use crate::ports::workflow_queue::WorkflowQueuePort;
@@ -11,7 +12,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, info};
 
 #[cfg(test)]
-#[path = "orchestrator_tests.rs"]
+#[path = "orchestrator_tests.rs"
 mod tests;
 
 /// The application layer for the orchestrator.
@@ -21,6 +22,7 @@ pub struct Orchestrator {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
+    workspace_manager: Arc<WorkspaceManager>,
 }
 
 impl Orchestrator {
@@ -28,6 +30,7 @@ impl Orchestrator {
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
         workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
+        workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
         let engine = WorkflowEngine::new(storage.clone(), executor.clone());
         Self {
@@ -35,6 +38,7 @@ impl Orchestrator {
             storage,
             executor,
             workflow_queue,
+            workspace_manager,
         }
     }
 

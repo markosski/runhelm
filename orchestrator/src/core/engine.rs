@@ -9,6 +9,7 @@ use crate::core::workflow::models::{
     VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowDef,
     WorkflowInstance, WorkflowStatus,
 };
+use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
 use std::collections::{HashMap, HashSet};
@@ -21,6 +22,7 @@ mod tests;
 pub struct WorkflowEngine {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
+    workspace_manager: Arc<WorkspaceManager>,
 }
 
 #[derive(Default)]
@@ -188,11 +190,15 @@ impl WorkflowEngine {
                     .get(&task_attempt_id)
                     .cloned()
                     .unwrap();
+
                 let task_def = def
                     .tasks
                     .iter()
                     .find(|t| t.id == task_instance.task_def_id)
                     .unwrap();
+
+                // Ensure workspace is available
+                let workspace_id = self.workspace_manager.ensure_workspace(&workflow_instance.id, &task_def);
 
                 let resolved_inputs = self
                     .resolve_inputs(
