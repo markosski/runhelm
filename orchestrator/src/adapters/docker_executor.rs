@@ -3,6 +3,7 @@ use crate::core::models::{ExecutionMetadata, TaskDef};
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
 use serde_json::Value;
+use std::path::Path;
 use std::time::Duration;
 
 const DEFAULT_TASK_TIMEOUT: Duration = Duration::from_secs(300);
@@ -35,6 +36,7 @@ impl ExecutorPort for DockerExecutor {
         task: &TaskDef,
         inputs: &[Value],
         metadata: &ExecutionMetadata,
+        workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         let task_timeout = task
             .timeout_secs
@@ -48,6 +50,7 @@ impl ExecutorPort for DockerExecutor {
                 inputs,
                 task_timeout,
                 metadata.clone(),
+                workspace_path,
             )
             .await
     }
@@ -87,7 +90,13 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_millis(30),
-            executor.execute("123", &task, &[], &ExecutionMetadata::default()),
+            executor.execute(
+                "123",
+                &task,
+                &[],
+                &ExecutionMetadata::default(),
+                Path::new("/tmp/runhelm-test-workspace"),
+            ),
         )
         .await;
 
@@ -123,7 +132,13 @@ mod tests {
 
         let execution = tokio::spawn(async move {
             executor
-                .execute("123", &task, &[], &ExecutionMetadata::default())
+                .execute(
+                    "123",
+                    &task,
+                    &[],
+                    &ExecutionMetadata::default(),
+                    Path::new("/tmp/runhelm-test-workspace"),
+                )
                 .await
         });
         let claimed = worker_pool

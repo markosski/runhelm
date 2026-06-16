@@ -109,7 +109,7 @@ impl WorkflowEngine {
             None => anyhow::bail!("Workflow instance not found"),
         };
 
-        let def = match self
+        let workflow_def = match self
             .storage
             .get_workflow_def(&workflow_instance.workflow_def_id)
             .await?
@@ -123,12 +123,13 @@ impl WorkflowEngine {
             .save_workflow_instance(workflow_instance.clone())
             .await?;
 
-        let loop_slices = self.compute_loop_slices(&def);
+        let loop_slices = self.compute_loop_slices(&workflow_def);
 
         // Initialize tasks if not already done
         if workflow_instance.tasks.is_empty() {
-            for task_def in &def.tasks {
+            for task_def in &workflow_def.tasks {
                 let task_attempt_id = TaskInstance::make_task_attempt_id(&task_def.id, 1);
+
                 workflow_instance.tasks.insert(
                     task_attempt_id.clone(),
                     TaskInstance {
@@ -153,7 +154,11 @@ impl WorkflowEngine {
         while progress_made {
             progress_made = false;
 
-            if self.materialize_eligible_generations(&mut workflow_instance, &def, &loop_slices) {
+            if self.materialize_eligible_generations(
+                &mut workflow_instance,
+                &workflow_def,
+                &loop_slices,
+            ) {
                 progress_made = true;
             }
 
@@ -161,7 +166,7 @@ impl WorkflowEngine {
 
             for (task_attempt_id, task_instance) in workflow_instance.tasks.iter() {
                 if task_instance.status == TaskStatus::Pending {
-                    let task_def = def
+                    let task_def = workflow_def
                         .tasks
                         .iter()
                         .find(|t| t.id == task_instance.task_def_id)
@@ -170,7 +175,7 @@ impl WorkflowEngine {
                     let can_run = self
                         .resolve_inputs(
                             &workflow_instance,
-                            &def,
+                            &workflow_def,
                             task_instance,
                             task_def,
                             &loop_slices,
@@ -196,25 +201,27 @@ impl WorkflowEngine {
                     .cloned()
                     .unwrap();
 
-                let task_def = def
+                let task_def = workflow_def
                     .tasks
                     .iter()
                     .find(|t| t.id == task_instance.task_def_id)
                     .unwrap();
 
                 // Ensure workspace is available and mark it as recently used before execution.
-                self.workspace_manager
+                let workspace_path = self
+                    .workspace_manager
                     .create_or_time_stamp_workspace(&workflow_instance.id, &task_def)?;
 
                 let resolved_inputs = self
                     .resolve_inputs(
                         &workflow_instance,
-                        &def,
+                        &workflow_def,
                         &task_instance,
                         task_def,
                         &loop_slices,
                     )
                     .unwrap_or_default();
+
                 let inputs = resolved_inputs.values;
 
                 if let Err(error) = validate_inputs(task_def, &inputs) {
@@ -231,7 +238,8 @@ impl WorkflowEngine {
                     return Err(error);
                 }
 
-                let metadata = self.execution_metadata(&workflow_instance, &def, &task_instance);
+                let metadata =
+                    self.execution_metadata(&workflow_instance, &workflow_def, &task_instance);
                 if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
                     task.input_data = inputs.clone();
                     task.input_mapping = resolved_inputs.mapping.clone();
@@ -241,7 +249,13 @@ impl WorkflowEngine {
                     match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
                         Ok(resolved_task_def) => {
                             self.executor
-                                .execute(&workflow_inst_id, &resolved_task_def, &inputs, &metadata)
+                                .execute(
+                                    &workflow_inst_id,
+                                    &resolved_task_def,
+                                    &inputs,
+                                    &metadata,
+                                    &workspace_path,
+                                )
                                 .await
                         }
                         Err(error) => Err(error),
@@ -324,7 +338,7 @@ impl WorkflowEngine {
                                 };
                                 if let Err(error) = self.apply_verifier_result(
                                     &mut workflow_instance,
-                                    &def,
+                                    &workflow_def,
                                     &loop_slices,
                                     &task_attempt_id,
                                     &output,
@@ -523,13 +537,14 @@ impl WorkflowEngine {
 
     fn materialize_generation(
         &self,
-        instance: &mut WorkflowInstance,
+        workflow_instance: &mut WorkflowInstance,
         slice: &[String],
         generation_index: u32,
     ) {
         for task_def_id in slice {
             let task_attempt_id = TaskInstance::make_task_attempt_id(task_def_id, generation_index);
-            instance
+
+            workflow_instance
                 .tasks
                 .entry(task_attempt_id.clone())
                 .or_insert_with(|| TaskInstance {

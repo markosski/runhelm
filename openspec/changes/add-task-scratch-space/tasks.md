@@ -16,10 +16,10 @@
 
 ## 3. Executor Payload Contract
 
-- [ ] 3.1 Add selected workspace context to orchestrator executor payloads, including workspace path, workspace kind, and optional group name.
-- [ ] 3.2 Thread selected workspace context through the orchestrator `ExecutorPort` call path when tasks transition to execution.
-- [ ] 3.3 Update worker `TaskExecutionPayload` TypeScript models to include selected workspace context.
-- [ ] 3.4 Update fake and Docker executor adapters to accept and expose exactly one selected workspace path.
+- [x] 3.1 Add selected workspace path to orchestrator executor payloads.
+- [x] 3.2 Thread selected workspace path through the orchestrator `ExecutorPort` call path when tasks transition to execution.
+- [x] 3.3 Update worker `TaskExecutionPayload` TypeScript models to include selected workspace path.
+- [x] 3.4 Update fake and Docker executor adapters to accept and expose exactly one selected workspace path.
 - [ ] 3.5 Add orchestrator and worker tests proving later attempts for the same logical task receive the same selected workspace path.
 
 ## 4. Worker Executor Integration
@@ -59,6 +59,6 @@
 
 ## 9. Verification
 
-- [ ] 9.1 Run orchestrator Rust tests covering workflow validation, workspace selection, and executor payload behavior.
+- [x] 9.1 Run orchestrator Rust tests covering workflow validation, workspace selection, and executor payload behavior.
 - [ ] 9.2 Run worker TypeScript tests covering executor workspace exposure and file tool containment.
 - [ ] 9.3 Run OpenSpec validation/status checks for `add-task-scratch-space`.

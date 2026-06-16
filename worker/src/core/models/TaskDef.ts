@@ -58,6 +58,7 @@ export interface ExecutionMetadata {
 export interface TaskExecutionPayload {
     workflow_inst_id: string;
     task: TaskDef;
+    workspace_path: string;
     inputs: any[];
     execution_metadata?: ExecutionMetadata;
     input_provided?: string;

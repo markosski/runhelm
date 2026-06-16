@@ -10,13 +10,17 @@ use crate::core::models::{
 };
 use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
+use crate::core::workspace_manager::WorkspaceManagerConfig;
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, sleep};
 
 fn orchestrator() -> Orchestrator {
@@ -40,6 +44,20 @@ fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionServi
         WorkflowService::new(storage.clone()),
         FunctionService::new(storage),
     )
+}
+
+fn temp_root(test_name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    std::env::temp_dir().join(format!(
+        "runhelm-{}-{}-{}",
+        test_name,
+        std::process::id(),
+        nanos
+    ))
 }
 
 struct CountingExecutor {
@@ -66,15 +84,61 @@ impl CountingExecutor {
 impl ExecutorPort for CountingExecutor {
     async fn execute(
         &self,
-        workflow_def_id: &str,
-        task: &TaskDef,
-        inputs: &[serde_json::Value],
-        metadata: &ExecutionMetadata,
+        _workflow_inst_id: &str,
+        _task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
         sleep(self.delay).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(ExecutionResult::Success(json!({})))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RecordedIsolatedExecution {
+    workflow_inst_id: String,
+    task_id: String,
+    workspace_path: PathBuf,
+}
+
+struct RecordingIsolatedExecutor {
+    records: StdMutex<Vec<RecordedIsolatedExecution>>,
+}
+
+impl RecordingIsolatedExecutor {
+    fn new() -> Self {
+        Self {
+            records: StdMutex::new(vec![]),
+        }
+    }
+
+    fn records(&self) -> Vec<RecordedIsolatedExecution> {
+        self.records.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ExecutorPort for RecordingIsolatedExecutor {
+    async fn execute(
+        &self,
+        workflow_inst_id: &str,
+        task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        workspace_path: &Path,
+    ) -> anyhow::Result<ExecutionResult> {
+        self.records
+            .lock()
+            .unwrap()
+            .push(RecordedIsolatedExecution {
+                workflow_inst_id: workflow_inst_id.to_string(),
+                task_id: task.id.clone(),
+                workspace_path: workspace_path.to_path_buf(),
+            });
         Ok(ExecutionResult::Success(json!({})))
     }
 }
@@ -209,6 +273,83 @@ async fn execute_workflow_task_isolated_resolves_registered_function_ref() {
     assert_eq!(
         result,
         Some(ExecutionResult::Success(json!({ "ok": false })))
+    );
+}
+
+#[tokio::test]
+async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
+    let storage = Arc::new(MemoryStorage::new());
+    let executor = Arc::new(RecordingIsolatedExecutor::new());
+    let workflow_service = WorkflowService::new(storage.clone());
+    let orchestrator = Orchestrator::new(
+        storage,
+        executor.clone(),
+        Arc::new(MemoryWorkflowQueue::new(10)),
+        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
+            root: temp_root("isolated-id"),
+            ttl: Duration::from_secs(3600),
+            vacuum_interval: Duration::from_secs(60),
+        })),
+    );
+
+    workflow_service
+        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .await
+        .unwrap();
+
+    orchestrator
+        .execute_workflow_task_isolated("workflow1", "taska", &[])
+        .await
+        .unwrap();
+
+    let records = executor.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].task_id, "taska");
+    assert!(
+        records[0]
+            .workflow_inst_id
+            .starts_with("isolated-workflow1-taska-")
+    );
+    assert_ne!(records[0].workflow_inst_id, "123");
+}
+
+#[tokio::test]
+async fn execute_workflow_task_isolated_creates_workspace_for_isolated_execution() {
+    let storage = Arc::new(MemoryStorage::new());
+    let executor = Arc::new(RecordingIsolatedExecutor::new());
+    let workflow_service = WorkflowService::new(storage.clone());
+    let workspace_root = temp_root("isolated-workspace");
+    let orchestrator = Orchestrator::new(
+        storage,
+        executor.clone(),
+        Arc::new(MemoryWorkflowQueue::new(10)),
+        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
+            root: workspace_root.clone(),
+            ttl: Duration::from_secs(3600),
+            vacuum_interval: Duration::from_secs(60),
+        })),
+    );
+
+    workflow_service
+        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .await
+        .unwrap();
+
+    orchestrator
+        .execute_workflow_task_isolated("workflow1", "taska", &[])
+        .await
+        .unwrap();
+
+    let records = executor.records();
+    let record = records.first().unwrap();
+    assert!(record.workspace_path.is_dir());
+    assert!(record.workspace_path.join(".timestamp").is_file());
+    assert!(record.workspace_path.starts_with(&workspace_root));
+    assert_eq!(
+        record.workspace_path,
+        workspace_root
+            .join(&record.workflow_inst_id)
+            .join("taskid-taska")
     );
 }
 

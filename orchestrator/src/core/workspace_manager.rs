@@ -61,12 +61,12 @@ impl WorkspaceManager {
         &self,
         workflow_inst_id: &str,
         task: &TaskDef,
-    ) -> Result<()> {
+    ) -> Result<PathBuf> {
         let workspace_path = self.ensure_workspace(workflow_inst_id, task)?;
         let file_path = workspace_path.join(".timestamp");
         fs::write(file_path, unix_timestamp()?.to_string())?;
 
-        Ok(())
+        Ok(workspace_path)
     }
 
     pub async fn vacuum(&self) -> Result<()> {

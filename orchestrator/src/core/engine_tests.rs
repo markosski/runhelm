@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use serde_json::Number;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
@@ -34,10 +35,11 @@ struct ContinueThenCompleteExecutor;
 impl ExecutorPort for ContinueThenCompleteExecutor {
     async fn execute(
         &self,
-        workflows_isnt_id: &str,
+        _workflow_inst_id: &str,
         task: &TaskDef,
-        inputs: &[serde_json::Value],
+        _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             let generation = metadata
@@ -64,10 +66,11 @@ struct CompleteVerifierExecutor;
 impl ExecutorPort for CompleteVerifierExecutor {
     async fn execute(
         &self,
-        workflow_inst_id: &str,
+        _workflow_inst_id: &str,
         task: &TaskDef,
-        inputs: &[serde_json::Value],
-        metadata: &ExecutionMetadata,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
@@ -83,10 +86,11 @@ struct AlwaysContinueVerifierExecutor;
 impl ExecutorPort for AlwaysContinueVerifierExecutor {
     async fn execute(
         &self,
-        workflow_inst_id: &str,
+        _workflow_inst_id: &str,
         task: &TaskDef,
-        inputs: &[serde_json::Value],
-        metadata: &ExecutionMetadata,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({
@@ -132,6 +136,7 @@ impl ExecutorPort for RecordingContinueExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         let reuse_session = match &task.kind {
             TaskTypeDef::Agent { reuse_session, .. } => Some(*reuse_session),
