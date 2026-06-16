@@ -12,7 +12,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, info};
 
 #[cfg(test)]
-#[path = "orchestrator_tests.rs"
+#[path = "orchestrator_tests.rs"]
 mod tests;
 
 /// The application layer for the orchestrator.
@@ -22,7 +22,6 @@ pub struct Orchestrator {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
-    workspace_manager: Arc<WorkspaceManager>,
 }
 
 impl Orchestrator {
@@ -32,13 +31,13 @@ impl Orchestrator {
         workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
         workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
-        let engine = WorkflowEngine::new(storage.clone(), executor.clone());
+        let engine = WorkflowEngine::new(storage.clone(), executor.clone(), workspace_manager);
+
         Self {
             engine,
             storage,
             executor,
             workflow_queue,
-            workspace_manager,
         }
     }
 

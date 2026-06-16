@@ -50,9 +50,9 @@ The system SHALL create workspace directories under a configured worker-local wo
 - **WHEN** a task with `workspace.group_name` is prepared for execution
 - **THEN** the system creates or resolves a directory under the worker-local workspace root from the derived group workspace key
 
-#### Scenario: Workspace directory includes timestamp
+#### Scenario: Workspace records timestamp marker
 - **WHEN** the system creates a workspace directory
-- **THEN** the physical directory name includes a creation timestamp usable by later stale-directory cleanup
+- **THEN** the workspace includes a `.timestamp` marker usable by later stale-directory cleanup
 
 ### Requirement: Workspace Manager Lifecycle
 The system SHALL provide an orchestrator-side `WorkspaceManager` component for deriving workspace keys, creating selected workspaces, resolving workflow-instance group workspaces, and cleaning RunHelm-owned workspaces.

@@ -16,11 +16,16 @@ fn make_engine() -> WorkflowEngine {
     WorkflowEngine::new(
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
+        Arc::new(WorkspaceManager::default()),
     )
 }
 
 fn make_engine_with_executor(executor: Arc<dyn ExecutorPort + Send + Sync>) -> WorkflowEngine {
-    WorkflowEngine::new(Arc::new(MemoryStorage::new()), executor)
+    WorkflowEngine::new(
+        Arc::new(MemoryStorage::new()),
+        executor,
+        Arc::new(WorkspaceManager::default()),
+    )
 }
 
 struct ContinueThenCompleteExecutor;

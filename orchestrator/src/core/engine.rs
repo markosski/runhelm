@@ -39,8 +39,13 @@ impl WorkflowEngine {
     pub fn new(
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
+        workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
-        Self { storage, executor }
+        Self {
+            storage,
+            executor,
+            workspace_manager,
+        }
     }
 
     /// Returns a lightweight status snapshot of a workflow instance.
@@ -197,8 +202,9 @@ impl WorkflowEngine {
                     .find(|t| t.id == task_instance.task_def_id)
                     .unwrap();
 
-                // Ensure workspace is available
-                let workspace_id = self.workspace_manager.ensure_workspace(&workflow_instance.id, &task_def);
+                // Ensure workspace is available and mark it as recently used before execution.
+                self.workspace_manager
+                    .create_or_time_stamp_workspace(&workflow_instance.id, &task_def)?;
 
                 let resolved_inputs = self
                     .resolve_inputs(

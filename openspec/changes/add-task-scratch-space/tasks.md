@@ -7,12 +7,12 @@
 
 ## 2. Workspace Manager
 
-- [ ] 2.1 Add an orchestrator-side `WorkspaceManager` component with configuration for worker-local workspace root, workspace TTL, and cleanup interval.
-- [ ] 2.2 Implement `WorkspaceManager` creation/resolution for default logical-task workspaces using a stable key derived from workflow instance ID and task ID.
-- [ ] 2.3 Implement `WorkspaceManager` creation/resolution for workflow-instance workspace groups using a stable key derived from workflow instance ID and normalized workspace group name.
-- [ ] 2.4 Ensure workspace physical directory names include a creation timestamp for stale cleanup.
-- [ ] 2.5 Implement explicit cleanup for RunHelm-owned workspace directories without adding the background TTL monitor yet.
-- [ ] 2.6 Add unit tests for workspace key derivation, path construction, stable task workspace reuse across attempts, stable group workspace reuse across tasks, and explicit cleanup.
+- [x] 2.1 Add an orchestrator-side `WorkspaceManager` component with configuration for worker-local workspace root, workspace TTL, and cleanup interval.
+- [x] 2.2 Implement `WorkspaceManager` creation/resolution for default logical-task workspaces using a stable key derived from workflow instance ID and task ID.
+- [x] 2.3 Implement `WorkspaceManager` creation/resolution for workflow-instance workspace groups using a stable key derived from workflow instance ID and normalized workspace group name.
+- [x] 2.4 Ensure each workspace records a timestamp marker usable by stale cleanup.
+- [x] 2.5 Implement explicit cleanup for RunHelm-owned workspace directories without adding the background TTL monitor yet.
+- [x] 2.6 Add unit tests for workspace key derivation, path construction, stable task workspace reuse across attempts, stable group workspace reuse across tasks, and cleanup.
 
 ## 3. Executor Payload Contract
 
@@ -47,7 +47,7 @@
 
 - [ ] 7.1 Document the workflow YAML shape for default private workspace and nested `workspace.group_name`.
 - [ ] 7.2 Document selected workspace executor context for Agent, Function, Docker, and fake executors.
-- [ ] 7.3 Document local workspace root configuration, timestamped directory layout, and one-workspace-per-task behavior.
+- [ ] 7.3 Document local workspace root configuration, timestamp marker layout, and one-workspace-per-task behavior.
 - [ ] 7.4 Document operational cleanup behavior and TTL cleanup configuration.
 
 ## 8. TTL Monitor
