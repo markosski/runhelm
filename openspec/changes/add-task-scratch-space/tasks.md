@@ -25,7 +25,7 @@
 ## 4. Worker Executor Integration
 
 - [x] 4.1 Update Function executor context so task code can discover and use the selected workspace path.
-- [ ] 4.2 Update Agent executor prompt or execution context to tell the Agent the selected workspace path for file work.
+- [x] 4.2 Update Agent executor prompt or execution context to tell the Agent the selected workspace path for file work.
 - [ ] 4.3 Update Docker execution to mount only the selected workspace path into the container.
 - [ ] 4.4 Ensure tasks with `workspace.group_name` do not also receive the default private workspace path.
 - [ ] 4.5 Add worker tests for Agent, Function, Docker, and fake executor workspace exposure behavior.
