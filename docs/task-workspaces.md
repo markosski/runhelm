@@ -2,6 +2,66 @@
 
 RunHelm passes each task execution one selected workspace path. The path is prepared before executor code runs and points to the task's private workspace or to its declared workspace group. When a task declares `workspace.group_name`, that group workspace replaces the task's default private workspace.
 
+## Workflow YAML
+
+Every task receives a private logical-task workspace by default. Existing workflow YAML does not need to opt in:
+
+```yaml
+id: report-workflow
+tasks:
+  - id: draft-report
+    kind:
+      Agent:
+        model_id: openai/gpt-4.1
+        provider_url: ""
+        prompt: Draft the report.
+        tools: []
+        skills: []
+    output_schema:
+      type: object
+    required_credentials: []
+data_bindings: []
+```
+
+Use `workspace.group_name` when multiple tasks should intentionally share one workflow-instance workspace:
+
+```yaml
+id: repo-workflow
+tasks:
+  - id: clone-repo
+    kind:
+      Function:
+        dependencies: []
+        code: |
+          export default async function run({ workspacePath }) {
+            return { workspacePath };
+          }
+    workspace:
+      group_name: repo
+    output_schema:
+      type: object
+    required_credentials: []
+
+  - id: analyze-repo
+    kind:
+      Agent:
+        model_id: openai/gpt-4.1
+        provider_url: ""
+        prompt: Analyze the repository files in the selected workspace.
+        tools: []
+        skills: []
+    workspace:
+      group_name: repo
+    output_schema:
+      type: object
+    required_credentials: []
+data_bindings:
+  - source_task_id: clone-repo
+    target_task_id: analyze-repo
+```
+
+Group names use the same conservative identifier style as task IDs. A task receives either its default private workspace or one declared group workspace, never both.
+
 ## Function Executor Context
 
 Inline Function tasks receive the selected workspace path in their execution context as `workspacePath`.
@@ -28,11 +88,45 @@ Docker-backed dispatch passes the selected workspace path through to the worker 
 
 The worker container is reused across tasks, so Docker cannot remount only one selected workspace subdirectory per task dispatch. Runtime writable locations such as `/tmp` and `/home/runhelm/.cache` remain available for executor internals, while task file work is directed to the selected path under `/workspaces`.
 
+## Fake Executor
+
+The fake executor is used for orchestrator tests and local non-side-effect execution paths. It receives the same selected workspace path through the executor contract, but it does not expose a filesystem API to user task code.
+
+## Workspace Root And Layout
+
+The orchestrator resolves workspace directories under `RUNHELM_WORKSPACE_ROOT` when that environment variable is set. In Docker Compose, this is `/workspaces`, backed by the named `runhelm-workspaces` volume and mounted into both orchestrator and worker containers.
+
+When `RUNHELM_WORKSPACE_ROOT` is not set, local runs use the default workspace root under the user's cache directory. The exact default is a local development/runtime detail; set `RUNHELM_WORKSPACE_ROOT` when deployments need a predictable path.
+
+Workspace paths are deterministic under the configured root:
+
+```text
+<workspace-root>/<workflow-instance-id>/taskid-<task-id>
+<workspace-root>/<workflow-instance-id>/taskgroup-<group-name>
+```
+
+Examples:
+
+```text
+/workspaces/inst-1/taskid-draft-report
+/workspaces/inst-1/taskgroup-repo
+```
+
+Later attempts for the same logical task reuse the same `taskid-<task-id>` path. Tasks that declare the same `workspace.group_name` within one workflow instance reuse the same `taskgroup-<group-name>` path.
+
+Each workspace directory includes a `.timestamp` marker. RunHelm updates that marker when the workspace is created or selected for execution so cleanup can identify stale RunHelm-owned workspaces.
+
 ## Workflow Semantics
 
 Workspace groups do not create scheduling dependencies. If two tasks declare the same `workspace.group_name`, they share the same selected workspace path, but the workflow engine still uses normal data bindings and control dependencies to decide when a task is eligible to run.
 
 If a task needs files produced by another task in the same workspace group, the workflow must still declare the normal dependency that orders those tasks.
+
+## Cleanup
+
+`WorkspaceManager` can remove expired RunHelm-owned workspace directories under the configured workspace root. Cleanup relies on the workspace `.timestamp` marker and only targets the RunHelm workspace layout, not arbitrary paths returned by task code.
+
+The current implementation includes explicit cleanup behavior and TTL configuration in `WorkspaceManager`. The background TTL monitor is intentionally deferred until workspace creation and executor propagation are complete. When enabled, the monitor should wake on its configured interval and remove expired workspace directories whose timestamp is older than the configured TTL.
 
 ## File Access Scope
 

@@ -43,10 +43,10 @@
 
 ## 7. Documentation
 
-- [ ] 7.1 Document the workflow YAML shape for default private workspace and nested `workspace.group_name`.
-- [ ] 7.2 Document selected workspace executor context for Agent, Function, Docker, and fake executors.
-- [ ] 7.3 Document local workspace root configuration, timestamp marker layout, and one-workspace-per-task behavior.
-- [ ] 7.4 Document operational cleanup behavior and TTL cleanup configuration.
+- [x] 7.1 Document the workflow YAML shape for default private workspace and nested `workspace.group_name`.
+- [x] 7.2 Document selected workspace executor context for Agent, Function, Docker, and fake executors.
+- [x] 7.3 Document local workspace root configuration, timestamp marker layout, and one-workspace-per-task behavior.
+- [x] 7.4 Document operational cleanup behavior and TTL cleanup configuration.
 
 ## 8. TTL Monitor
 
