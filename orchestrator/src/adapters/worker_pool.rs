@@ -488,7 +488,7 @@ mod tests {
         .await;
 
         let task = test_task("task-1");
-        let workspace_path = Path::new("/tmp/runhelm-test-workspace/custom");
+        let workspace_path = Path::new("/workspaces/workflow-1/taskid-task-1");
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(claimed.workspace_path, workspace_path);
         assert_eq!(
             serde_json::to_value(&claimed).unwrap()["workspace_path"],
-            json!("/tmp/runhelm-test-workspace/custom")
+            json!("/workspaces/workflow-1/taskid-task-1")
         );
 
         execution.abort();

@@ -6,6 +6,9 @@ services:
       - "0.0.0.0:3000:3000"
     environment:
       RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
+      RUNHELM_WORKSPACE_ROOT: /workspaces
+    volumes:
+      - runhelm-workspaces:/workspaces
     read_only: true
     tmpfs:
       - /tmp

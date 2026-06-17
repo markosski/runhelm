@@ -28,7 +28,7 @@ fn orchestrator() -> Orchestrator {
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
         Arc::new(MemoryWorkflowQueue::new(10)),
-        Arc::new(WorkspaceManager::default()),
+        Arc::new(test_workspace_manager("orchestrator-default")),
     )
 }
 
@@ -39,7 +39,7 @@ fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionServi
             storage.clone(),
             Arc::new(FakeExecutor::new()),
             Arc::new(MemoryWorkflowQueue::new(10)),
-            Arc::new(WorkspaceManager::default()),
+            Arc::new(test_workspace_manager("orchestrator-services")),
         ),
         WorkflowService::new(storage.clone()),
         FunctionService::new(storage),
@@ -58,6 +58,14 @@ fn temp_root(test_name: &str) -> PathBuf {
         std::process::id(),
         nanos
     ))
+}
+
+fn test_workspace_manager(test_name: &str) -> WorkspaceManager {
+    WorkspaceManager::new(WorkspaceManagerConfig {
+        root: temp_root(test_name),
+        ttl: Duration::from_secs(3600),
+        vacuum_interval: Duration::from_secs(60),
+    })
 }
 
 struct CountingExecutor {
@@ -385,7 +393,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
         storage.clone(),
         executor.clone(),
         queue,
-        Arc::new(WorkspaceManager::default()),
+        Arc::new(test_workspace_manager("orchestrator-concurrency")),
     ));
     let scheduler = tokio::spawn(orchestrator.clone().run_scheduler(2));
 
@@ -881,7 +889,7 @@ async fn queue_status_lists_pending_workflows() {
         storage.clone(),
         Arc::new(FakeExecutor::new()),
         queue,
-        Arc::new(WorkspaceManager::default()),
+        Arc::new(test_workspace_manager("orchestrator-queue-status")),
     );
 
     let mut running = workflow_instance("running-workflow", "workflow-1");

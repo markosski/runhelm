@@ -3,7 +3,6 @@ mod api;
 mod core;
 mod ports;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -18,7 +17,9 @@ use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
-use crate::core::workspace_manager::{WorkspaceManager, WorkspaceManagerConfig};
+use crate::core::workspace_manager::{
+    WorkspaceManager, WorkspaceManagerConfig, configured_workspace_root,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let storage = Arc::new(MemoryStorage::new());
     let worker_pool = WorkerPool::new();
     let workspace_manager = Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
-        root: PathBuf::from("/tmp/workspaces"),
+        root: configured_workspace_root(),
         ttl: Duration::from_secs(300),
         vacuum_interval: Duration::from_secs(900),
     }));

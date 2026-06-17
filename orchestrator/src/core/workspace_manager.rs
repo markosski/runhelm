@@ -35,16 +35,6 @@ impl WorkspaceManager {
         WorkspaceManager { config }
     }
 
-    pub fn default() -> WorkspaceManager {
-        let root = get_workspace_root();
-
-        WorkspaceManager::new(WorkspaceManagerConfig {
-            root: PathBuf::from(root),
-            ttl: Duration::from_secs(3600),
-            vacuum_interval: Duration::from_secs(60),
-        })
-    }
-
     pub fn ensure_workspace(&self, workflow_inst_id: &str, task: &TaskDef) -> Result<PathBuf> {
         let key = workspace_key_for_task(workflow_inst_id, task);
         let full_path = workspace_path(&self.config.root, &key);
@@ -114,19 +104,24 @@ impl WorkspaceManager {
     }
 }
 
-fn get_workspace_root() -> PathBuf {
-    std::env::var("RUNHELM_WORKSPACE_ROOT")
+pub fn configured_workspace_root() -> PathBuf {
+    workspace_root_from_values(
+        std::env::var("RUNHELM_WORKSPACE_ROOT").ok(),
+        std::env::var("HOME").ok(),
+    )
+}
+
+fn workspace_root_from_values(workspace_root: Option<String>, home: Option<String>) -> PathBuf {
+    workspace_root
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::var("HOME")
-                .map(|home| {
-                    PathBuf::from(home)
-                        .join(".cache")
-                        .join("runhelm")
-                        .join("workspaces")
-                })
-                .unwrap()
-        })
+        .unwrap_or_else(|| default_workspace_root(home.expect("HOME must be set")))
+}
+
+fn default_workspace_root(home: String) -> PathBuf {
+    PathBuf::from(home)
+        .join(".cache")
+        .join("runhelm")
+        .join("workspaces")
 }
 
 fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
@@ -167,7 +162,7 @@ mod tests {
         models::{FunctionTaskDef, TaskDef, TaskTypeDef, Workspace},
         workspace_manager::{
             WorkspaceKey, WorkspaceManager, WorkspaceManagerConfig, workspace_key_for_task,
-            workspace_path,
+            workspace_path, workspace_root_from_values,
         },
     };
     use serde_json::json;
@@ -265,6 +260,28 @@ mod tests {
         let given = workspace_path(Path::new("/root/workspace"), &workspace_key);
 
         assert_eq!(expected.to_string(), given.to_str().to_owned().unwrap());
+    }
+
+    #[test]
+    fn configured_workspace_root_prefers_explicit_workspace_root() {
+        assert_eq!(
+            workspace_root_from_values(
+                Some("/workspaces".to_string()),
+                Some("/home/runhelm".to_string())
+            ),
+            PathBuf::from("/workspaces")
+        );
+    }
+
+    #[test]
+    fn configured_workspace_root_defaults_under_home_cache() {
+        assert_eq!(
+            workspace_root_from_values(None, Some("/home/runhelm".to_string())),
+            PathBuf::from("/home/runhelm")
+                .join(".cache")
+                .join("runhelm")
+                .join("workspaces")
+        );
     }
 
     #[test]

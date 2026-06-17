@@ -19,7 +19,7 @@ fn make_engine() -> WorkflowEngine {
     WorkflowEngine::new(
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
-        Arc::new(WorkspaceManager::default()),
+        Arc::new(test_workspace_manager("engine-default")),
     )
 }
 
@@ -27,7 +27,7 @@ fn make_engine_with_executor(executor: Arc<dyn ExecutorPort + Send + Sync>) -> W
     WorkflowEngine::new(
         Arc::new(MemoryStorage::new()),
         executor,
-        Arc::new(WorkspaceManager::default()),
+        Arc::new(test_workspace_manager("engine-executor")),
     )
 }
 
@@ -58,6 +58,14 @@ fn temp_workspace_root(test_name: &str) -> PathBuf {
         std::process::id(),
         nanos
     ))
+}
+
+fn test_workspace_manager(test_name: &str) -> WorkspaceManager {
+    WorkspaceManager::new(WorkspaceManagerConfig {
+        root: temp_workspace_root(test_name),
+        ttl: Duration::from_secs(3600),
+        vacuum_interval: Duration::from_secs(60),
+    })
 }
 
 struct ContinueThenCompleteExecutor;
