@@ -64,6 +64,7 @@ export class FunctionExecutor implements TaskExecutor {
             const context = {
                 inputs: payload.inputs,
                 credentials,
+                workspacePath: payload.workspace_path,
             };
 
             const runResult = await runChild(
