@@ -27,7 +27,7 @@
 - [x] 4.1 Update Function executor context so task code can discover and use the selected workspace path.
 - [x] 4.2 Update Agent executor prompt or execution context to tell the Agent the selected workspace path for file work.
 - [x] 4.3 Update Docker deployment to mount the configured workspace root into reused worker containers.
-- [ ] 4.4 Ensure tasks with `workspace.group_name` do not also receive the default private workspace path.
+- [x] 4.4 Add dispatch-level coverage proving `workspace.group_name` selects the group workspace path instead of the task's default private workspace path.
 - [ ] 4.5 Add worker tests for Agent, Function, Docker, and fake executor workspace exposure behavior.
 
 ## 5. File Tool Path Containment

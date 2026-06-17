@@ -718,6 +718,37 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
     );
 }
 
+#[tokio::test]
+async fn test_group_workspace_dispatch_uses_group_path_instead_of_private_task_path() {
+    let executor = Arc::new(RecordingContinueExecutor::new());
+    let workspace_root = temp_workspace_root("engine-group-workspace-dispatch");
+    let engine =
+        make_engine_with_executor_and_workspace_root(executor.clone(), workspace_root.clone());
+    let mut grouped_task = task_def("clone-repo", json!({ "type": "object" }));
+    grouped_task.workspace = Some(Workspace {
+        group_name: "repo".to_string(),
+    });
+    let def = WorkflowDef {
+        id: "def-group-workspace-dispatch".to_string(),
+        tasks: vec![grouped_task],
+        data_bindings: vec![],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let records = executor.records();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].workspace_path,
+        workspace_root.join(&instance_id).join("taskgroup-repo")
+    );
+}
+
 #[test]
 fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
     let engine = make_engine();
