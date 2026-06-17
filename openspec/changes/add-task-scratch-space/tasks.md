@@ -20,7 +20,7 @@
 - [x] 3.2 Thread selected workspace path through the orchestrator `ExecutorPort` call path when tasks transition to execution.
 - [x] 3.3 Update worker `TaskExecutionPayload` TypeScript models to include selected workspace path.
 - [x] 3.4 Update fake and Docker executor adapters to accept and expose exactly one selected workspace path.
-- [ ] 3.5 Add orchestrator and worker tests proving later attempts for the same logical task receive the same selected workspace path.
+- [x] 3.5 Add orchestrator tests proving later attempts for the same logical task receive the same selected workspace path.
 
 ## 4. Worker Executor Integration
 
