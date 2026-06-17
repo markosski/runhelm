@@ -30,12 +30,12 @@
 - [x] 4.4 Add dispatch-level coverage proving `workspace.group_name` selects the group workspace path instead of the task's default private workspace path.
 - [x] 4.5 Add executor tests for Agent, Function, and Docker workspace exposure/pass-through behavior.
 
-## 5. File Tool Path Containment
+## 5. File Access Scope
 
-- [ ] 5.1 Identify file read/write tool surfaces available to Agent or Function execution.
-- [ ] 5.2 Add path resolution validation that rejects absolute path escapes, `..` traversal, and symlink escapes outside the selected workspace.
-- [ ] 5.3 Apply workspace path validation to all file tools that can access local files.
-- [ ] 5.4 Add tests for allowed in-workspace access and rejected traversal, absolute-path, and symlink escape attempts.
+- [x] 5.1 Identify file read/write surfaces available to Agent, Function, and Docker-backed execution.
+- [x] 5.2 Document which file access surfaces are guidance-only versus enforceable by RunHelm-owned code.
+- [x] 5.3 Confirm the current implementation exposes one selected workspace path but does not enforce selected-workspace-only access for arbitrary task code.
+- [x] 5.4 Defer strict path containment for file tools to a future sandbox, per-task container, or validated file-tool design.
 
 ## 6. Workflow Semantics
 
@@ -52,7 +52,7 @@
 
 ## 8. TTL Monitor
 
-- [ ] 8.1 Implement the `WorkspaceManager` background TTL monitor after workspace creation, executor payloads, and path validation are complete.
+- [ ] 8.1 Implement the `WorkspaceManager` background TTL monitor after workspace creation and executor payloads are complete.
 - [ ] 8.2 Make the TTL monitor wake interval and workspace TTL configurable.
 - [ ] 8.3 Ensure the TTL monitor only removes RunHelm-owned expired workspace directories under the configured workspace root.
 - [ ] 8.4 Add tests for expired workspace cleanup, non-expired workspace preservation, and cleanup staying inside the configured root.
@@ -60,5 +60,5 @@
 ## 9. Verification
 
 - [x] 9.1 Run orchestrator Rust tests covering workflow validation, workspace selection, and executor payload behavior.
-- [ ] 9.2 Run worker TypeScript tests covering executor workspace exposure and file tool containment.
+- [ ] 9.2 Run worker TypeScript tests covering executor workspace exposure.
 - [ ] 9.3 Run OpenSpec validation/status checks for `add-task-scratch-space`.

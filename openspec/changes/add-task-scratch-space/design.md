@@ -14,7 +14,7 @@ The feature spans orchestrator workflow definitions, executor payloads, worker f
 
 - Provide every logical task within a workflow run with an isolated private workspace that is reused by that task's attempts.
 - Allow workflow authors to explicitly declare a shared workspace group for selected tasks, replacing that task's default private workspace.
-- Expose one worker-local workspace directory to each task executor with path containment so each task can read and write only that selected workspace.
+- Expose one worker-local workspace directory to each task executor so task code has an explicit place for file work.
 - Use worker-local filesystem directories for workspace in the initial implementation.
 - Keep task scheduling and structured task inputs/outputs based on JSON data bindings; workspace files provide filesystem access only and do not create implicit dependencies.
 
@@ -26,6 +26,7 @@ The feature spans orchestrator workflow definitions, executor payloads, worker f
 - Providing a full artifact browser, file download API, or long-term artifact store.
 - Defining distributed shared filesystems, blob-backed workspace storage, or cross-worker remote mount behavior.
 - Replacing existing Agent session persistence; workspace is for files, not conversation continuity.
+- Strictly sandboxing arbitrary task code or Agent behavior to the selected workspace path. This requires a later sandbox, per-task container, or RunHelm-owned file-tool enforcement design.
 
 ## Decisions
 
@@ -80,13 +81,13 @@ The orchestrator side should expose a `WorkspaceManager` component responsible f
 
 Workers should create workspace directories under a configured local root, using a RunHelm-owned layout derived from workflow instance id, logical task id, and workspace group name. Workspace freshness should be recorded in a `.timestamp` marker file inside each workspace. This should remain ordinary filesystem management rather than a generalized storage abstraction.
 
-The directory manager should enforce path containment by construction. Task code may receive a root directory, but worker cleanup should operate on RunHelm-owned directories rather than trusting arbitrary paths returned by task code.
+The directory manager should keep workspace directory creation and cleanup under the configured workspace root by construction. Task code receives a selected workspace path, but this initial implementation does not prevent arbitrary Function code, Agent behavior, or reused worker-container processes from accessing other writable runtime locations.
 
 Recording a timestamp in each workspace gives later cleanup processes a simple staleness signal when a worker, workflow, or task fails before normal cleanup runs, without changing stable workspace paths.
 
-Workspace cleanup should support a configurable TTL. `WorkspaceManager` should include a monitor that runs on a background thread, wakes on a configured interval, and attempts to clean expired workspaces. This monitor is operationally useful but should be implemented at the end of the change after workspace creation, executor payloads, and path validation are working.
+Workspace cleanup should support a configurable TTL. `WorkspaceManager` should include a monitor that runs on a background thread, wakes on a configured interval, and attempts to clean expired workspaces. This monitor is operationally useful but should be implemented at the end of the change after workspace creation and executor payload propagation are working.
 
-Path containment should also be enforced at tool-call boundaries where possible. File read and write tools used by Agent or Function execution should reject paths that resolve outside the task's selected workspace path, including `..` traversal, absolute-path escapes, and symlink escapes.
+Strict file access containment should be deferred until RunHelm owns the file access surface. A future design can add validated file tools, per-task containers, or another sandbox that rejects paths outside the selected workspace, including `..` traversal, absolute-path escapes, and symlink escapes.
 
 Alternatives considered:
 
@@ -98,7 +99,7 @@ Alternatives considered:
 
 - Shared workspace can hide ordering bugs -> Require normal dataflow or control dependencies for execution order; workspace group membership alone never schedules tasks.
 - Worker disk exhaustion -> Enforce configurable workspace roots and basic cleanup for RunHelm-owned allocations.
-- Path traversal or task escape -> Allocate roots through RunHelm-owned local directory management and validate file tool calls against allowed workspace prefixes after path resolution.
+- Path traversal or task escape -> The initial implementation provides the selected workspace path and constrains RunHelm-owned workspace creation/cleanup to the configured root, but does not claim strict task-code filesystem isolation. Full containment is deferred to a future sandbox or validated file-tool design.
 - Sensitive files retained after failure -> Keep the first implementation's cleanup behavior simple and document that long-term retention is out of scope.
 - Cross-worker execution with local shared workspace -> Treat shared workspace groups as worker-local in the first implementation; workflows that require shared workspace must run those tasks where the same local workspace root is accessible.
 - Retry contamination -> Keep default private workspace scoped to one logical task and make retry reuse explicit in the execution contract; require a workspace group override for intentional persistence across task boundaries.
@@ -111,7 +112,7 @@ Alternatives considered:
 3. Define stable workspace identity keys for private task workspaces and shared workspace groups without persisting worker-local paths in workflow instance state.
 4. Add `WorkspaceManager` creation and cleanup operations backed by worker-local filesystem directory management, including deterministic path derivation and `.timestamp` marker files.
 5. Thread workspace context through Agent, Function, Docker, and fake executors.
-6. Add file tool path validation against allowed workspace directories where those tools are available.
+6. Audit file read/write surfaces and document which ones are guidance-only versus enforceable by RunHelm-owned code.
 7. Add basic explicit cleanup for RunHelm-owned workspace allocations.
 8. Add the `WorkspaceManager` TTL monitor as the final implementation step, with configurable cleanup interval and TTL.
 9. Update `docs/` with the workflow YAML shape, single-workspace executor context, Agent workspace prompt behavior, TTL cleanup configuration, and operational cleanup behavior.

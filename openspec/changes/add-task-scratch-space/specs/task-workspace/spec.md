@@ -82,15 +82,15 @@ The system SHALL support configurable workspace TTL cleanup through `WorkspaceMa
 
 #### Scenario: TTL monitor is implemented last
 - **WHEN** implementing the task workspace capability
-- **THEN** workspace creation, executor payload propagation, and path validation are completed before the TTL monitor is added
+- **THEN** workspace creation and executor payload propagation are completed before the TTL monitor is added
 
-### Requirement: Workspace Path Containment
-The system SHALL ensure task file access is contained to the selected workspace path.
+### Requirement: Workspace Access Guidance
+The system SHALL provide the selected workspace path as the intended location for task file work without claiming strict task-code filesystem isolation in the initial implementation.
 
-#### Scenario: Path resolves inside workspace
-- **WHEN** task file access resolves to a path inside the selected workspace
-- **THEN** the system allows the access subject to executor policy
+#### Scenario: Selected workspace path is provided
+- **WHEN** a task execution is dispatched
+- **THEN** the task receives one selected workspace path for task file work
 
-#### Scenario: Path escapes workspace
-- **WHEN** task file access resolves outside the selected workspace through an absolute path, `..` traversal, or symlink traversal
-- **THEN** the system rejects the access
+#### Scenario: Strict containment is deferred
+- **WHEN** arbitrary task code, Agent behavior, or a reused worker container can access the local filesystem
+- **THEN** the initial implementation does not guarantee reads and writes are limited to the selected workspace path

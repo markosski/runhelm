@@ -36,21 +36,24 @@ Executors SHALL expose only the selected workspace path to task code.
 - **WHEN** any task is executed
 - **THEN** the executor does not expose both a private workspace and a group workspace to that task
 
-### Requirement: Executor File Tool Workspace Validation
-Executors that provide file read or write tools SHALL validate tool-call paths against the selected workspace path before accessing the filesystem.
+### Requirement: Executor File Access Scope
+Executors SHALL provide selected workspace path guidance without claiming strict filesystem containment for arbitrary task code in the initial implementation.
 
-#### Scenario: File tool accesses workspace file
-- **WHEN** a file tool call resolves to a path inside the selected workspace
-- **THEN** the executor allows the file operation subject to normal tool policy
+#### Scenario: Function file access guidance
+- **WHEN** a Function task is executed
+- **THEN** the executor provides the selected workspace path as the intended location for task file work
+- **THEN** the executor does not claim to sandbox arbitrary JavaScript filesystem access to only that path
 
-#### Scenario: File tool attempts traversal
-- **WHEN** a file tool call resolves outside the selected workspace through `..` traversal
-- **THEN** the executor rejects the file operation
+#### Scenario: Agent file access guidance
+- **WHEN** an Agent task is executed
+- **THEN** the executor includes the selected workspace path in the Agent prompt or execution context as the intended location for task file work
+- **THEN** the executor does not claim to guarantee that the Agent only reads or writes under that path
 
-#### Scenario: File tool attempts absolute path escape
-- **WHEN** a file tool call uses an absolute path outside the selected workspace
-- **THEN** the executor rejects the file operation
+#### Scenario: Docker reused worker container
+- **WHEN** a Docker-backed task is executed by the reused worker container deployment
+- **THEN** the worker receives the selected workspace path under the configured mounted workspace root
+- **THEN** the executor does not claim per-task selected workspace mount isolation
 
-#### Scenario: File tool attempts symlink escape
-- **WHEN** a file tool call resolves through a symlink to a path outside the selected workspace
-- **THEN** the executor rejects the file operation
+#### Scenario: Future strict containment
+- **WHEN** RunHelm adds owned file tools, per-task containers, or another sandbox
+- **THEN** that future design may validate file paths against the selected workspace before filesystem access
