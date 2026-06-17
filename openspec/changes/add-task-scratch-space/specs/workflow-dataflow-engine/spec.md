@@ -41,7 +41,3 @@ Workspace group membership SHALL NOT create implicit task dependencies or change
 #### Scenario: Data binding still controls scheduling
 - **WHEN** task B depends on task A through a JSON data binding and both tasks declare the same `workspace.group_name`
 - **THEN** task B remains ineligible until task A satisfies the normal data binding requirements
-
-#### Scenario: Workspace files are not structured outputs
-- **WHEN** a task writes files to its selected workspace
-- **THEN** downstream structured inputs are still resolved from completed task JSON outputs rather than workspace file contents

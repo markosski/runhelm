@@ -28,6 +28,12 @@ Docker-backed dispatch passes the selected workspace path through to the worker 
 
 The worker container is reused across tasks, so Docker cannot remount only one selected workspace subdirectory per task dispatch. Runtime writable locations such as `/tmp` and `/home/runhelm/.cache` remain available for executor internals, while task file work is directed to the selected path under `/workspaces`.
 
+## Workflow Semantics
+
+Workspace groups do not create scheduling dependencies. If two tasks declare the same `workspace.group_name`, they share the same selected workspace path, but the workflow engine still uses normal data bindings and control dependencies to decide when a task is eligible to run.
+
+If a task needs files produced by another task in the same workspace group, the workflow must still declare the normal dependency that orders those tasks.
+
 ## File Access Scope
 
 The initial workspace implementation provides one selected workspace path and directs task code to use it. It does not sandbox arbitrary Function code, Agent behavior, or reused worker-container processes to only that selected path.

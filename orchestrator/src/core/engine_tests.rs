@@ -247,6 +247,27 @@ fn agent_task(id: &str, reuse_session: bool) -> TaskDef {
     }
 }
 
+fn task_def_with_workspace_group(id: &str, group_name: &str) -> TaskDef {
+    let mut task = task_def(id, json!({ "type": "object" }));
+    task.workspace = Some(Workspace {
+        group_name: group_name.to_string(),
+    });
+    task
+}
+
+fn pending_task_instance(task_def_id: &str) -> TaskInstance {
+    TaskInstance {
+        task_def_id: task_def_id.to_string(),
+        status: TaskStatus::Pending,
+        satisfaction_status: TaskSatisfactionStatus::Pending,
+        input_data: vec![],
+        input_mapping: vec![],
+        output_data: None,
+        generation_index: 1,
+        verifier_metadata: None,
+    }
+}
+
 async fn setup(engine: &WorkflowEngine, def: WorkflowDef) -> String {
     let instance_id = "inst-1".to_string();
     let instance = WorkflowInstance {
@@ -322,6 +343,119 @@ fn function_verifier_task(id: &str, rerun_from_task_id: Option<&str>) -> TaskDef
         }),
     });
     task
+}
+
+#[test]
+fn test_workspace_group_does_not_create_scheduling_dependency() {
+    let engine = make_engine();
+    let task_a = task_def_with_workspace_group("task-a", "repo");
+    let task_b = task_def_with_workspace_group("task-b", "repo");
+    let def = WorkflowDef {
+        id: "def-workspace-group-no-edge".to_string(),
+        tasks: vec![task_a.clone(), task_b.clone()],
+        data_bindings: vec![],
+    };
+    let loop_slices = engine.compute_loop_slices(&def);
+    let instance = WorkflowInstance {
+        id: "inst-workspace-group-no-edge".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([
+            ("task-a[1]".to_string(), pending_task_instance("task-a")),
+            ("task-b[1]".to_string(), pending_task_instance("task-b")),
+        ]),
+        verifier_states: HashMap::new(),
+    };
+
+    let task_a_inputs = engine
+        .resolve_inputs(
+            &instance,
+            &def,
+            &instance.tasks["task-a[1]"],
+            &task_a,
+            &loop_slices,
+        )
+        .unwrap();
+    let task_b_inputs = engine
+        .resolve_inputs(
+            &instance,
+            &def,
+            &instance.tasks["task-b[1]"],
+            &task_b,
+            &loop_slices,
+        )
+        .unwrap();
+
+    assert!(task_a_inputs.values.is_empty());
+    assert!(task_a_inputs.mapping.is_empty());
+    assert!(task_b_inputs.values.is_empty());
+    assert!(task_b_inputs.mapping.is_empty());
+}
+
+#[test]
+fn test_workspace_group_tasks_still_wait_for_data_binding() {
+    let engine = make_engine();
+    let task_a = task_def_with_workspace_group("task-a", "repo");
+    let mut task_b = task_def_with_workspace_group("task-b", "repo");
+    task_b.input_schemas = vec![json!({ "type": "object" })];
+    let def = WorkflowDef {
+        id: "def-workspace-group-data-binding".to_string(),
+        tasks: vec![task_a.clone(), task_b.clone()],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "task-b".to_string(),
+        }],
+    };
+    let loop_slices = engine.compute_loop_slices(&def);
+    let mut instance = WorkflowInstance {
+        id: "inst-workspace-group-data-binding".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([
+            ("task-a[1]".to_string(), pending_task_instance("task-a")),
+            ("task-b[1]".to_string(), pending_task_instance("task-b")),
+        ]),
+        verifier_states: HashMap::new(),
+    };
+
+    assert!(
+        engine
+            .resolve_inputs(
+                &instance,
+                &def,
+                &instance.tasks["task-b[1]"],
+                &task_b,
+                &loop_slices,
+            )
+            .is_none()
+    );
+
+    let task_a_instance = instance.tasks.get_mut("task-a[1]").unwrap();
+    task_a_instance.status = TaskStatus::Completed;
+    task_a_instance.satisfaction_status = TaskSatisfactionStatus::Satisfied;
+    task_a_instance.output_data = Some(json!({ "value": "from-json-output" }));
+
+    let task_b_inputs = engine
+        .resolve_inputs(
+            &instance,
+            &def,
+            &instance.tasks["task-b[1]"],
+            &task_b,
+            &loop_slices,
+        )
+        .unwrap();
+
+    assert_eq!(
+        task_b_inputs.values,
+        vec![json!({ "value": "from-json-output" })]
+    );
+    assert_eq!(
+        task_b_inputs.mapping,
+        vec![TaskInputMapping {
+            task_id: "task-a".to_string(),
+            generation: 1,
+        }]
+    );
 }
 
 #[test]

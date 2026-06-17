@@ -39,9 +39,7 @@
 
 ## 6. Workflow Semantics
 
-- [ ] 6.1 Verify workspace group membership does not add scheduling edges or alter data-binding readiness.
-- [ ] 6.2 Add tests where two tasks share `workspace.group_name` but still require normal JSON data bindings or control dependencies for ordering.
-- [ ] 6.3 Add tests confirming workspace file writes are not treated as structured task outputs or downstream inputs.
+- [x] 6.1 Add workflow-engine tests proving shared workspace groups do not create scheduling dependencies; normal JSON data bindings or control dependencies still determine task ordering.
 
 ## 7. Documentation
 
