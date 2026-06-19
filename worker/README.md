@@ -70,7 +70,7 @@ Registers a workflow definition.
 Example:
 
 ```bash
-yq -o=json worker/example_workflow.yaml \
+yq -o=json worker/examples/example_workflow.yaml \
   | curl -sS -X POST http://localhost:3000/workflow-def \
       -H 'content-type: application/json' \
       --data-binary @-
@@ -556,8 +556,12 @@ worker/
 │   │   └── ports/
 │   └── index.ts
 ├── Dockerfile
-├── example_workflow.yaml
-├── example_workflow_agent.yaml
+├── examples/
+│   ├── example_input.yaml
+│   ├── example_mailgun_dispatcher_workflow.yaml
+│   ├── example_workflow.yaml
+│   ├── example_workflow_agent.yaml
+│   └── example_workspace_download_workflow.yaml
 ├── package.json
 └── tsconfig.json
 ```

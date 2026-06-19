@@ -60,6 +60,8 @@ data_bindings:
     target_task_id: analyze-repo
 ```
 
+See `worker/examples/example_workspace_download_workflow.yaml` for a single Agent task example that downloads a page and saves it in the selected workspace.
+
 Group names use the same conservative identifier style as task IDs. A task receives either its default private workspace or one declared group workspace, never both.
 
 ## Function Executor Context
@@ -124,9 +126,9 @@ If a task needs files produced by another task in the same workspace group, the 
 
 ## Cleanup
 
-`WorkspaceManager` can remove expired RunHelm-owned workspace directories under the configured workspace root. Cleanup relies on the workspace `.timestamp` marker and only targets the RunHelm workspace layout, not arbitrary paths returned by task code.
+`WorkspaceManager` removes expired RunHelm-owned workspace directories under the configured workspace root. Cleanup relies on the workspace `.timestamp` marker and only targets the RunHelm workspace layout, not arbitrary paths returned by task code.
 
-The current implementation includes explicit cleanup behavior and TTL configuration in `WorkspaceManager`. The background TTL monitor is intentionally deferred until workspace creation and executor propagation are complete. When enabled, the monitor should wake on its configured interval and remove expired workspace directories whose timestamp is older than the configured TTL.
+The orchestrator starts a background TTL monitor that wakes on `RUNHELM_WORKSPACE_VACUUM_INTERVAL_SECS` and removes workspace directories whose timestamp is older than `RUNHELM_WORKSPACE_TTL_SECS`. The default TTL is 900 seconds, and the default vacuum interval is 60 seconds.
 
 ## File Access Scope
 

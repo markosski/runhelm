@@ -36,7 +36,7 @@ export default async function run(context) {
         }
     );
 
-    assert.equal(result.status, 'ok');
+    assert.equal(result.status, 'ok', result.status === 'error' ? result.message : undefined);
     assert.deepEqual(result.output, {
         workspacePath: selectedWorkspacePath,
         inputs: [{ report: 'quarterly' }],

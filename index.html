@@ -1311,7 +1311,7 @@ docker compose up --build
 curl -sS http://localhost:3000/health
 
 # Register the sample workflow
-yq -o=json worker/example_workflow.yaml \
+yq -o=json worker/examples/example_workflow.yaml \
   | curl -sS -X POST http://localhost:3000/workflow-def \
       -H 'content-type: application/json' \
       --data-binary @-

@@ -57,5 +57,5 @@
 ## 9. Verification
 
 - [x] 9.1 Run orchestrator Rust tests covering workflow validation, workspace selection, and executor payload behavior.
-- [ ] 9.2 Run worker TypeScript tests covering executor workspace exposure.
-- [ ] 9.3 Run OpenSpec validation/status checks for `add-task-scratch-space`.
+- [x] 9.2 Run worker TypeScript tests covering executor workspace exposure.
+- [x] 9.3 Run OpenSpec validation/status checks for `add-task-scratch-space`.
