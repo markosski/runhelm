@@ -7,9 +7,11 @@ use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::StoragePort;
 use crate::ports::workflow_queue::WorkflowQueuePort;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 #[cfg(test)]
@@ -24,6 +26,41 @@ pub struct Orchestrator {
     executor: Arc<dyn ExecutorPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
     workspace_manager: Arc<WorkspaceManager>,
+    workflow_instance_locks: Arc<WorkflowInstanceLocks>,
+}
+
+#[derive(Default)]
+struct WorkflowInstanceLocks {
+    locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl WorkflowInstanceLocks {
+    async fn acquire(&self, instance_id: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().await;
+            locks
+                .entry(instance_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+
+        lock.lock_owned().await
+    }
+
+    async fn locked_ids(&self) -> HashSet<String> {
+        let locks = {
+            let locks = self.locks.lock().await;
+            locks
+                .iter()
+                .map(|(instance_id, lock)| (instance_id.clone(), lock.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        locks
+            .into_iter()
+            .filter_map(|(instance_id, lock)| lock.try_lock().is_err().then_some(instance_id))
+            .collect()
+    }
 }
 
 impl Orchestrator {
@@ -35,6 +72,7 @@ impl Orchestrator {
     ) -> Self {
         let engine =
             WorkflowEngine::new(storage.clone(), executor.clone(), workspace_manager.clone());
+        let workflow_instance_locks = Arc::new(WorkflowInstanceLocks::default());
 
         Self {
             engine,
@@ -42,6 +80,7 @@ impl Orchestrator {
             executor,
             workflow_queue,
             workspace_manager,
+            workflow_instance_locks,
         }
     }
 
@@ -101,6 +140,7 @@ impl Orchestrator {
 
     /// Starts or resumes execution of a workflow instance.
     pub async fn run_workflow(&self, instance_id: String) -> anyhow::Result<()> {
+        let _guard = self.workflow_instance_locks.acquire(&instance_id).await;
         self.engine.run_workflow_instance(instance_id).await
     }
 
@@ -143,6 +183,35 @@ impl Orchestrator {
         }
     }
 
+    /// Starts background workspace cleanup while protecting workflow instances
+    /// currently executing in this orchestrator process.
+    pub fn start_workspace_vacuum_task(self: Arc<Self>) -> JoinHandle<()> {
+        tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(self.workspace_manager.vacuum_interval());
+
+            loop {
+                interval.tick().await;
+
+                let protected_workflow_ids = self.workflow_instance_locks.locked_ids().await;
+                let workspace_manager = self.workspace_manager.clone();
+
+                match tokio::task::spawn_blocking(move || {
+                    workspace_manager.vacuum_excluding_workflows(&protected_workflow_ids)
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        error!("Error executing workspace vacuum: {}", error);
+                    }
+                    Err(error) => {
+                        error!("Workspace vacuum task panicked or was cancelled: {}", error);
+                    }
+                }
+            }
+        })
+    }
+
     /// Reconciles in-flight workflow state after an orchestrator restart.
     ///
     /// Storage is the source of truth. Any task left Running from a previous
@@ -150,7 +219,18 @@ impl Orchestrator {
     pub async fn synchronize_startup_tasks(&self) -> anyhow::Result<usize> {
         let mut recovered = 0;
 
-        for mut instance in self.storage.list_active_workflow_instances().await? {
+        for active_instance in self.storage.list_active_workflow_instances().await? {
+            let _guard = self
+                .workflow_instance_locks
+                .acquire(&active_instance.id)
+                .await;
+            let Some(mut instance) = self
+                .storage
+                .get_workflow_instance(&active_instance.id)
+                .await?
+            else {
+                continue;
+            };
             let mut changed = false;
 
             for task in instance.tasks.values_mut() {

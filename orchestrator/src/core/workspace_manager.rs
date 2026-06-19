@@ -1,12 +1,11 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
-use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::core::{models::TaskDef, util::unix_timestamp};
@@ -53,6 +52,10 @@ impl WorkspaceManager {
         Self::new(config)
     }
 
+    pub fn vacuum_interval(&self) -> Duration {
+        self.config.vacuum_interval
+    }
+
     pub fn ensure_workspace(&self, workflow_inst_id: &str, task: &TaskDef) -> Result<PathBuf> {
         let key = workspace_key_for_task(workflow_inst_id, task);
         let full_path = workspace_path(&self.config.root, &key);
@@ -78,6 +81,13 @@ impl WorkspaceManager {
     }
 
     pub fn vacuum(&self) -> Result<()> {
+        self.vacuum_excluding_workflows(&HashSet::new())
+    }
+
+    pub fn vacuum_excluding_workflows(
+        &self,
+        protected_workflow_ids: &HashSet<String>,
+    ) -> Result<()> {
         if !self.config.root.is_dir() {
             return Ok(());
         }
@@ -88,6 +98,10 @@ impl WorkspaceManager {
         for workflow_entry in fs::read_dir(&self.config.root)? {
             let workflow_entry = workflow_entry?;
             let workflow_path = workflow_entry.path();
+            let workflow_id = workflow_entry.file_name().to_string_lossy().into_owned();
+            if protected_workflow_ids.contains(&workflow_id) {
+                continue;
+            }
 
             // ensured to ignore symlinks
             let workflow_file_type = workflow_entry.file_type()?;
@@ -216,28 +230,6 @@ pub fn workspace_path(root: &Path, key: &WorkspaceKey) -> PathBuf {
     }
 }
 
-pub fn start_workspace_vacuum_task(workspace_manager: Arc<WorkspaceManager>) -> JoinHandle<()> {
-    tokio::task::spawn(async move {
-        let mut interval = tokio::time::interval(workspace_manager.config.vacuum_interval);
-
-        loop {
-            interval.tick().await;
-
-            let workspace_manager = workspace_manager.clone();
-
-            match tokio::task::spawn_blocking(move || workspace_manager.vacuum()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    error!("Error executing workspace vacuum: {}", error);
-                }
-                Err(error) => {
-                    error!("Workspace vacuum task panicked or was cancelled: {}", error);
-                }
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -253,6 +245,7 @@ mod tests {
     };
     use serde_json::json;
     use std::{
+        collections::HashSet,
         fs,
         path::{Path, PathBuf},
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -561,6 +554,35 @@ mod tests {
 
         assert!(!expired_workspace.exists());
         assert!(fresh_workspace.exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vacuum_skips_protected_workflow_instances() {
+        let root = temp_root("vacuum-protected");
+        let protected_workflow_path = root.join("workflow1");
+        let unprotected_workflow_path = root.join("workflow2");
+        let protected_workspace = protected_workflow_path.join("taskid-expired");
+        let unprotected_workspace = unprotected_workflow_path.join("taskid-expired");
+        fs::create_dir_all(&protected_workspace).unwrap();
+        fs::create_dir_all(&unprotected_workspace).unwrap();
+        fs::write(protected_workspace.join(".timestamp"), "100").unwrap();
+        fs::write(unprotected_workspace.join(".timestamp"), "100").unwrap();
+
+        let manager = WorkspaceManager::new(WorkspaceManagerConfig {
+            root: root.clone(),
+            ttl: Duration::from_secs(60),
+            vacuum_interval: Duration::from_secs(60),
+        });
+        let protected_workflow_ids = HashSet::from(["workflow1".to_string()]);
+
+        manager
+            .vacuum_excluding_workflows(&protected_workflow_ids)
+            .unwrap();
+
+        assert!(protected_workspace.exists());
+        assert!(!unprotected_workspace.exists());
 
         fs::remove_dir_all(root).unwrap();
     }

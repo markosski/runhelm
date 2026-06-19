@@ -16,7 +16,7 @@ use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
-use crate::core::workspace_manager::{self, WorkspaceManager};
+use crate::core::workspace_manager::WorkspaceManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
         worker_pool.clone(),
     );
     let worker_app = router::create_worker_router(
-        orchestrator,
+        orchestrator.clone(),
         workflow_service,
         function_service,
         worker_pool,
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Public API listening on {}", public_listener.local_addr()?);
     info!("Worker API listening on {}", worker_listener.local_addr()?);
 
-    let _ = workspace_manager::start_workspace_vacuum_task(workspace_manager.clone());
+    let _ = orchestrator.clone().start_workspace_vacuum_task();
 
     tokio::try_join!(
         axum::serve(public_listener, public_app),

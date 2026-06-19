@@ -8,7 +8,7 @@ use crate::core::models::{
     ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskStatus, TaskTypeDef, Workspace,
     verifier_decision_schema,
 };
-use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance};
+use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::core::workflow::workflow_service::WorkflowService;
 use crate::core::workspace_manager::WorkspaceManagerConfig;
 use crate::ports::executor::ExecutionResult;
@@ -433,6 +433,59 @@ async fn scheduler_limits_concurrent_workflow_execution() {
     }
 
     assert_eq!(executor.max_active(), 2);
+    scheduler.abort();
+}
+
+#[tokio::test]
+async fn scheduler_serializes_duplicate_workflow_instance_execution() {
+    let storage = Arc::new(MemoryStorage::new());
+    let executor = Arc::new(CountingExecutor::new(Duration::from_millis(50)));
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Arc::new(Orchestrator::new(
+        storage.clone(),
+        executor.clone(),
+        queue,
+        Arc::new(test_workspace_manager("orchestrator-instance-locks")),
+    ));
+    let scheduler = tokio::spawn(orchestrator.clone().run_scheduler(2));
+
+    storage
+        .save_workflow_def(workflow(
+            "workflow-1",
+            vec![TaskDef {
+                output_schema: None,
+                ..task("task-a")
+            }],
+        ))
+        .await
+        .unwrap();
+    storage
+        .save_workflow_instance(workflow_instance("workflow-1", "workflow-1"))
+        .await
+        .unwrap();
+
+    orchestrator
+        .enqueue_workflow_instance("workflow-1".to_string())
+        .await
+        .unwrap();
+    orchestrator
+        .enqueue_workflow_instance("workflow-1".to_string())
+        .await
+        .unwrap();
+
+    for _ in 0..20 {
+        let instance = storage
+            .get_workflow_instance("workflow-1")
+            .await
+            .unwrap()
+            .unwrap();
+        if instance.status == WorkflowStatus::Completed {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(executor.max_active(), 1);
     scheduler.abort();
 }
 

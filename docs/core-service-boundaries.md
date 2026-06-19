@@ -13,6 +13,12 @@ RunHelm's orchestrator core separates queue/execution coordination, workflow lif
 
 It should stay thin when an operation is primarily workflow persistence, validation, or read-model formatting.
 
+Within one orchestrator process, `Orchestrator` serializes critical updates per workflow instance. `run_workflow` acquires an in-process lock keyed by workflow instance ID before delegating to `WorkflowEngine`, and startup reconciliation uses the same lock before rewriting recovered active instances. This lets current storage adapters persist whole `WorkflowInstance` snapshots safely without compare-and-swap support, as long as only one orchestrator process is running.
+
+This lock is not a distributed lease. A future multi-orchestrator deployment or active-active durable storage mode must add storage-level conditional writes, leases, or event/transition records before relying on concurrent orchestrator processes.
+
+The same in-process lock state protects background workspace cleanup. The orchestrator-owned workspace vacuum snapshots locked workflow instance IDs before each cleanup pass and skips those workflow directories, so a long-running task does not lose its selected workspace solely because its timestamp aged past the TTL while execution was still active.
+
 ## WorkflowEngine
 
 `WorkflowEngine` is the workflow execution state machine. Given a persisted workflow instance, it advances execution by:
@@ -60,6 +66,8 @@ Side effects remain behind ports:
 - `WorkflowQueuePort` stores pending workflow instance IDs.
 
 Core services depend on these ports rather than concrete adapters so storage, execution, and queue implementations remain swappable.
+
+Current `StoragePort` implementations may assume a single orchestrator process and serialized per-instance writes from `Orchestrator`. They should still make each individual save durable and atomic at the backend level. They do not currently need to handle concurrent conflicting writes for the same workflow instance from multiple orchestrator runners.
 
 ## API Models
 

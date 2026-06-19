@@ -130,6 +130,8 @@ If a task needs files produced by another task in the same workspace group, the 
 
 The orchestrator starts a background TTL monitor that wakes on `RUNHELM_WORKSPACE_VACUUM_INTERVAL_SECS` and removes workspace directories whose timestamp is older than `RUNHELM_WORKSPACE_TTL_SECS`. The default TTL is 900 seconds, and the default vacuum interval is 60 seconds.
 
+Runtime cleanup skips workflow instance directories that are currently locked for execution by this orchestrator process. This prevents a long-running task from losing its selected workspace while it is still running, even if the workspace timestamp becomes older than the configured TTL. Manual/direct `WorkspaceManager` cleanup remains timestamp-based unless the caller supplies protected workflow instance IDs.
+
 ## File Access Scope
 
 The initial workspace implementation provides one selected workspace path and directs task code to use it. It does not sandbox arbitrary Function code, Agent behavior, or reused worker-container processes to only that selected path.
