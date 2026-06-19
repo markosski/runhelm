@@ -50,10 +50,9 @@
 
 ## 8. TTL Monitor
 
-- [ ] 8.1 Implement the `WorkspaceManager` background TTL monitor after workspace creation and executor payloads are complete.
-- [ ] 8.2 Make the TTL monitor wake interval and workspace TTL configurable.
-- [ ] 8.3 Ensure the TTL monitor only removes RunHelm-owned expired workspace directories under the configured workspace root.
-- [ ] 8.4 Add tests for expired workspace cleanup, non-expired workspace preservation, and cleanup staying inside the configured root.
+- [x] 8.1 Implement the `WorkspaceManager` background TTL monitor after workspace creation and executor payloads are complete.
+- [x] 8.2 Make the TTL monitor wake interval and workspace TTL configurable.
+- [x] 8.3 Ensure the TTL monitor only removes RunHelm-owned expired workspace directories under the configured workspace root.
 
 ## 9. Verification
 

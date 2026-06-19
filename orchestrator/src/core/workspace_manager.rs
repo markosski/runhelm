@@ -3,10 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
+use tokio::task::JoinHandle;
+use tracing::error;
 
 use crate::core::{models::TaskDef, util::unix_timestamp};
+
+const DEFAULT_WORKSPACE_TTL_SECS: u64 = 900;
+const DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkspaceKey {
@@ -20,10 +26,12 @@ pub enum WorkspaceKey {
     },
 }
 
+#[derive(Debug, Clone)]
 pub struct WorkspaceManager {
     config: WorkspaceManagerConfig,
 }
 
+#[derive(Debug, Clone)]
 pub struct WorkspaceManagerConfig {
     pub root: PathBuf,
     pub ttl: Duration,
@@ -33,6 +41,16 @@ pub struct WorkspaceManagerConfig {
 impl WorkspaceManager {
     pub fn new(config: WorkspaceManagerConfig) -> WorkspaceManager {
         WorkspaceManager { config }
+    }
+
+    pub fn make() -> Self {
+        let config = WorkspaceManagerConfig {
+            root: configured_workspace_root(),
+            ttl: configured_workspace_ttl(),
+            vacuum_interval: configured_workspace_vacuum_interval(),
+        };
+
+        Self::new(config)
     }
 
     pub fn ensure_workspace(&self, workflow_inst_id: &str, task: &TaskDef) -> Result<PathBuf> {
@@ -59,7 +77,7 @@ impl WorkspaceManager {
         Ok(workspace_path)
     }
 
-    pub async fn vacuum(&self) -> Result<()> {
+    pub fn vacuum(&self) -> Result<()> {
         if !self.config.root.is_dir() {
             return Ok(());
         }
@@ -71,7 +89,9 @@ impl WorkspaceManager {
             let workflow_entry = workflow_entry?;
             let workflow_path = workflow_entry.path();
 
-            if !workflow_path.is_dir() {
+            // ensured to ignore symlinks
+            let workflow_file_type = workflow_entry.file_type()?;
+            if !workflow_file_type.is_dir() {
                 continue;
             }
 
@@ -79,7 +99,8 @@ impl WorkspaceManager {
                 let workspace_entry = workspace_entry?;
                 let workspace_path = workspace_entry.path();
 
-                if !workspace_path.is_dir() {
+                let workspace_file_type = workspace_entry.file_type()?;
+                if !workspace_file_type.is_dir() {
                     continue;
                 }
 
@@ -109,6 +130,45 @@ pub fn configured_workspace_root() -> PathBuf {
         std::env::var("RUNHELM_WORKSPACE_ROOT").ok(),
         std::env::var("HOME").ok(),
     )
+}
+
+pub fn configured_workspace_ttl() -> Duration {
+    workspace_duration_from_env("RUNHELM_WORKSPACE_TTL_SECS", DEFAULT_WORKSPACE_TTL_SECS)
+}
+
+pub fn configured_workspace_vacuum_interval() -> Duration {
+    workspace_duration_from_env(
+        "RUNHELM_WORKSPACE_VACUUM_INTERVAL_SECS",
+        DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS,
+    )
+}
+
+fn workspace_duration_from_env(env_var_name: &str, default_secs: u64) -> Duration {
+    parse_workspace_duration(
+        std::env::var(env_var_name).ok().as_deref(),
+        default_secs,
+        env_var_name,
+    )
+}
+
+fn parse_workspace_duration(
+    configured_secs: Option<&str>,
+    default_secs: u64,
+    config_name: &str,
+) -> Duration {
+    let default_duration = Duration::from_secs(default_secs);
+
+    let Some(configured_secs) = configured_secs else {
+        return default_duration;
+    };
+
+    match configured_secs.parse::<u64>() {
+        Ok(value) => Duration::from_secs(value),
+        Err(error) => {
+            error!("{config_name} must be an unsigned integer number of seconds: {error}");
+            default_duration
+        }
+    }
 }
 
 fn workspace_root_from_values(workspace_root: Option<String>, home: Option<String>) -> PathBuf {
@@ -156,8 +216,34 @@ pub fn workspace_path(root: &Path, key: &WorkspaceKey) -> PathBuf {
     }
 }
 
+pub fn start_workspace_vacuum_task(workspace_manager: Arc<WorkspaceManager>) -> JoinHandle<()> {
+    tokio::task::spawn(async move {
+        let mut interval = tokio::time::interval(workspace_manager.config.vacuum_interval);
+
+        loop {
+            interval.tick().await;
+
+            let workspace_manager = workspace_manager.clone();
+
+            match tokio::task::spawn_blocking(move || workspace_manager.vacuum()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    error!("Error executing workspace vacuum: {}", error);
+                }
+                Err(error) => {
+                    error!("Workspace vacuum task panicked or was cancelled: {}", error);
+                }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{
+        DEFAULT_WORKSPACE_TTL_SECS, DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS,
+        parse_workspace_duration,
+    };
     use crate::core::{
         models::{FunctionTaskDef, TaskDef, TaskTypeDef, Workspace},
         workspace_manager::{
@@ -285,6 +371,78 @@ mod tests {
     }
 
     #[test]
+    fn workspace_ttl_config_defaults_when_unset() {
+        assert_eq!(
+            parse_workspace_duration(
+                None,
+                DEFAULT_WORKSPACE_TTL_SECS,
+                "RUNHELM_WORKSPACE_TTL_SECS"
+            ),
+            Duration::from_secs(DEFAULT_WORKSPACE_TTL_SECS)
+        );
+    }
+
+    #[test]
+    fn workspace_ttl_config_uses_valid_seconds() {
+        assert_eq!(
+            parse_workspace_duration(
+                Some("120"),
+                DEFAULT_WORKSPACE_TTL_SECS,
+                "RUNHELM_WORKSPACE_TTL_SECS",
+            ),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn workspace_ttl_config_falls_back_for_invalid_seconds() {
+        assert_eq!(
+            parse_workspace_duration(
+                Some("not-seconds"),
+                DEFAULT_WORKSPACE_TTL_SECS,
+                "RUNHELM_WORKSPACE_TTL_SECS",
+            ),
+            Duration::from_secs(DEFAULT_WORKSPACE_TTL_SECS)
+        );
+    }
+
+    #[test]
+    fn workspace_vacuum_interval_config_defaults_when_unset() {
+        assert_eq!(
+            parse_workspace_duration(
+                None,
+                DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS,
+                "RUNHELM_WORKSPACE_VACUUM_INTERVAL_SECS",
+            ),
+            Duration::from_secs(DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS)
+        );
+    }
+
+    #[test]
+    fn workspace_vacuum_interval_config_uses_valid_seconds() {
+        assert_eq!(
+            parse_workspace_duration(
+                Some("15"),
+                DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS,
+                "RUNHELM_WORKSPACE_VACUUM_INTERVAL_SECS",
+            ),
+            Duration::from_secs(15)
+        );
+    }
+
+    #[test]
+    fn workspace_vacuum_interval_config_falls_back_for_invalid_seconds() {
+        assert_eq!(
+            parse_workspace_duration(
+                Some("-1"),
+                DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS,
+                "RUNHELM_WORKSPACE_VACUUM_INTERVAL_SECS",
+            ),
+            Duration::from_secs(DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS)
+        );
+    }
+
+    #[test]
     fn workspace_path_for_group_uses_group_namespace() {
         let expected = "/root/workspace/1234/taskgroup-foobar";
 
@@ -399,7 +557,7 @@ mod tests {
             vacuum_interval: Duration::from_secs(60),
         });
 
-        manager.vacuum().await.unwrap();
+        manager.vacuum().unwrap();
 
         assert!(!expired_workspace.exists());
         assert!(fresh_workspace.exists());
