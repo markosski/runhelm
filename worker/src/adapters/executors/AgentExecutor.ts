@@ -136,6 +136,7 @@ export type AgentPromptParts = {
 
 export function buildAgentPromptParts(args: {
     prompt: string;
+    workspacePath: string;
     inputs: unknown[];
     loopContext: ExecutionLoopContext | undefined;
     inputProvided: string | undefined;
@@ -149,6 +150,13 @@ export function buildAgentPromptParts(args: {
     let systemContext = "";
     let freshContext = "";
     let currentEventContext = "";
+
+    currentEventContext += `
+                \n\n
+                WORKSPACE:
+                Use this selected workspace path for task file work:
+                ${args.workspacePath}
+                `;
 
     if (args.inputs.length > 0) {
         freshContext += `\n\nUpstream task data:\n`;
@@ -414,6 +422,7 @@ export class AgentExecutor implements TaskExecutor {
 
         const { finalPrompt } = buildAgentPromptParts({
             prompt,
+            workspacePath: payload.workspace_path,
             inputs: payload.inputs,
             loopContext,
             inputProvided: payload.input_provided,

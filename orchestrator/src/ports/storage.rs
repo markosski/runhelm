@@ -1,7 +1,7 @@
 use crate::core::models::{
-    FunctionDef, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata, WorkflowDef,
-    WorkflowInstance,
+    FunctionDef, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata,
 };
+use crate::core::workflow::models::{WorkflowDef, WorkflowInstance};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};

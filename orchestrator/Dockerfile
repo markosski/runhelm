@@ -11,7 +11,9 @@ FROM alpine:3.22
 ENV HOME=/home/runhelm
 
 RUN addgroup -g 10001 runhelm \
-    && adduser -D -h /home/runhelm -u 10001 -G runhelm runhelm
+    && adduser -D -h /home/runhelm -u 10001 -G runhelm runhelm \
+    && mkdir -p /workspaces \
+    && chown runhelm:runhelm /workspaces
 COPY --from=builder /app/target/debug/orchestrator /usr/local/bin/orchestrator
 USER runhelm
 

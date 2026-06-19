@@ -3,6 +3,7 @@ use crate::ports::executor::ExecutionResult;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -22,6 +23,7 @@ pub struct TaskDispatch {
     pub workflow_inst_id: String,
     pub task_id: String,
     pub task: TaskDef,
+    pub workspace_path: PathBuf,
     #[serde(default)]
     pub inputs: Vec<serde_json::Value>,
     #[serde(default)]
@@ -154,6 +156,7 @@ impl WorkerPool {
         inputs: &[serde_json::Value],
         timeout: Duration,
         execution_metadata: ExecutionMetadata,
+        workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         let task_id = format!(
             "{}-{}",
@@ -169,6 +172,7 @@ impl WorkerPool {
                 workflow_inst_id: workflow_inst_id.to_string(),
                 task_id: task_id.clone(),
                 task: task.clone(),
+                workspace_path: workspace_path.to_path_buf(),
                 inputs: inputs.to_vec(),
                 execution_metadata,
             },
@@ -338,6 +342,10 @@ mod tests {
     use crate::core::models::{TaskDef, TaskTypeDef};
     use serde_json::json;
 
+    fn test_workspace_path() -> &'static Path {
+        Path::new("/tmp/runhelm-test-workspace")
+    }
+
     #[tokio::test]
     async fn worker_claims_queued_task_and_completes_result() {
         let pool = WorkerPool::new();
@@ -356,6 +364,7 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
+                    test_workspace_path(),
                 )
                 .await
         });
@@ -404,6 +413,7 @@ mod tests {
                     &[],
                     Duration::from_millis(10),
                     ExecutionMetadata::default(),
+                    test_workspace_path(),
                 )
                 .await
         });
@@ -453,6 +463,7 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
+                    test_workspace_path(),
                 )
                 .await
         });
@@ -465,6 +476,45 @@ mod tests {
 
         assert_eq!(claimed.task.id, "task-1");
         assert!(!execution.is_finished());
+        execution.abort();
+    }
+
+    #[tokio::test]
+    async fn claimed_task_dispatch_includes_workspace_path() {
+        let pool = WorkerPool::new();
+        pool.register_worker(WorkerRegistration {
+            worker_id: "worker-1".to_string(),
+        })
+        .await;
+
+        let task = test_task("task-1");
+        let workspace_path = Path::new("/workspaces/workflow-1/taskid-task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .enqueue_task(
+                    "123",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    workspace_path,
+                )
+                .await
+        });
+
+        let claimed = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claimed.workspace_path, workspace_path);
+        assert_eq!(
+            serde_json::to_value(&claimed).unwrap()["workspace_path"],
+            json!("/workspaces/workflow-1/taskid-task-1")
+        );
+
         execution.abort();
     }
 
@@ -486,6 +536,7 @@ mod tests {
                     &[],
                     Duration::from_millis(10),
                     ExecutionMetadata::default(),
+                    test_workspace_path(),
                 )
                 .await
         });
@@ -528,6 +579,7 @@ mod tests {
             timeout_secs: None,
             input_schemas: vec![],
             output_schema: None,
+            workspace: None,
             required_credentials: vec![],
         }
     }

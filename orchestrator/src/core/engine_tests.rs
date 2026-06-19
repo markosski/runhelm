@@ -2,24 +2,70 @@ use super::*;
 use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::core::models::*;
+use crate::core::workflow::models::DataBinding;
+use crate::core::workspace_manager::WorkspaceManagerConfig;
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use async_trait::async_trait;
 use serde_json::Number;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn make_engine() -> WorkflowEngine {
     WorkflowEngine::new(
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
+        Arc::new(test_workspace_manager("engine-default")),
     )
 }
 
 fn make_engine_with_executor(executor: Arc<dyn ExecutorPort + Send + Sync>) -> WorkflowEngine {
-    WorkflowEngine::new(Arc::new(MemoryStorage::new()), executor)
+    WorkflowEngine::new(
+        Arc::new(MemoryStorage::new()),
+        executor,
+        Arc::new(test_workspace_manager("engine-executor")),
+    )
+}
+
+fn make_engine_with_executor_and_workspace_root(
+    executor: Arc<dyn ExecutorPort + Send + Sync>,
+    workspace_root: PathBuf,
+) -> WorkflowEngine {
+    WorkflowEngine::new(
+        Arc::new(MemoryStorage::new()),
+        executor,
+        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
+            root: workspace_root,
+            ttl: Duration::from_secs(3600),
+            vacuum_interval: Duration::from_secs(60),
+        })),
+    )
+}
+
+fn temp_workspace_root(test_name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    std::env::temp_dir().join(format!(
+        "runhelm-{}-{}-{}",
+        test_name,
+        std::process::id(),
+        nanos
+    ))
+}
+
+fn test_workspace_manager(test_name: &str) -> WorkspaceManager {
+    WorkspaceManager::new(WorkspaceManagerConfig {
+        root: temp_workspace_root(test_name),
+        ttl: Duration::from_secs(3600),
+        vacuum_interval: Duration::from_secs(60),
+    })
 }
 
 struct ContinueThenCompleteExecutor;
@@ -28,10 +74,11 @@ struct ContinueThenCompleteExecutor;
 impl ExecutorPort for ContinueThenCompleteExecutor {
     async fn execute(
         &self,
-        workflows_isnt_id: &str,
+        _workflow_inst_id: &str,
         task: &TaskDef,
-        inputs: &[serde_json::Value],
+        _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             let generation = metadata
@@ -58,10 +105,11 @@ struct CompleteVerifierExecutor;
 impl ExecutorPort for CompleteVerifierExecutor {
     async fn execute(
         &self,
-        workflow_inst_id: &str,
+        _workflow_inst_id: &str,
         task: &TaskDef,
-        inputs: &[serde_json::Value],
-        metadata: &ExecutionMetadata,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
@@ -77,10 +125,11 @@ struct AlwaysContinueVerifierExecutor;
 impl ExecutorPort for AlwaysContinueVerifierExecutor {
     async fn execute(
         &self,
-        workflow_inst_id: &str,
+        _workflow_inst_id: &str,
         task: &TaskDef,
-        inputs: &[serde_json::Value],
-        metadata: &ExecutionMetadata,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({
@@ -98,6 +147,7 @@ struct RecordedExecution {
     workflow_inst_id: String,
     task_id: String,
     generation_index: u32,
+    workspace_path: PathBuf,
     reuse_session: Option<bool>,
     feedback_count: usize,
 }
@@ -126,6 +176,7 @@ impl ExecutorPort for RecordingContinueExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
+        workspace_path: &Path,
     ) -> anyhow::Result<ExecutionResult> {
         let reuse_session = match &task.kind {
             TaskTypeDef::Agent { reuse_session, .. } => Some(*reuse_session),
@@ -135,6 +186,7 @@ impl ExecutorPort for RecordingContinueExecutor {
             workflow_inst_id: workflow_inst_id.to_string(),
             task_id: task.id.clone(),
             generation_index: metadata.generation_index,
+            workspace_path: workspace_path.to_path_buf(),
             reuse_session,
             feedback_count: metadata
                 .loop_context
@@ -168,6 +220,7 @@ fn task_def(id: &str, output_schema: serde_json::Value) -> TaskDef {
         timeout_secs: None,
         input_schemas: vec![],
         output_schema: Some(output_schema),
+        workspace: None,
         required_credentials: vec![],
     }
 }
@@ -189,7 +242,29 @@ fn agent_task(id: &str, reuse_session: bool) -> TaskDef {
         timeout_secs: None,
         input_schemas: vec![],
         output_schema: Some(json!({ "type": "object" })),
+        workspace: None,
         required_credentials: vec![],
+    }
+}
+
+fn task_def_with_workspace_group(id: &str, group_name: &str) -> TaskDef {
+    let mut task = task_def(id, json!({ "type": "object" }));
+    task.workspace = Some(Workspace {
+        group_name: group_name.to_string(),
+    });
+    task
+}
+
+fn pending_task_instance(task_def_id: &str) -> TaskInstance {
+    TaskInstance {
+        task_def_id: task_def_id.to_string(),
+        status: TaskStatus::Pending,
+        satisfaction_status: TaskSatisfactionStatus::Pending,
+        input_data: vec![],
+        input_mapping: vec![],
+        output_data: None,
+        generation_index: 1,
+        verifier_metadata: None,
     }
 }
 
@@ -268,6 +343,119 @@ fn function_verifier_task(id: &str, rerun_from_task_id: Option<&str>) -> TaskDef
         }),
     });
     task
+}
+
+#[test]
+fn test_workspace_group_does_not_create_scheduling_dependency() {
+    let engine = make_engine();
+    let task_a = task_def_with_workspace_group("task-a", "repo");
+    let task_b = task_def_with_workspace_group("task-b", "repo");
+    let def = WorkflowDef {
+        id: "def-workspace-group-no-edge".to_string(),
+        tasks: vec![task_a.clone(), task_b.clone()],
+        data_bindings: vec![],
+    };
+    let loop_slices = engine.compute_loop_slices(&def);
+    let instance = WorkflowInstance {
+        id: "inst-workspace-group-no-edge".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([
+            ("task-a[1]".to_string(), pending_task_instance("task-a")),
+            ("task-b[1]".to_string(), pending_task_instance("task-b")),
+        ]),
+        verifier_states: HashMap::new(),
+    };
+
+    let task_a_inputs = engine
+        .resolve_inputs(
+            &instance,
+            &def,
+            &instance.tasks["task-a[1]"],
+            &task_a,
+            &loop_slices,
+        )
+        .unwrap();
+    let task_b_inputs = engine
+        .resolve_inputs(
+            &instance,
+            &def,
+            &instance.tasks["task-b[1]"],
+            &task_b,
+            &loop_slices,
+        )
+        .unwrap();
+
+    assert!(task_a_inputs.values.is_empty());
+    assert!(task_a_inputs.mapping.is_empty());
+    assert!(task_b_inputs.values.is_empty());
+    assert!(task_b_inputs.mapping.is_empty());
+}
+
+#[test]
+fn test_workspace_group_tasks_still_wait_for_data_binding() {
+    let engine = make_engine();
+    let task_a = task_def_with_workspace_group("task-a", "repo");
+    let mut task_b = task_def_with_workspace_group("task-b", "repo");
+    task_b.input_schemas = vec![json!({ "type": "object" })];
+    let def = WorkflowDef {
+        id: "def-workspace-group-data-binding".to_string(),
+        tasks: vec![task_a.clone(), task_b.clone()],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "task-b".to_string(),
+        }],
+    };
+    let loop_slices = engine.compute_loop_slices(&def);
+    let mut instance = WorkflowInstance {
+        id: "inst-workspace-group-data-binding".to_string(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Running,
+        tasks: HashMap::from([
+            ("task-a[1]".to_string(), pending_task_instance("task-a")),
+            ("task-b[1]".to_string(), pending_task_instance("task-b")),
+        ]),
+        verifier_states: HashMap::new(),
+    };
+
+    assert!(
+        engine
+            .resolve_inputs(
+                &instance,
+                &def,
+                &instance.tasks["task-b[1]"],
+                &task_b,
+                &loop_slices,
+            )
+            .is_none()
+    );
+
+    let task_a_instance = instance.tasks.get_mut("task-a[1]").unwrap();
+    task_a_instance.status = TaskStatus::Completed;
+    task_a_instance.satisfaction_status = TaskSatisfactionStatus::Satisfied;
+    task_a_instance.output_data = Some(json!({ "value": "from-json-output" }));
+
+    let task_b_inputs = engine
+        .resolve_inputs(
+            &instance,
+            &def,
+            &instance.tasks["task-b[1]"],
+            &task_b,
+            &loop_slices,
+        )
+        .unwrap();
+
+    assert_eq!(
+        task_b_inputs.values,
+        vec![json!({ "value": "from-json-output" })]
+    );
+    assert_eq!(
+        task_b_inputs.mapping,
+        vec![TaskInputMapping {
+            task_id: "task-a".to_string(),
+            generation: 1,
+        }]
+    );
 }
 
 #[test]
@@ -490,6 +678,7 @@ async fn test_fan_in_workflow_completes_with_propagation() {
                     json!({ "type": "object" }), // from task-b
                 ],
                 output_schema: Some(json!({ "type": "object" })),
+                workspace: None,
                 required_credentials: vec![],
             },
         ],
@@ -603,7 +792,9 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
 #[tokio::test]
 async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
     let executor = Arc::new(RecordingContinueExecutor::new());
-    let engine = make_engine_with_executor(executor.clone());
+    let workspace_root = temp_workspace_root("engine-rerun-workspace");
+    let engine =
+        make_engine_with_executor_and_workspace_root(executor.clone(), workspace_root.clone());
     let def = WorkflowDef {
         id: "def-agent-session-identity".to_string(),
         tasks: vec![
@@ -635,6 +826,7 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
             workflow_inst_id: instance_id.clone(),
             task_id: "task-a".to_string(),
             generation_index: 1,
+            workspace_path: agent_records[0].workspace_path.clone(),
             reuse_session: Some(true),
             feedback_count: 0,
         }
@@ -642,12 +834,52 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
     assert_eq!(
         agent_records[1],
         RecordedExecution {
-            workflow_inst_id: instance_id,
+            workflow_inst_id: instance_id.clone(),
             task_id: "task-a".to_string(),
             generation_index: 2,
+            workspace_path: agent_records[0].workspace_path.clone(),
             reuse_session: Some(true),
             feedback_count: 1,
         }
+    );
+    assert_eq!(
+        agent_records[0].workspace_path,
+        agent_records[1].workspace_path
+    );
+    assert_eq!(
+        agent_records[0].workspace_path,
+        workspace_root.join(&instance_id).join("taskid-task-a")
+    );
+}
+
+#[tokio::test]
+async fn test_group_workspace_dispatch_uses_group_path_instead_of_private_task_path() {
+    let executor = Arc::new(RecordingContinueExecutor::new());
+    let workspace_root = temp_workspace_root("engine-group-workspace-dispatch");
+    let engine =
+        make_engine_with_executor_and_workspace_root(executor.clone(), workspace_root.clone());
+    let mut grouped_task = task_def("clone-repo", json!({ "type": "object" }));
+    grouped_task.workspace = Some(Workspace {
+        group_name: "repo".to_string(),
+    });
+    let def = WorkflowDef {
+        id: "def-group-workspace-dispatch".to_string(),
+        tasks: vec![grouped_task],
+        data_bindings: vec![],
+    };
+
+    let instance_id = setup(&engine, def).await;
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let records = executor.records();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].workspace_path,
+        workspace_root.join(&instance_id).join("taskgroup-repo")
     );
 }
 

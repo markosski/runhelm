@@ -8,7 +8,7 @@ use super::handlers;
 
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
-use crate::{adapters::worker_pool::WorkerPool, core::workflow_service::WorkflowService};
+use crate::{adapters::worker_pool::WorkerPool, core::workflow::workflow_service::WorkflowService};
 
 // AppState holds the injected dependencies
 #[derive(Clone)]

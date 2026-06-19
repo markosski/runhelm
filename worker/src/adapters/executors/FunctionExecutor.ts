@@ -64,6 +64,7 @@ export class FunctionExecutor implements TaskExecutor {
             const context = {
                 inputs: payload.inputs,
                 credentials,
+                workspacePath: payload.workspace_path,
             };
 
             const runResult = await runChild(
@@ -239,16 +240,13 @@ function formatChildFailure(result: ChildResult): string {
 
 function runnerSource(): string {
     return `
+import { readFileSync, writeSync } from 'node:fs';
 import task from './task.mjs';
 
 const RESULT_PREFIX = '__RUNHELM_RESULT__';
 
-async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString('utf8');
+function readStdin() {
+  return readFileSync(0, 'utf8');
 }
 
 try {
@@ -256,13 +254,13 @@ try {
     throw new Error('Function task must export a default function');
   }
 
-  const contextJson = await readStdin();
+  const contextJson = readStdin();
   const context = contextJson.length > 0 ? JSON.parse(contextJson) : {};
   const output = await task(context);
-  process.stdout.write(RESULT_PREFIX + JSON.stringify({ status: 'ok', output: output ?? null }) + '\\n');
+  writeSync(1, RESULT_PREFIX + JSON.stringify({ status: 'ok', output: output ?? null }) + '\\n');
 } catch (error) {
   const message = error instanceof Error ? error.stack ?? error.message : String(error);
-  process.stdout.write(RESULT_PREFIX + JSON.stringify({ status: 'error', message }) + '\\n');
+  writeSync(1, RESULT_PREFIX + JSON.stringify({ status: 'error', message }) + '\\n');
 }
 `.trimStart();
 }

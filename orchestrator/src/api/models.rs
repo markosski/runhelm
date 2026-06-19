@@ -1,6 +1,6 @@
-use crate::core::models::{
-    TaskInputMapping, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata,
-    VerifierStateStatus, WorkflowStatus,
+use crate::core::{
+    models::{TaskInputMapping, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata},
+    workflow::models::{VerifierStateStatus, WorkflowStatus},
 };
 use serde::{Deserialize, Serialize};
 

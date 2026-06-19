@@ -15,7 +15,8 @@ use crate::adapters::worker_pool::WorkerPool;
 use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
-use crate::core::workflow_service::WorkflowService;
+use crate::core::workflow::workflow_service::WorkflowService;
+use crate::core::workspace_manager::{self, WorkspaceManager};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,11 +28,17 @@ async fn main() -> anyhow::Result<()> {
     // Initialize dependencies (Adapters)
     let storage = Arc::new(MemoryStorage::new());
     let worker_pool = WorkerPool::new();
+    let workspace_manager = Arc::new(WorkspaceManager::make());
     let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
 
     // Initialize Orchestrator (Application Layer)
-    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor, workflow_queue));
+    let orchestrator = Arc::new(Orchestrator::new(
+        storage.clone(),
+        executor,
+        workflow_queue,
+        workspace_manager.clone(),
+    ));
     let workflow_service = Arc::new(WorkflowService::new(storage.clone()));
     let function_service = Arc::new(FunctionService::new(storage.clone()));
     let recovered = orchestrator.synchronize_startup_tasks().await?;
@@ -67,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Public API listening on {}", public_listener.local_addr()?);
     info!("Worker API listening on {}", worker_listener.local_addr()?);
+
+    let _ = workspace_manager::start_workspace_vacuum_task(workspace_manager.clone());
 
     tokio::try_join!(
         axum::serve(public_listener, public_app),

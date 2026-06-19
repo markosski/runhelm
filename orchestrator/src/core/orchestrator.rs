@@ -1,14 +1,16 @@
 use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
-use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus, WorkflowStatus};
+use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
+use crate::core::workflow::models::WorkflowStatus;
+use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::StoragePort;
 use crate::ports::workflow_queue::WorkflowQueuePort;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 use tracing::{error, info};
-
 
 #[cfg(test)]
 #[path = "orchestrator_tests.rs"]
@@ -21,6 +23,7 @@ pub struct Orchestrator {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
+    workspace_manager: Arc<WorkspaceManager>,
 }
 
 impl Orchestrator {
@@ -28,13 +31,17 @@ impl Orchestrator {
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
         workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
+        workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
-        let engine = WorkflowEngine::new(storage.clone(), executor.clone());
+        let engine =
+            WorkflowEngine::new(storage.clone(), executor.clone(), workspace_manager.clone());
+
         Self {
             engine,
             storage,
             executor,
             workflow_queue,
+            workspace_manager,
         }
     }
 
@@ -53,7 +60,13 @@ impl Orchestrator {
             return Ok(None);
         };
 
-        self.execute_task_isolated(&task, inputs).await.map(Some)
+        self.execute_task_isolated_with_id(
+            isolated_workflow_task_execution_id(workflow_def_id, task_id)?,
+            &task,
+            inputs,
+        )
+        .await
+        .map(Some)
     }
 
     /// Adds a workflow instance to the execution queue.
@@ -173,20 +186,42 @@ impl Orchestrator {
         Ok(count)
     }
 
-    /// Executes a single task in isolation, bypasses workflow orchestration.
-    /// Useful for testing individual task types or executors.
-    pub async fn execute_task_isolated(
+    async fn execute_task_isolated_with_id(
         &self,
+        isolated_execution_id: String,
         task: &TaskDef,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
         let task = self.resolve_task_function_ref(task).await?;
+        let workspace_path = self
+            .workspace_manager
+            .create_or_time_stamp_workspace(&isolated_execution_id, &task)?;
         self.executor
-            .execute("123", &task, inputs, &ExecutionMetadata::default())
+            .execute(
+                &isolated_execution_id,
+                &task,
+                inputs,
+                &ExecutionMetadata::default(),
+                &workspace_path,
+            )
             .await
     }
 
     async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
         resolve_task_function_ref(self.storage.as_ref(), task).await
     }
+}
+
+fn isolated_workflow_task_execution_id(
+    workflow_def_id: &str,
+    task_id: &str,
+) -> anyhow::Result<String> {
+    Ok(format!(
+        "isolated-{workflow_def_id}-{task_id}-{}",
+        timestamp_nanos()?
+    ))
+}
+
+fn timestamp_nanos() -> anyhow::Result<u128> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos())
 }

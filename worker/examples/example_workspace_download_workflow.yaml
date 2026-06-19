@@ -1,0 +1,82 @@
+id: workspace-download-workflow
+
+# Two Agent task example that stores downloaded page content in a shared
+# RunHelm workspace, then reads that file from a later task.
+
+tasks:
+  - id: download-page
+    kind:
+      Agent:
+        model_id: "google/gemini-2.5-flash"
+        provider_url: ""
+        prompt: |
+          Download https://example.com/ and save the complete HTML page content
+          as example-com.html in the selected workspace path.
+
+          Return:
+          - response: one sentence describing what was saved
+          - url: the downloaded URL
+          - file_name: name of the written file
+        tools: ["read", "write", "edit", "bash"]
+        skills: []
+        ask: false
+        schema_failure_retry_times: 2
+    workspace:
+      group_name: page-download
+    output_schema:
+      type: object
+      required:
+        - response
+        - url
+        - file_name
+      properties:
+        response:
+          type: string
+        url:
+          type: string
+        file_name:
+          type: string
+    required_credentials:
+      - llm_api_key
+
+  - id: read-downloaded-page
+    kind:
+      Agent:
+        model_id: "google/gemini-2.5-flash"
+        provider_url: ""
+        prompt: |
+          Read the file provided in the input
+
+          Inputs contain file_name, which is a path relative to the selected
+          workspace root. Read that file's content and return:
+          - response: a concise summary of the page content
+          - file_name: the same relative file name from the input
+        tools: ["read"]
+        skills: []
+        ask: false
+        schema_failure_retry_times: 2
+    workspace:
+      group_name: page-download
+    input_schemas:
+      - type: object
+        required:
+          - file_name
+        properties:
+          file_name:
+            type: string
+    output_schema:
+      type: object
+      required:
+        - response
+        - file_name
+      properties:
+        response:
+          type: string
+        file_name:
+          type: string
+    required_credentials:
+      - llm_api_key
+
+data_bindings:
+  - source_task_id: download-page
+    target_task_id: read-downloaded-page

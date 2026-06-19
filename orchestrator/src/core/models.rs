@@ -1,16 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
-use std::collections::HashMap;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum WorkflowStatus {
-    Pending,
-    Running,
-    Paused,
-    InputNeeded,
-    Completed,
-    Failed,
-}
 
 pub type JsonSchema = serde_json::Value;
 
@@ -66,6 +55,12 @@ pub struct TaskControl {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Workspace {
+    pub group_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FunctionTaskDef {
     Inline {
@@ -97,20 +92,9 @@ pub struct TaskDef {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_schemas: Vec<JsonSchema>,
     pub output_schema: Option<JsonSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<Workspace>,
     pub required_credentials: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataBinding {
-    pub target_task_id: String,
-    pub source_task_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowDef {
-    pub id: String,
-    pub tasks: Vec<TaskDef>,
-    pub data_bindings: Vec<DataBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,48 +170,6 @@ impl TaskInstance {
     pub fn make_task_attempt_id(task_def_id: &str, generation_index: u32) -> String {
         format!("{task_def_id}[{generation_index}]")
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifierFeedbackEntry {
-    pub generation_index: u32,
-    pub feedback: String,
-    pub verifier_output: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum VerifierStateStatus {
-    Running,
-    Accepted,
-    ExhaustedAccepted,
-    ExhaustedFailed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifierGenerationState {
-    pub verifier_task_id: String,
-    pub rerun_start_task_id: String,
-    pub latest_generation: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selected_generation: Option<u32>,
-    #[serde(default)]
-    pub feedback_history: Vec<VerifierFeedbackEntry>,
-    pub status: VerifierStateStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowInstance {
-    pub id: String,
-    pub workflow_def_id: String,
-    pub status: WorkflowStatus,
-    // Keyed by task_attempt_id, e.g. "task-a[2]".
-    pub tasks: HashMap<String, TaskInstance>,
-    #[serde(default)]
-    pub verifier_states: HashMap<String, VerifierGenerationState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -348,9 +290,72 @@ mod tests {
         .unwrap();
 
         let serialized = serde_json::to_value(task).unwrap();
+        assert_eq!(serialized["kind"]["Agent"]["reuse_session"], json!(false));
+    }
+
+    #[test]
+    fn task_workspace_defaults_to_none_when_omitted() {
+        let task: TaskDef = serde_json::from_value(json!({
+            "id": "task",
+            "kind": {
+                "Function": {
+                    "dependencies": [],
+                    "code": "export default async function run() { return {}; }"
+                }
+            },
+            "output_schema": null,
+            "required_credentials": []
+        }))
+        .unwrap();
+
+        assert!(task.workspace.is_none());
+    }
+
+    #[test]
+    fn task_workspace_deserializes_nested_group_name() {
+        let task: TaskDef = serde_json::from_value(json!({
+            "id": "task",
+            "kind": {
+                "Function": {
+                    "dependencies": [],
+                    "code": "export default async function run() { return {}; }"
+                }
+            },
+            "workspace": {
+                "group_name": "repo"
+            },
+            "output_schema": null,
+            "required_credentials": []
+        }))
+        .unwrap();
+
         assert_eq!(
-            serialized["kind"]["Agent"]["reuse_session"],
-            json!(false)
+            task.workspace
+                .as_ref()
+                .map(|workspace| workspace.group_name.as_str()),
+            Some("repo")
         );
+    }
+
+    #[test]
+    fn task_workspace_rejects_multiple_group_declaration_fields() {
+        let error = serde_json::from_value::<TaskDef>(json!({
+            "id": "task",
+            "kind": {
+                "Function": {
+                    "dependencies": [],
+                    "code": "export default async function run() { return {}; }"
+                }
+            },
+            "workspace": {
+                "group_name": "repo",
+                "group": "other"
+            },
+            "output_schema": null,
+            "required_credentials": []
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown field `group`"));
     }
 }
