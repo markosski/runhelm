@@ -228,6 +228,8 @@ Example response:
 
 Returns a task result for a workflow instance.
 
+Task result responses include `status`, `input`, and status-specific fields such as `output` or `error_message`. Attempt metadata fields such as `task_def_id`, `task_attempt_id`, `generation_index`, `input_mapping`, `satisfaction`, and `verifier_metadata` are included only when the resolved task attempt needs that context.
+
 Example:
 
 ```bash

@@ -566,10 +566,10 @@ async fn get_task_result_resolves_logical_task_id_to_generation_one() {
         .await
         .unwrap()
     {
-        TaskResult::SuccessWithMetadata {
+        TaskResult::Success {
             input,
             output,
-            metadata,
+            metadata: Some(metadata),
         } => {
             assert_eq!(input, Vec::<serde_json::Value>::new());
             assert_eq!(output, json!({ "ok": false }));
@@ -606,10 +606,10 @@ async fn list_task_results_returns_materialized_attempts() {
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].task_attempt_id, "taska[1]");
     match &tasks[0].result {
-        TaskResult::SuccessWithMetadata {
+        TaskResult::Success {
             input,
             output,
-            metadata,
+            metadata: Some(metadata),
         } => {
             assert_eq!(input, &Vec::<serde_json::Value>::new());
             assert_eq!(output, &json!({ "ok": false }));

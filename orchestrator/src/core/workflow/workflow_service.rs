@@ -206,40 +206,24 @@ fn task_result_for_instance(
         verifier_metadata: task.verifier_metadata.clone(),
     });
 
-    match (&task.status, metadata) {
-        (TaskStatus::Completed, Some(metadata)) => TaskResult::SuccessWithMetadata {
+    match &task.status {
+        TaskStatus::Completed => TaskResult::Success {
             input: task.input_data.clone(),
             output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
             metadata,
         },
-        (TaskStatus::Completed, None) => TaskResult::Success {
-            input: task.input_data.clone(),
-            output: task.output_data.clone().unwrap_or(serde_json::Value::Null),
-        },
-        (TaskStatus::Failed, Some(metadata)) => TaskResult::FailureWithMetadata {
+        TaskStatus::Failed => TaskResult::Failure {
             input: task.input_data.clone(),
             error_message: "task failed".to_string(),
             metadata,
         },
-        (TaskStatus::Failed, None) => TaskResult::Failure {
-            input: task.input_data.clone(),
-            error_message: "task failed".to_string(),
-        },
-        (TaskStatus::Pending, Some(metadata)) => TaskResult::PendingWithMetadata {
+        TaskStatus::Pending => TaskResult::Pending {
             input: task.input_data.clone(),
             metadata,
         },
-        (TaskStatus::Pending, None) => TaskResult::Pending {
+        TaskStatus::Running | TaskStatus::InputNeeded { .. } => TaskResult::Running {
             input: task.input_data.clone(),
-        },
-        (TaskStatus::Running | TaskStatus::InputNeeded { .. }, Some(metadata)) => {
-            TaskResult::RunningWithMetadata {
-                input: task.input_data.clone(),
-                metadata,
-            }
-        }
-        (TaskStatus::Running | TaskStatus::InputNeeded { .. }, None) => TaskResult::Running {
-            input: task.input_data.clone(),
+            metadata,
         },
     }
 }

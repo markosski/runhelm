@@ -11,34 +11,20 @@ pub enum TaskResult {
     Success {
         input: Vec<serde_json::Value>,
         output: serde_json::Value,
-    },
-    SuccessWithMetadata {
-        input: Vec<serde_json::Value>,
-        output: serde_json::Value,
-        metadata: TaskResultMetadata,
+        metadata: Option<TaskResultMetadata>,
     },
     Failure {
         input: Vec<serde_json::Value>,
         error_message: String,
-    },
-    FailureWithMetadata {
-        input: Vec<serde_json::Value>,
-        error_message: String,
-        metadata: TaskResultMetadata,
+        metadata: Option<TaskResultMetadata>,
     },
     Pending {
         input: Vec<serde_json::Value>,
-    },
-    PendingWithMetadata {
-        input: Vec<serde_json::Value>,
-        metadata: TaskResultMetadata,
+        metadata: Option<TaskResultMetadata>,
     },
     Running {
         input: Vec<serde_json::Value>,
-    },
-    RunningWithMetadata {
-        input: Vec<serde_json::Value>,
-        metadata: TaskResultMetadata,
+        metadata: Option<TaskResultMetadata>,
     },
 }
 
@@ -84,14 +70,7 @@ impl Serialize for TaskResult {
         S: Serializer,
     {
         match self {
-            TaskResult::Success { input, output } => {
-                let mut map = serializer.serialize_map(Some(3))?;
-                map.serialize_entry("status", "success")?;
-                map.serialize_entry("input", input)?;
-                map.serialize_entry("output", output)?;
-                map.end()
-            }
-            TaskResult::SuccessWithMetadata {
+            TaskResult::Success {
                 input,
                 output,
                 metadata,
@@ -100,20 +79,12 @@ impl Serialize for TaskResult {
                 map.serialize_entry("status", "success")?;
                 map.serialize_entry("input", input)?;
                 map.serialize_entry("output", output)?;
-                serialize_metadata(&mut map, metadata)?;
+                if let Some(metadata) = metadata {
+                    serialize_metadata(&mut map, metadata)?;
+                }
                 map.end()
             }
             TaskResult::Failure {
-                input,
-                error_message,
-            } => {
-                let mut map = serializer.serialize_map(Some(3))?;
-                map.serialize_entry("status", "failure")?;
-                map.serialize_entry("input", input)?;
-                map.serialize_entry("error_message", error_message)?;
-                map.end()
-            }
-            TaskResult::FailureWithMetadata {
                 input,
                 error_message,
                 metadata,
@@ -122,33 +93,27 @@ impl Serialize for TaskResult {
                 map.serialize_entry("status", "failure")?;
                 map.serialize_entry("input", input)?;
                 map.serialize_entry("error_message", error_message)?;
-                serialize_metadata(&mut map, metadata)?;
+                if let Some(metadata) = metadata {
+                    serialize_metadata(&mut map, metadata)?;
+                }
                 map.end()
             }
-            TaskResult::Pending { input } => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("status", "pending")?;
-                map.serialize_entry("input", input)?;
-                map.end()
-            }
-            TaskResult::PendingWithMetadata { input, metadata } => {
+            TaskResult::Pending { input, metadata } => {
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("status", "pending")?;
                 map.serialize_entry("input", input)?;
-                serialize_metadata(&mut map, metadata)?;
+                if let Some(metadata) = metadata {
+                    serialize_metadata(&mut map, metadata)?;
+                }
                 map.end()
             }
-            TaskResult::Running { input } => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("status", "running")?;
-                map.serialize_entry("input", input)?;
-                map.end()
-            }
-            TaskResult::RunningWithMetadata { input, metadata } => {
+            TaskResult::Running { input, metadata } => {
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("status", "running")?;
                 map.serialize_entry("input", input)?;
-                serialize_metadata(&mut map, metadata)?;
+                if let Some(metadata) = metadata {
+                    serialize_metadata(&mut map, metadata)?;
+                }
                 map.end()
             }
         }

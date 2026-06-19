@@ -40,6 +40,8 @@ Execution rules, verifier loop progression, and workflow status transitions belo
 
 Workflow CRUD and read behavior that formats persisted workflow state without advancing execution belongs here.
 
+`TaskResult` uses one enum variant per task status. Each variant can carry optional attempt metadata, and serialization flattens present metadata into the task result JSON while omitting metadata fields when absent. This keeps the core model from duplicating status variants only to distinguish metadata presence, while preserving the existing API response shape.
+
 ## FunctionService
 
 `FunctionService` owns reusable function definition persistence use cases:
