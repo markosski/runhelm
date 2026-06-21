@@ -56,10 +56,6 @@ impl StoragePort for MemoryStorage {
         Ok(map.remove(id).is_some())
     }
 
-    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()> {
-        self.commit_workflow_instance_events(vec![], instance).await
-    }
-
     async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>> {
         let map = self.workflow_instances.read().await;
         Ok(map.get(id).cloned())

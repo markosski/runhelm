@@ -33,6 +33,11 @@ struct ResolvedTaskInputs {
     mapping: Vec<TaskInputMapping>,
 }
 
+struct VerifierTransition {
+    events: Vec<WorkflowInstanceEvent>,
+    error_message: Option<String>,
+}
+
 /// State machine for a workflow instance.
 /// Its main responsibility is: take a persisted WorkflowInstance, read its WorkflowDef,
 /// decide which task attempts are runnable, execute them through ExecutorPort, update task/workflow state,
@@ -122,8 +127,8 @@ impl WorkflowEngine {
 
         let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
         workflow_instance = state_manager
-            .commit_events(
-                &workflow_inst_id,
+            .commit_events_for_instance(
+                workflow_instance,
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Running,
                 }],
@@ -153,7 +158,7 @@ impl WorkflowEngine {
             }
             if !events.is_empty() {
                 workflow_instance = state_manager
-                    .commit_events(&workflow_inst_id, events)
+                    .commit_events_for_instance(workflow_instance, events)
                     .await?;
             }
         }
@@ -163,11 +168,15 @@ impl WorkflowEngine {
         while progress_made {
             progress_made = false;
 
-            if self.materialize_eligible_generations(
-                &mut workflow_instance,
+            let generation_events = self.materialize_eligible_generation_events(
+                &workflow_instance,
                 &workflow_def,
                 &loop_slices,
-            ) {
+            );
+            if !generation_events.is_empty() {
+                workflow_instance = state_manager
+                    .commit_events_for_instance(workflow_instance, generation_events)
+                    .await?;
                 progress_made = true;
             }
 
@@ -198,10 +207,15 @@ impl WorkflowEngine {
             }
 
             for task_attempt_id in tasks_to_run {
-                // Transition to Running
-                if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
-                    task.status = TaskStatus::Running;
-                }
+                workflow_instance = state_manager
+                    .commit_events_for_instance(
+                        workflow_instance,
+                        vec![WorkflowInstanceEvent::TaskStatusChanged {
+                            task_attempt_id: task_attempt_id.clone(),
+                            status: TaskStatus::Running,
+                        }],
+                    )
+                    .await?;
                 progress_made = true;
 
                 let task_instance = workflow_instance
@@ -234,25 +248,37 @@ impl WorkflowEngine {
                 let inputs = resolved_inputs.values;
 
                 if let Err(error) = validate_inputs(task_def, &inputs) {
-                    if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
-                        task.status = TaskStatus::Failed;
-                        task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
-                        task.input_data = inputs.clone();
-                        task.input_mapping = resolved_inputs.mapping.clone();
-                    }
-                    workflow_instance.status = WorkflowStatus::Failed;
-                    self.storage
-                        .save_workflow_instance(workflow_instance.clone())
+                    state_manager
+                        .commit_events_for_instance(
+                            workflow_instance,
+                            vec![
+                                WorkflowInstanceEvent::TaskInputDataSet {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    input_data: inputs.clone(),
+                                },
+                                WorkflowInstanceEvent::TaskInputMappingSet {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    input_mapping: resolved_inputs.mapping.clone(),
+                                },
+                                WorkflowInstanceEvent::TaskStatusChanged {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    status: TaskStatus::Failed,
+                                },
+                                WorkflowInstanceEvent::TaskSatisfactionChanged {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                                },
+                                WorkflowInstanceEvent::WorkflowStatusChanged {
+                                    status: WorkflowStatus::Failed,
+                                },
+                            ],
+                        )
                         .await?;
                     return Err(error);
                 }
 
                 let metadata =
                     self.execution_metadata(&workflow_instance, &workflow_def, &task_instance);
-                if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
-                    task.input_data = inputs.clone();
-                    task.input_mapping = resolved_inputs.mapping.clone();
-                }
 
                 let execution_result =
                     match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
@@ -275,24 +301,57 @@ impl WorkflowEngine {
                         let output = match result {
                             ExecutionResult::Success(output) => output,
                             ExecutionResult::InputNeeded(description) => {
-                                if let Some(task) =
-                                    workflow_instance.tasks.get_mut(&task_attempt_id)
-                                {
-                                    task.status = TaskStatus::InputNeeded { description };
-                                }
-                                workflow_instance.status = WorkflowStatus::InputNeeded;
+                                workflow_instance = state_manager
+                                    .commit_events_for_instance(
+                                        workflow_instance,
+                                        vec![
+                                            WorkflowInstanceEvent::TaskInputDataSet {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                input_data: inputs.clone(),
+                                            },
+                                            WorkflowInstanceEvent::TaskInputMappingSet {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                input_mapping: resolved_inputs.mapping.clone(),
+                                            },
+                                            WorkflowInstanceEvent::TaskStatusChanged {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                status: TaskStatus::InputNeeded { description },
+                                            },
+                                            WorkflowInstanceEvent::WorkflowStatusChanged {
+                                                status: WorkflowStatus::InputNeeded,
+                                            },
+                                        ],
+                                    )
+                                    .await?;
                                 continue;
                             }
                             ExecutionResult::Failure(reason) => {
-                                if let Some(task) =
-                                    workflow_instance.tasks.get_mut(&task_attempt_id)
-                                {
-                                    task.status = TaskStatus::Failed;
-                                    task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
-                                }
-                                workflow_instance.status = WorkflowStatus::Failed;
-                                self.storage
-                                    .save_workflow_instance(workflow_instance.clone())
+                                state_manager
+                                    .commit_events_for_instance(
+                                        workflow_instance,
+                                        vec![
+                                            WorkflowInstanceEvent::TaskInputDataSet {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                input_data: inputs.clone(),
+                                            },
+                                            WorkflowInstanceEvent::TaskInputMappingSet {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                input_mapping: resolved_inputs.mapping.clone(),
+                                            },
+                                            WorkflowInstanceEvent::TaskStatusChanged {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                status: TaskStatus::Failed,
+                                            },
+                                            WorkflowInstanceEvent::TaskSatisfactionChanged {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                satisfaction_status:
+                                                    TaskSatisfactionStatus::Unsatisfied,
+                                            },
+                                            WorkflowInstanceEvent::WorkflowStatusChanged {
+                                                status: WorkflowStatus::Failed,
+                                            },
+                                        ],
+                                    )
                                     .await?;
                                 anyhow::bail!("Task execution failed: {}", reason);
                             }
@@ -309,84 +368,145 @@ impl WorkflowEngine {
                         };
 
                         if schema_ok {
-                            if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
-                                task.status = TaskStatus::Completed;
-                                if !self.is_task_in_loop_slice(&loop_slices, &task.task_def_id) {
-                                    task.satisfaction_status = TaskSatisfactionStatus::Satisfied;
-                                }
-                                // Only record output when a schema is declared.
-                                if output_schema.is_some() {
-                                    task.output_data = Some(output.clone());
-                                }
+                            let mut events = vec![
+                                WorkflowInstanceEvent::TaskInputDataSet {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    input_data: inputs.clone(),
+                                },
+                                WorkflowInstanceEvent::TaskInputMappingSet {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    input_mapping: resolved_inputs.mapping.clone(),
+                                },
+                                WorkflowInstanceEvent::TaskStatusChanged {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    status: TaskStatus::Completed,
+                                },
+                            ];
+                            if !self.is_task_in_loop_slice(&loop_slices, &task_def.id) {
+                                events.push(WorkflowInstanceEvent::TaskSatisfactionChanged {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    satisfaction_status: TaskSatisfactionStatus::Satisfied,
+                                });
+                            }
+                            // Only record output when a schema is declared.
+                            if output_schema.is_some() {
+                                events.push(WorkflowInstanceEvent::TaskOutputRecorded {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    output_data: Some(output.clone()),
+                                });
                             }
                             if task_verifier(task_def).is_some() {
                                 let verifier_result = match verifier_result_from_output(&output) {
                                     Ok(verifier_result) => verifier_result,
                                     Err(error) => {
-                                        if let Some(task) =
-                                            workflow_instance.tasks.get_mut(&task_attempt_id)
-                                        {
-                                            task.status = TaskStatus::Failed;
-                                            task.satisfaction_status =
-                                                TaskSatisfactionStatus::Unsatisfied;
-                                            task.verifier_metadata =
-                                                Some(VerifierAttemptMetadata {
+                                        events.extend([
+                                            WorkflowInstanceEvent::TaskStatusChanged {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                status: TaskStatus::Failed,
+                                            },
+                                            WorkflowInstanceEvent::TaskSatisfactionChanged {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                satisfaction_status:
+                                                    TaskSatisfactionStatus::Unsatisfied,
+                                            },
+                                            WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                verifier_metadata: Some(VerifierAttemptMetadata {
                                                     status: VerifierAttemptStatus::Invalid,
                                                     decision: None,
                                                     feedback: None,
                                                     verifier_output: Some(output.clone()),
                                                     exit_reason: Some(error.to_string()),
-                                                });
-                                        }
-                                        workflow_instance.status = WorkflowStatus::Failed;
-                                        self.storage
-                                            .save_workflow_instance(workflow_instance.clone())
+                                                }),
+                                            },
+                                            WorkflowInstanceEvent::WorkflowStatusChanged {
+                                                status: WorkflowStatus::Failed,
+                                            },
+                                        ]);
+                                        state_manager
+                                            .commit_events_for_instance(workflow_instance, events)
                                             .await?;
                                         return Err(error);
                                     }
                                 };
-                                if let Err(error) = self.apply_verifier_result(
-                                    &mut workflow_instance,
+                                let verifier_transition = self.verifier_result_transition(
+                                    &workflow_instance,
                                     &workflow_def,
                                     &loop_slices,
                                     &task_attempt_id,
                                     &output,
                                     verifier_result,
-                                ) {
-                                    self.storage
-                                        .save_workflow_instance(workflow_instance.clone())
-                                        .await?;
-                                    return Err(error);
+                                )?;
+                                events.extend(verifier_transition.events);
+                                workflow_instance = state_manager
+                                    .commit_events_for_instance(workflow_instance, events)
+                                    .await?;
+                                if let Some(error_message) = verifier_transition.error_message {
+                                    anyhow::bail!(error_message);
                                 }
+                            } else {
+                                workflow_instance = state_manager
+                                    .commit_events_for_instance(workflow_instance, events)
+                                    .await?;
                             }
                         } else {
-                            if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
-                                task.status = TaskStatus::Failed;
-                                task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
-                            }
-                            workflow_instance.status = WorkflowStatus::Failed;
-                            self.storage
-                                .save_workflow_instance(workflow_instance.clone())
+                            state_manager
+                                .commit_events_for_instance(
+                                    workflow_instance,
+                                    vec![
+                                        WorkflowInstanceEvent::TaskInputDataSet {
+                                            task_attempt_id: task_attempt_id.clone(),
+                                            input_data: inputs.clone(),
+                                        },
+                                        WorkflowInstanceEvent::TaskInputMappingSet {
+                                            task_attempt_id: task_attempt_id.clone(),
+                                            input_mapping: resolved_inputs.mapping.clone(),
+                                        },
+                                        WorkflowInstanceEvent::TaskStatusChanged {
+                                            task_attempt_id: task_attempt_id.clone(),
+                                            status: TaskStatus::Failed,
+                                        },
+                                        WorkflowInstanceEvent::TaskSatisfactionChanged {
+                                            task_attempt_id: task_attempt_id.clone(),
+                                            satisfaction_status:
+                                                TaskSatisfactionStatus::Unsatisfied,
+                                        },
+                                        WorkflowInstanceEvent::WorkflowStatusChanged {
+                                            status: WorkflowStatus::Failed,
+                                        },
+                                    ],
+                                )
                                 .await?;
                             anyhow::bail!("Task output failed schema validation");
                         }
                     }
                     Err(e) => {
-                        if let Some(task) = workflow_instance.tasks.get_mut(&task_attempt_id) {
-                            task.status = TaskStatus::Failed;
-                        }
-                        workflow_instance.status = WorkflowStatus::Failed;
-                        self.storage
-                            .save_workflow_instance(workflow_instance.clone())
+                        state_manager
+                            .commit_events_for_instance(
+                                workflow_instance,
+                                vec![
+                                    WorkflowInstanceEvent::TaskInputDataSet {
+                                        task_attempt_id: task_attempt_id.clone(),
+                                        input_data: inputs.clone(),
+                                    },
+                                    WorkflowInstanceEvent::TaskInputMappingSet {
+                                        task_attempt_id: task_attempt_id.clone(),
+                                        input_mapping: resolved_inputs.mapping.clone(),
+                                    },
+                                    WorkflowInstanceEvent::TaskStatusChanged {
+                                        task_attempt_id: task_attempt_id.clone(),
+                                        status: TaskStatus::Failed,
+                                    },
+                                    WorkflowInstanceEvent::WorkflowStatusChanged {
+                                        status: WorkflowStatus::Failed,
+                                    },
+                                ],
+                            )
                             .await?;
                         return Err(e.context("Task execution failed"));
                     }
                 }
             }
-
-            self.storage
-                .save_workflow_instance(workflow_instance.clone())
-                .await?;
         }
 
         let all_completed = workflow_instance
@@ -400,9 +520,13 @@ impl WorkflowEngine {
                 )
             });
         if all_completed {
-            workflow_instance.status = WorkflowStatus::Completed;
-            self.storage
-                .save_workflow_instance(workflow_instance)
+            state_manager
+                .commit_events_for_instance(
+                    workflow_instance,
+                    vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                        status: WorkflowStatus::Completed,
+                    }],
+                )
                 .await?;
         }
 
@@ -469,15 +593,20 @@ impl WorkflowEngine {
         seen
     }
 
-    fn materialize_eligible_generations(
+    fn materialize_eligible_generation_events(
         &self,
-        instance: &mut WorkflowInstance,
+        instance: &WorkflowInstance,
         def: &WorkflowDef,
         loop_slices: &HashMap<String, Vec<String>>,
-    ) -> bool {
-        let mut changed = false;
+    ) -> Vec<WorkflowInstanceEvent> {
+        let mut events = Vec::new();
+        let mut planned_verifier_states = HashSet::new();
+        let mut planned_task_attempts = HashSet::new();
+
         for (verifier_task_id, slice) in loop_slices {
-            if instance.verifier_states.contains_key(verifier_task_id) {
+            if instance.verifier_states.contains_key(verifier_task_id)
+                || planned_verifier_states.contains(verifier_task_id)
+            {
                 continue;
             }
             let Some(verifier_task) = def.tasks.iter().find(|task| task.id == *verifier_task_id)
@@ -505,9 +634,9 @@ impl WorkflowEngine {
                 continue;
             }
 
-            instance.verifier_states.insert(
-                verifier_task_id.clone(),
-                VerifierGenerationState {
+            events.push(WorkflowInstanceEvent::VerifierStateUpserted {
+                verifier_task_id: verifier_task_id.clone(),
+                state: VerifierGenerationState {
                     verifier_task_id: verifier_task_id.clone(),
                     rerun_start_task_id: verifier_rerun_start_task_id(verifier, verifier_task_id),
                     latest_generation: 1,
@@ -516,11 +645,16 @@ impl WorkflowEngine {
                     status: VerifierStateStatus::Running,
                     exit_reason: None,
                 },
-            );
-            self.materialize_generation(instance, slice, 1);
-            changed = true;
+            });
+            planned_verifier_states.insert(verifier_task_id.clone());
+            events.extend(self.materialize_generation_events(
+                instance,
+                slice,
+                1,
+                &mut planned_task_attempts,
+            ));
         }
-        changed
+        events
     }
 
     fn logical_task_ready_outside_slice(
@@ -544,19 +678,26 @@ impl WorkflowEngine {
             })
     }
 
-    fn materialize_generation(
+    fn materialize_generation_events(
         &self,
-        workflow_instance: &mut WorkflowInstance,
+        workflow_instance: &WorkflowInstance,
         slice: &[String],
         generation_index: u32,
-    ) {
+        planned_task_attempts: &mut HashSet<String>,
+    ) -> Vec<WorkflowInstanceEvent> {
+        let mut events = Vec::new();
         for task_def_id in slice {
             let task_attempt_id = TaskInstance::make_task_attempt_id(task_def_id, generation_index);
 
-            workflow_instance
-                .tasks
-                .entry(task_attempt_id.clone())
-                .or_insert_with(|| TaskInstance {
+            if workflow_instance.tasks.contains_key(&task_attempt_id)
+                || !planned_task_attempts.insert(task_attempt_id.clone())
+            {
+                continue;
+            }
+
+            events.push(WorkflowInstanceEvent::TaskMaterialized {
+                task_attempt_id,
+                task: TaskInstance {
                     task_def_id: task_def_id.clone(),
                     status: TaskStatus::Pending,
                     satisfaction_status: TaskSatisfactionStatus::Pending,
@@ -565,8 +706,10 @@ impl WorkflowEngine {
                     output_data: None,
                     generation_index,
                     verifier_metadata: None,
-                });
+                },
+            });
         }
+        events
     }
 
     // Responsible for evaluating whether or not this task can be executed,
@@ -687,19 +830,25 @@ impl WorkflowEngine {
             .map(|(task_attempt_id, _)| task_attempt_id.clone())
     }
 
-    fn mark_slice_satisfaction(
+    fn slice_satisfaction_events(
         &self,
-        instance: &mut WorkflowInstance,
+        instance: &WorkflowInstance,
         slice: &[String],
         generation: u32,
         satisfaction: TaskSatisfactionStatus,
-    ) {
-        for task_def_id in slice {
-            let task_attempt_id = TaskInstance::make_task_attempt_id(task_def_id, generation);
-            if let Some(task) = instance.tasks.get_mut(&task_attempt_id) {
-                task.satisfaction_status = satisfaction.clone();
-            }
-        }
+    ) -> Vec<WorkflowInstanceEvent> {
+        slice
+            .iter()
+            .filter_map(|task_def_id| {
+                let task_attempt_id = TaskInstance::make_task_attempt_id(task_def_id, generation);
+                instance.tasks.contains_key(&task_attempt_id).then_some(
+                    WorkflowInstanceEvent::TaskSatisfactionChanged {
+                        task_attempt_id,
+                        satisfaction_status: satisfaction.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     fn execution_metadata(
@@ -773,15 +922,15 @@ impl WorkflowEngine {
         })
     }
 
-    fn apply_verifier_result(
+    fn verifier_result_transition(
         &self,
-        instance: &mut WorkflowInstance,
+        instance: &WorkflowInstance,
         def: &WorkflowDef,
         loop_slices: &HashMap<String, Vec<String>>,
         verifier_task_attempt_id: &str,
         task_output: &serde_json::Value,
         verifier_result: crate::core::models::VerifierExecutionResult,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<VerifierTransition> {
         let verifier_task_attempt =
             instance
                 .tasks
@@ -804,145 +953,235 @@ impl WorkflowEngine {
             .unwrap_or_else(|| vec![verifier_task_id.clone()]);
         let state = instance
             .verifier_states
-            .get_mut(&verifier_task_id)
+            .get(&verifier_task_id)
             .ok_or_else(|| anyhow::anyhow!("verifier state {verifier_task_id} missing"))?;
+        let mut events = Vec::new();
 
         match verifier_result.decision {
             VerifierDecision::Complete => {
-                state.selected_generation = Some(generation);
-                state.status = VerifierStateStatus::Accepted;
-                state.exit_reason = Some("complete".to_string());
-                if let Some(task) = instance.tasks.get_mut(verifier_task_attempt_id) {
-                    task.verifier_metadata = Some(VerifierAttemptMetadata {
+                events.push(WorkflowInstanceEvent::VerifierStateStatusChanged {
+                    verifier_task_id: verifier_task_id.clone(),
+                    status: VerifierStateStatus::Accepted,
+                    selected_generation: Some(generation),
+                    exit_reason: Some("complete".to_string()),
+                });
+                events.push(WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                    task_attempt_id: verifier_task_attempt_id.to_string(),
+                    verifier_metadata: Some(VerifierAttemptMetadata {
                         status: VerifierAttemptStatus::Accepted,
                         decision: Some(VerifierDecision::Complete),
                         feedback: verifier_result.feedback,
                         verifier_output: Some(verifier_result.output),
                         exit_reason: Some("complete".to_string()),
-                    });
-                }
-                self.mark_slice_satisfaction(
+                    }),
+                });
+                events.extend(self.slice_satisfaction_events(
                     instance,
                     &slice,
                     generation,
                     TaskSatisfactionStatus::Satisfied,
-                );
+                ));
             }
             VerifierDecision::Continue => {
                 let feedback = verifier_result.feedback.clone().unwrap_or_default();
                 if feedback.trim().is_empty() {
-                    instance.status = WorkflowStatus::Failed;
-                    if let Some(task) = instance.tasks.get_mut(verifier_task_attempt_id) {
-                        task.status = TaskStatus::Failed;
-                        task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
-                        task.verifier_metadata = Some(VerifierAttemptMetadata {
-                            status: VerifierAttemptStatus::Invalid,
-                            decision: Some(VerifierDecision::Continue),
-                            feedback: verifier_result.feedback,
-                            verifier_output: Some(verifier_result.output),
-                            exit_reason: Some(
-                                "continue decision requires non-empty feedback".to_string(),
-                            ),
-                        });
-                    }
-                    anyhow::bail!("Verifier continue decision requires non-empty feedback");
+                    events.extend([
+                        WorkflowInstanceEvent::WorkflowStatusChanged {
+                            status: WorkflowStatus::Failed,
+                        },
+                        WorkflowInstanceEvent::TaskStatusChanged {
+                            task_attempt_id: verifier_task_attempt_id.to_string(),
+                            status: TaskStatus::Failed,
+                        },
+                        WorkflowInstanceEvent::TaskSatisfactionChanged {
+                            task_attempt_id: verifier_task_attempt_id.to_string(),
+                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                        },
+                        WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                            task_attempt_id: verifier_task_attempt_id.to_string(),
+                            verifier_metadata: Some(VerifierAttemptMetadata {
+                                status: VerifierAttemptStatus::Invalid,
+                                decision: Some(VerifierDecision::Continue),
+                                feedback: verifier_result.feedback,
+                                verifier_output: Some(verifier_result.output),
+                                exit_reason: Some(
+                                    "continue decision requires non-empty feedback".to_string(),
+                                ),
+                            }),
+                        },
+                    ]);
+                    return Ok(VerifierTransition {
+                        events,
+                        error_message: Some(
+                            "Verifier continue decision requires non-empty feedback".to_string(),
+                        ),
+                    });
                 }
 
-                state.feedback_history.push(VerifierFeedbackEntry {
-                    generation_index: generation,
-                    feedback: feedback.clone(),
-                    verifier_output: verifier_result.output.clone(),
+                events.push(WorkflowInstanceEvent::VerifierFeedbackRecorded {
+                    verifier_task_id: verifier_task_id.clone(),
+                    feedback: VerifierFeedbackEntry {
+                        generation_index: generation,
+                        feedback: feedback.clone(),
+                        verifier_output: verifier_result.output.clone(),
+                    },
                 });
 
                 if generation < verifier.max_iterations {
-                    state.latest_generation = generation + 1;
-                    state.status = VerifierStateStatus::Running;
-                    if let Some(task) = instance.tasks.get_mut(verifier_task_attempt_id) {
-                        task.verifier_metadata = Some(VerifierAttemptMetadata {
+                    let mut updated_state = state.clone();
+                    updated_state.feedback_history.push(VerifierFeedbackEntry {
+                        generation_index: generation,
+                        feedback: feedback.clone(),
+                        verifier_output: verifier_result.output.clone(),
+                    });
+                    updated_state.latest_generation = generation + 1;
+                    updated_state.status = VerifierStateStatus::Running;
+                    updated_state.selected_generation = None;
+                    updated_state.exit_reason = None;
+                    events.push(WorkflowInstanceEvent::VerifierStateUpserted {
+                        verifier_task_id: verifier_task_id.clone(),
+                        state: updated_state,
+                    });
+                    events.push(WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                        task_attempt_id: verifier_task_attempt_id.to_string(),
+                        verifier_metadata: Some(VerifierAttemptMetadata {
                             status: VerifierAttemptStatus::Rejected,
                             decision: Some(VerifierDecision::Continue),
                             feedback: Some(feedback),
                             verifier_output: Some(verifier_result.output),
                             exit_reason: None,
-                        });
-                    }
-                    self.mark_slice_satisfaction(
+                        }),
+                    });
+                    events.extend(self.slice_satisfaction_events(
                         instance,
                         &slice,
                         generation,
                         TaskSatisfactionStatus::Unsatisfied,
-                    );
-                    self.materialize_generation(instance, &slice, generation + 1);
-                    return Ok(());
+                    ));
+                    events.extend(self.materialize_generation_events(
+                        instance,
+                        &slice,
+                        generation + 1,
+                        &mut HashSet::new(),
+                    ));
+                    return Ok(VerifierTransition {
+                        events,
+                        error_message: None,
+                    });
                 }
 
-                state.latest_generation = generation;
-                state.exit_reason = Some("max_iterations_exhausted".to_string());
                 if verifier.on_exhausted_continue {
                     if task_output.is_null() && verifier_task.output_schema.is_none() {
-                        state.status = VerifierStateStatus::Failed;
-                        instance.status = WorkflowStatus::Failed;
-                        if let Some(task) = instance.tasks.get_mut(verifier_task_attempt_id) {
-                            task.status = TaskStatus::Failed;
-                            task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
-                            task.verifier_metadata = Some(VerifierAttemptMetadata {
-                                status: VerifierAttemptStatus::ExhaustedFailed,
-                                decision: Some(VerifierDecision::Continue),
-                                feedback: Some(feedback),
-                                verifier_output: Some(verifier_result.output),
-                                exit_reason: Some(
-                                    "no schema-valid latest generation output".to_string(),
-                                ),
-                            });
-                        }
-                        anyhow::bail!(
-                            "Verifier exhausted with continue policy but no schema-valid output"
-                        );
+                        events.extend([
+                            WorkflowInstanceEvent::VerifierStateStatusChanged {
+                                verifier_task_id: verifier_task_id.clone(),
+                                status: VerifierStateStatus::Failed,
+                                selected_generation: state.selected_generation,
+                                exit_reason: Some("max_iterations_exhausted".to_string()),
+                            },
+                            WorkflowInstanceEvent::WorkflowStatusChanged {
+                                status: WorkflowStatus::Failed,
+                            },
+                            WorkflowInstanceEvent::TaskStatusChanged {
+                                task_attempt_id: verifier_task_attempt_id.to_string(),
+                                status: TaskStatus::Failed,
+                            },
+                            WorkflowInstanceEvent::TaskSatisfactionChanged {
+                                task_attempt_id: verifier_task_attempt_id.to_string(),
+                                satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                            },
+                            WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                                task_attempt_id: verifier_task_attempt_id.to_string(),
+                                verifier_metadata: Some(VerifierAttemptMetadata {
+                                    status: VerifierAttemptStatus::ExhaustedFailed,
+                                    decision: Some(VerifierDecision::Continue),
+                                    feedback: Some(feedback),
+                                    verifier_output: Some(verifier_result.output),
+                                    exit_reason: Some(
+                                        "no schema-valid latest generation output".to_string(),
+                                    ),
+                                }),
+                            },
+                        ]);
+                        return Ok(VerifierTransition {
+                            events,
+                            error_message: Some(
+                                "Verifier exhausted with continue policy but no schema-valid output"
+                                    .to_string(),
+                            ),
+                        });
                     }
 
-                    state.selected_generation = Some(generation);
-                    state.status = VerifierStateStatus::ExhaustedAccepted;
-                    if let Some(task) = instance.tasks.get_mut(verifier_task_attempt_id) {
-                        task.verifier_metadata = Some(VerifierAttemptMetadata {
+                    events.push(WorkflowInstanceEvent::VerifierStateStatusChanged {
+                        verifier_task_id: verifier_task_id.clone(),
+                        status: VerifierStateStatus::ExhaustedAccepted,
+                        selected_generation: Some(generation),
+                        exit_reason: Some("max_iterations_exhausted".to_string()),
+                    });
+                    events.push(WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                        task_attempt_id: verifier_task_attempt_id.to_string(),
+                        verifier_metadata: Some(VerifierAttemptMetadata {
                             status: VerifierAttemptStatus::ExhaustedAccepted,
                             decision: Some(VerifierDecision::Continue),
                             feedback: Some(feedback),
                             verifier_output: Some(verifier_result.output),
                             exit_reason: Some("max_iterations_exhausted".to_string()),
-                        });
-                    }
-                    self.mark_slice_satisfaction(
+                        }),
+                    });
+                    events.extend(self.slice_satisfaction_events(
                         instance,
                         &slice,
                         generation,
                         TaskSatisfactionStatus::Satisfied,
-                    );
+                    ));
                 } else {
-                    state.status = VerifierStateStatus::ExhaustedFailed;
-                    instance.status = WorkflowStatus::Failed;
-                    if let Some(task) = instance.tasks.get_mut(verifier_task_attempt_id) {
-                        task.status = TaskStatus::Failed;
-                        task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
-                        task.verifier_metadata = Some(VerifierAttemptMetadata {
-                            status: VerifierAttemptStatus::ExhaustedFailed,
-                            decision: Some(VerifierDecision::Continue),
-                            feedback: Some(feedback),
-                            verifier_output: Some(verifier_result.output),
+                    events.extend([
+                        WorkflowInstanceEvent::VerifierStateStatusChanged {
+                            verifier_task_id: verifier_task_id.clone(),
+                            status: VerifierStateStatus::ExhaustedFailed,
+                            selected_generation: state.selected_generation,
                             exit_reason: Some("max_iterations_exhausted".to_string()),
-                        });
-                    }
-                    self.mark_slice_satisfaction(
+                        },
+                        WorkflowInstanceEvent::WorkflowStatusChanged {
+                            status: WorkflowStatus::Failed,
+                        },
+                        WorkflowInstanceEvent::TaskStatusChanged {
+                            task_attempt_id: verifier_task_attempt_id.to_string(),
+                            status: TaskStatus::Failed,
+                        },
+                        WorkflowInstanceEvent::TaskSatisfactionChanged {
+                            task_attempt_id: verifier_task_attempt_id.to_string(),
+                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                        },
+                        WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                            task_attempt_id: verifier_task_attempt_id.to_string(),
+                            verifier_metadata: Some(VerifierAttemptMetadata {
+                                status: VerifierAttemptStatus::ExhaustedFailed,
+                                decision: Some(VerifierDecision::Continue),
+                                feedback: Some(feedback),
+                                verifier_output: Some(verifier_result.output),
+                                exit_reason: Some("max_iterations_exhausted".to_string()),
+                            }),
+                        },
+                    ]);
+                    events.extend(self.slice_satisfaction_events(
                         instance,
                         &slice,
                         generation,
                         TaskSatisfactionStatus::Unsatisfied,
-                    );
-                    anyhow::bail!("Verifier exhausted iteration budget");
+                    ));
+                    return Ok(VerifierTransition {
+                        events,
+                        error_message: Some("Verifier exhausted iteration budget".to_string()),
+                    });
                 }
             }
         }
 
-        Ok(())
+        Ok(VerifierTransition {
+            events,
+            error_message: None,
+        })
     }
 }
 

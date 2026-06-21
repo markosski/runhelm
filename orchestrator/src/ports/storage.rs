@@ -151,5 +151,4 @@ pub trait StoragePort {
         events: Vec<WorkflowEventRecord>,
         instance: WorkflowInstance,
     ) -> anyhow::Result<()>;
-    async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()>;
 }

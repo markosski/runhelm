@@ -33,9 +33,9 @@
 
 - [x] 5.1 Refactor workflow instance creation to use event-backed snapshot updates
 - [x] 5.2 Refactor orchestrator startup recovery to use event-backed snapshot updates
-- [x] 5.3 Refactor a focused subset of workflow engine task lifecycle transitions to use event batches
+- [x] 5.3 Refactor workflow engine task and verifier lifecycle transitions to use event batches
 - [x] 5.4 Update workflow list and active workflow discovery callers to use summary listing unless they need full instances
-- [x] 5.5 Keep public API response shapes stable during the migration
+- [x] 5.5 Keep workflow status and task result API response shapes stable while exposing `WorkflowInfo` for workflow lists
 
 ## 6. Verification And Documentation
 

@@ -625,8 +625,14 @@ mod tests {
         running.id = "running-workflow".to_string();
         running.status = WorkflowStatus::Running;
 
-        storage.save_workflow_instance(completed).await.unwrap();
-        storage.save_workflow_instance(running).await.unwrap();
+        storage
+            .commit_workflow_instance_events(vec![], completed)
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(vec![], running)
+            .await
+            .unwrap();
 
         let workflows = service
             .list_workflows(Some(WorkflowStatus::Running))

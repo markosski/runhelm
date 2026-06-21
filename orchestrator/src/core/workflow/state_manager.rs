@@ -20,14 +20,32 @@ impl WorkflowStateManager {
         workflow_instance_id: &str,
         events: Vec<WorkflowInstanceEvent>,
     ) -> anyhow::Result<WorkflowInstance> {
-        if events.is_empty() {
-            anyhow::bail!("event batch must not be empty");
-        }
-
         let current = self
             .storage
             .get_workflow_instance(workflow_instance_id)
             .await?;
+        self.commit_events_for_current(current, events)
+            .await
+    }
+
+    pub async fn commit_events_for_instance(
+        &self,
+        current: WorkflowInstance,
+        events: Vec<WorkflowInstanceEvent>,
+    ) -> anyhow::Result<WorkflowInstance> {
+        self.commit_events_for_current(Some(current), events)
+            .await
+    }
+
+    async fn commit_events_for_current(
+        &self,
+        current: Option<WorkflowInstance>,
+        events: Vec<WorkflowInstanceEvent>,
+    ) -> anyhow::Result<WorkflowInstance> {
+        if events.is_empty() {
+            anyhow::bail!("event batch must not be empty");
+        }
+
         let updated = reduce_workflow_instance_events(current, &events)?;
 
         let created_time = unix_timestamp()?;
@@ -103,5 +121,42 @@ mod tests {
             .unwrap();
         assert_eq!(summaries[0].id, "wf-1");
         assert_eq!(summaries[0].workflow_def_id, "wf");
+    }
+
+    #[tokio::test]
+    async fn state_manager_commits_events_for_existing_instance_without_loading_first() {
+        let storage = Arc::new(MemoryStorage::new());
+        let manager = WorkflowStateManager::new(storage.clone());
+        let instance = WorkflowInstance {
+            id: "wf-1".to_string(),
+            workflow_def_id: "wf".to_string(),
+            status: WorkflowStatus::Pending,
+            tasks: HashMap::new(),
+            verifier_states: HashMap::new(),
+        };
+
+        manager
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                    status: WorkflowStatus::Running,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let saved = storage
+            .get_workflow_instance("wf-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Running);
+        let events = storage.get_workflow_instance_events("wf-1").await.unwrap();
+        assert_eq!(events.len(), 1);
+        let summaries = storage
+            .list_workflow_info(WorkflowInstanceFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(summaries[0].status, WorkflowStatus::Running);
     }
 }

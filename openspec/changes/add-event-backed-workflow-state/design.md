@@ -13,7 +13,8 @@ That approach is practical while storage is in-memory, but it weakens observabil
 - Persist event batches and the resulting `WorkflowInstance` snapshot.
 - Continue serving current workflow reads from snapshots.
 - Make storage-level workflow list reads return lightweight summaries instead of full workflow instances.
-- Refactor workflow state changes incrementally without changing public API response shapes.
+- Refactor workflow state changes so runtime `WorkflowInstance` mutations go through event commits.
+- Keep workflow status and task result response DTOs stable while making workflow list responses use `WorkflowInfo`.
 - Make the design compatible with future durable storage and full event sourcing.
 
 **Non-Goals:**
@@ -62,14 +63,16 @@ Alternatives considered:
 
 ### Add a core workflow state manager
 
-A core-level manager should own the write sequence:
+A core-level manager should own the write sequence. It should support an ID-based path for callers that only know the workflow instance ID and a current-instance path for runtime code that already has the latest `WorkflowInstance` snapshot.
 
-1. Load the current snapshot.
+1. Load the current snapshot when the caller provides only a workflow instance ID; otherwise use the caller-provided current snapshot.
 2. Apply the event batch through the reducer.
 3. Wrap events in timestamped records.
 4. Ask storage to commit the event records and updated snapshot together.
 5. Let storage maintain any lightweight `WorkflowInfo` projection from the committed snapshot.
 6. Return the updated snapshot.
+
+The engine should prefer the current-instance path while executing a workflow because it already carries the latest snapshot between transition commits. This keeps event-backed mutation semantics while avoiding redundant storage reads inside the runtime loop.
 
 Storage may maintain summary/index data as part of the workflow instance commit, deriving it from the committed `WorkflowInstance` snapshot rather than from event semantics. This keeps optimization-only fields out of `WorkflowInstance` and out of the state manager API. For in-memory storage this is straightforward. For durable storage, the adapter should make event append, snapshot save, and summary projection update atomic in one database transaction without taking ownership of reducer logic.
 
@@ -122,7 +125,7 @@ Event payloads should carry the data needed for the reducer to produce the same 
 4. Update `MemoryStorage` to store raw event logs and snapshots without interpreting event payloads.
 5. Replace full-instance workflow list callers with summary-list callers where full snapshots are not needed.
 6. Refactor a narrow first path, such as workflow instance creation or startup recovery, to use event batches.
-7. Refactor engine task/verifier transitions incrementally, preserving existing API behavior and tests.
+7. Refactor engine task/verifier transitions to use event batches, preserving workflow status and task result API behavior.
 8. Document the event-backed snapshot model in `docs/`.
 
 Rollback is straightforward while reads remain snapshot-backed: direct snapshot persistence can be restored and the unused event log ignored.
