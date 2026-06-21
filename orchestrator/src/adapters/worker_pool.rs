@@ -1,4 +1,5 @@
 use crate::core::models::{ExecutionMetadata, TaskDef};
+use crate::core::workflow::models::WorkerHostId;
 use crate::ports::executor::ExecutionResult;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,7 @@ const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkerRegistration {
     pub worker_id: String,
+    pub host_id: WorkerHostId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,13 +348,17 @@ mod tests {
         Path::new("/tmp/runhelm-test-workspace")
     }
 
+    fn test_registration(worker_id: &str) -> WorkerRegistration {
+        WorkerRegistration {
+            worker_id: worker_id.to_string(),
+            host_id: WorkerHostId::new("test-host"),
+        }
+    }
+
     #[tokio::test]
     async fn worker_claims_queued_task_and_completes_result() {
         let pool = WorkerPool::new();
-        pool.register_worker(WorkerRegistration {
-            worker_id: "worker-1".to_string(),
-        })
-        .await;
+        pool.register_worker(test_registration("worker-1")).await;
 
         let task = test_task("task-1");
         let execution_pool = pool.clone();
@@ -398,10 +404,7 @@ mod tests {
     #[tokio::test]
     async fn queued_task_does_not_time_out_before_claim() {
         let pool = WorkerPool::new();
-        pool.register_worker(WorkerRegistration {
-            worker_id: "worker-1".to_string(),
-        })
-        .await;
+        pool.register_worker(test_registration("worker-1")).await;
 
         let task = test_task("task-1");
         let execution_pool = pool.clone();
@@ -448,10 +451,7 @@ mod tests {
     #[tokio::test]
     async fn worker_claims_next_queued_task() {
         let pool = WorkerPool::new();
-        pool.register_worker(WorkerRegistration {
-            worker_id: "worker-1".to_string(),
-        })
-        .await;
+        pool.register_worker(test_registration("worker-1")).await;
 
         let task = test_task("task-1");
         let execution_pool = pool.clone();
@@ -482,10 +482,7 @@ mod tests {
     #[tokio::test]
     async fn claimed_task_dispatch_includes_workspace_path() {
         let pool = WorkerPool::new();
-        pool.register_worker(WorkerRegistration {
-            worker_id: "worker-1".to_string(),
-        })
-        .await;
+        pool.register_worker(test_registration("worker-1")).await;
 
         let task = test_task("task-1");
         let workspace_path = Path::new("/workspaces/workflow-1/taskid-task-1");
@@ -521,10 +518,7 @@ mod tests {
     #[tokio::test]
     async fn claimed_task_times_out_through_result_waiter() {
         let pool = WorkerPool::new();
-        pool.register_worker(WorkerRegistration {
-            worker_id: "worker-1".to_string(),
-        })
-        .await;
+        pool.register_worker(test_registration("worker-1")).await;
 
         let task = test_task("task-1");
         let execution_pool = pool.clone();

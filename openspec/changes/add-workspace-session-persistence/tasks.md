@@ -8,7 +8,7 @@
 
 ## 2. Worker Registration and Affinity-Aware Dispatch
 
-- [ ] 2.1 Require `RUNHELM_WORKER_HOST_ID` during worker startup and include it as `host_id` in worker registration payloads
+- [x] 2.1 Require `RUNHELM_WORKER_HOST_ID` during worker startup and include it as `host_id` in worker registration payloads
 - [ ] 2.2 Preserve worker process identity separately from host identity in `WorkerPool`
 - [ ] 2.3 Implement heartbeat join-or-renew semantics and deregister workers after the configured missed heartbeat threshold
 - [ ] 2.4 Add workflow pin constraints to pending task dispatch state

@@ -38,6 +38,8 @@ npm run dev
 
 By default the worker connects to the orchestrator worker API at `http://127.0.0.1:3001`. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the worker API is reachable at a different URL.
 
+Set `RUNHELM_WORKER_HOST_ID` before starting the worker. This value is required and should identify the durable host state domain that owns the worker's local workspace and session stores, not a short-lived worker process or container ID.
+
 The worker registers with the orchestrator before polling for tasks. If the orchestrator service name or worker API is not reachable yet during container startup, registration is retried until it succeeds. These startup retries are expected during Compose bootstrap and do not require a worker restart.
 
 The worker reads credentials from `~/.runhelm/file_credentials.json` during startup. The file must contain a flat JSON object whose keys are credential names and whose values are strings:
@@ -306,7 +308,8 @@ Registers a worker.
 
 ```json
 {
-  "worker_id": "remote-worker-1"
+  "worker_id": "remote-worker-1",
+  "host_id": "local-dev-host"
 }
 ```
 
@@ -498,6 +501,7 @@ kind:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3001` | Worker API base URL used for worker registration, task claiming, and task completion. |
+| `RUNHELM_WORKER_HOST_ID` | required | Stable host identity sent during registration. Use the same value for workers that share durable workspace and session roots. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
 | `RUNHELM_TASK_TIMEOUT_SECS` | `300` | Orchestrator fallback timeout for tasks that do not set `timeout_secs`. |

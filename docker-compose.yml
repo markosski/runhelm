@@ -28,6 +28,7 @@ services:
         condition: service_healthy
     environment:
       RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3001
+      RUNHELM_WORKER_HOST_ID: compose-local-host
     volumes:
       - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro
       - ${RUNHELM_SKILLS_DIR:-${HOME}/.runhelm/skills}:/home/runhelm/.pi/agent/skills:ro

@@ -19,6 +19,7 @@ const DEFAULT_RESULT_ACK_MAX_ATTEMPTS = 3;
 type WorkerRegistrationMessage = {
     type: 'register';
     worker_id: string;
+    host_id: string;
 };
 
 type RegistrationAckMessage = {
@@ -66,6 +67,15 @@ function createWorkerId(): string {
     return process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
 }
 
+function requiredWorkerHostId(): string {
+    const hostId = process.env.RUNHELM_WORKER_HOST_ID?.trim();
+    if (!hostId) {
+        throw new Error('RUNHELM_WORKER_HOST_ID is required and must identify the worker host durable state domain');
+    }
+
+    return hostId;
+}
+
 function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult {
     switch (result.status) {
         case 'ok':
@@ -109,10 +119,11 @@ async function processTask(
     }
 }
 
-function workerRegistration(workerId: string): WorkerRegistrationMessage {
+function workerRegistration(workerId: string, workerHostId: string): WorkerRegistrationMessage {
     return {
         type: 'register',
         worker_id: workerId,
+        host_id: workerHostId,
     };
 }
 
@@ -147,25 +158,26 @@ function describeError(error: unknown): string {
     return String(error);
 }
 
-async function registerWorkerUntilAck(baseUrl: string, workerId: string): Promise<void> {
+async function registerWorkerUntilAck(baseUrl: string, workerId: string, workerHostId: string): Promise<void> {
     const url = `${baseUrl}/workers/register`;
     let attempt = 0;
 
     while (true) {
         try {
-            const ack = await postJson<RegistrationAckMessage>(url, workerRegistration(workerId));
+            const ack = await postJson<RegistrationAckMessage>(url, workerRegistration(workerId, workerHostId));
             if (ack.type === 'registration_ack' && ack.worker_id === workerId) {
-                logger.info({ workerId }, "Worker registered with orchestrator");
+                logger.info({ workerId, workerHostId }, "Worker registered with orchestrator");
                 return;
             }
 
-            logger.warn({ ack, workerId }, "Unexpected worker registration ack");
+            logger.warn({ ack, workerId, workerHostId }, "Unexpected worker registration ack");
         } catch (err) {
             attempt += 1;
             const retryContext = {
                 error: describeError(err),
                 attempt,
                 workerId,
+                workerHostId,
                 retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS,
             };
 
@@ -218,6 +230,7 @@ async function postTaskResultUntilAck(
 
 async function runWorker(
     workerId: string,
+    workerHostId: string,
     executorFactory: ExecutorFactory,
     credentialsAdapter: CredentialsPort,
     sessionStore: SessionStore,
@@ -225,9 +238,9 @@ async function runWorker(
 ) {
     const baseUrl = (process.env.RUNHELM_ORCHESTRATOR_HTTP_URL || DEFAULT_ORCHESTRATOR_HTTP_URL)
         .replace(/\/$/, '');
-    logger.info({ baseUrl, workerId }, "Connecting to orchestrator HTTP API");
+    logger.info({ baseUrl, workerId, workerHostId }, "Connecting to orchestrator HTTP API");
 
-    await registerWorkerUntilAck(baseUrl, workerId);
+    await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
 
     while(true) {
         let message: WorkerResponse;
@@ -238,7 +251,7 @@ async function runWorker(
         } catch (err) {
             if (err instanceof HttpError && err.status === 404) {
                 logger.warn({ workerId }, "Worker is not registered with orchestrator; re-registering");
-                await registerWorkerUntilAck(baseUrl, workerId);
+                await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
             } else {
                 logger.warn({ error: describeError(err), workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker task claim failed; retrying");
                 await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
@@ -266,15 +279,16 @@ async function runWorker(
 async function main() {
     logger.info("Worker starting up...");
 
+    const workerId = createWorkerId();
+    const workerHostId = requiredWorkerHostId();
     const executorFactory = new ExecutorFactory();
     const credentialsFilePath = defaultCredentialsFilePath();
     const credentialsAdapter = await FileCredentialsAdapter.fromFile(credentialsFilePath);
     const sessionStore = new FileSessionStore();
 
     const ajv = new Ajv();
-    const workerId = createWorkerId();
 
-    await runWorker(workerId, executorFactory, credentialsAdapter, sessionStore, ajv);
+    await runWorker(workerId, workerHostId, executorFactory, credentialsAdapter, sessionStore, ajv);
 }
 
 main().catch((err) => {

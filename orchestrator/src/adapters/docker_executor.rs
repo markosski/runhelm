@@ -109,6 +109,7 @@ mod tests {
         worker_pool
             .register_worker(crate::adapters::worker_pool::WorkerRegistration {
                 worker_id: "worker-1".to_string(),
+                host_id: crate::core::workflow::models::WorkerHostId::new("test-host"),
             })
             .await;
 
@@ -161,6 +162,7 @@ mod tests {
         worker_pool
             .register_worker(crate::adapters::worker_pool::WorkerRegistration {
                 worker_id: "worker-1".to_string(),
+                host_id: crate::core::workflow::models::WorkerHostId::new("test-host"),
             })
             .await;
 
