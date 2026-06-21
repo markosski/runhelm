@@ -124,6 +124,12 @@ Workspace groups do not create scheduling dependencies. If two tasks declare the
 
 If a task needs files produced by another task in the same workspace group, the workflow must still declare the normal dependency that orders those tasks.
 
+## Remote Worker Pinning
+
+The OpenSpec change `add-workspace-session-persistence` defines the planned remote-worker behavior for workspace continuity. Every workflow instance is pinned to the first worker host that executes work for that instance. After the pin is established, every task in that workflow instance must execute on workers registered with the same host identifier.
+
+If the pinned host is lost, RunHelm should mark the pinned workflow instance as failed instead of silently moving it to another host without the local workspace state. The user can then decide whether to abandon that instance or retry through an explicit recovery flow.
+
 ## Cleanup
 
 `WorkspaceManager` removes expired RunHelm-owned workspace directories under the configured workspace root. Cleanup relies on the workspace `.timestamp` marker and only targets the RunHelm workspace layout, not arbitrary paths returned by task code.

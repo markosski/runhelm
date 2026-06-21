@@ -67,3 +67,9 @@ Agent execution keeps Pi's SDK-managed stream function so model authentication c
 The session store interface is intended to allow a future blob-backed implementation without changing workflow attempt semantics. A blob store should use the same logical RunHelm session keys, download or materialize a Pi-compatible JSONL file before execution, and persist the updated JSONL after execution.
 
 Blob-backed implementations should add concurrency protection, such as ETags, generation IDs, or compare-and-swap writes, so two workers do not silently overwrite the same logical session. The orchestrator task model should not need to store opaque Pi session IDs or transcript contents when that adapter is added.
+
+## Remote Worker Pinning
+
+The OpenSpec change `add-workspace-session-persistence` defines the planned interaction between Agent sessions and remote worker placement. Every workflow instance is pinned to the first worker host that executes work for that instance, and reusable Agent sessions in that workflow instance continue on the pinned host. This keeps host-local session files and workspace files aligned.
+
+If a pinned host is lost, RunHelm should fail the pinned workflow instance rather than silently continuing a reusable Agent session on a different host without the expected local session and workspace state.
