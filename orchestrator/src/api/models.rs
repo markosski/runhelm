@@ -1,6 +1,7 @@
 use crate::core::{
     models::{TaskInputMapping, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata},
-    workflow::models::{VerifierStateStatus, WorkflowStatus},
+    workflow::events::WorkflowEventRecord,
+    workflow::models::{VerifierStateStatus, WorkflowInfo, WorkflowStatus},
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,15 +18,14 @@ pub struct WorkflowStatusReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowSummary {
-    pub id: String,
-    pub workflow_def_id: String,
-    pub status: WorkflowStatus,
+pub struct WorkflowList {
+    pub workflows: Vec<WorkflowInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowList {
-    pub workflows: Vec<WorkflowSummary>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowEvents {
+    pub workflow_instance_id: String,
+    pub events: Vec<WorkflowEventRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

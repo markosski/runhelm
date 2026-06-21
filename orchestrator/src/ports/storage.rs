@@ -1,10 +1,18 @@
 use crate::core::models::{
     FunctionDef, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata,
 };
-use crate::core::workflow::models::{WorkflowDef, WorkflowInstance};
+use crate::core::workflow::events::WorkflowEventRecord;
+use crate::core::workflow::models::{WorkflowDef, WorkflowInfo, WorkflowInstance, WorkflowStatus};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowInstanceFilter {
+    All,
+    Status(WorkflowStatus),
+    Statuses(Vec<WorkflowStatus>),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskResult {
@@ -127,10 +135,21 @@ pub trait StoragePort {
     async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>>;
     async fn get_function_def(&self, id: &str) -> anyhow::Result<Option<FunctionDef>>;
     async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>>;
-    async fn list_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
-    async fn list_active_workflow_instances(&self) -> anyhow::Result<Vec<WorkflowInstance>>;
+    async fn get_workflow_instance_events(
+        &self,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<Vec<WorkflowEventRecord>>;
+    async fn list_workflow_info(
+        &self,
+        filter: WorkflowInstanceFilter,
+    ) -> anyhow::Result<Vec<WorkflowInfo>>;
     async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()>;
     async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()>;
     async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool>;
+    async fn commit_workflow_instance_events(
+        &self,
+        events: Vec<WorkflowEventRecord>,
+        instance: WorkflowInstance,
+    ) -> anyhow::Result<()>;
     async fn save_workflow_instance(&self, instance: WorkflowInstance) -> anyhow::Result<()>;
 }

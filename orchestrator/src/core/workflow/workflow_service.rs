@@ -1,9 +1,13 @@
-use crate::api::models::{WorkflowList, WorkflowSummary};
+use crate::api::models::{WorkflowEvents, WorkflowList};
 use crate::core::models::{
     TaskDef, TaskInstance, TaskStatus, VerifierControlConfig, verifier_decision_schema,
 };
+use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
-use crate::ports::storage::{StoragePort, TaskResult, TaskResultMetadata, WorkflowTaskResult};
+use crate::core::workflow::state_manager::WorkflowStateManager;
+use crate::ports::storage::{
+    StoragePort, TaskResult, TaskResultMetadata, WorkflowInstanceFilter, WorkflowTaskResult,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,7 +43,12 @@ impl WorkflowService {
             verifier_states: HashMap::new(),
         };
 
-        self.storage.save_workflow_instance(instance).await?;
+        WorkflowStateManager::new(Arc::clone(&self.storage))
+            .commit_events(
+                &instance_id,
+                vec![WorkflowInstanceEvent::WorkflowCreated { instance }],
+            )
+            .await?;
 
         Ok(instance_id)
     }
@@ -48,26 +57,41 @@ impl WorkflowService {
         &self,
         status: Option<WorkflowStatus>,
     ) -> anyhow::Result<WorkflowList> {
-        let mut workflows: Vec<WorkflowSummary> = self
+        let mut workflows = self
             .storage
-            .list_workflow_instances()
-            .await?
-            .into_iter()
-            .filter(|instance| {
-                status
-                    .as_ref()
-                    .is_none_or(|status| instance.status == *status)
+            .list_workflow_info(match status {
+                Some(status) => WorkflowInstanceFilter::Status(status),
+                None => WorkflowInstanceFilter::All,
             })
-            .map(|instance| WorkflowSummary {
-                id: instance.id,
-                workflow_def_id: instance.workflow_def_id,
-                status: instance.status,
-            })
-            .collect();
+            .await?;
 
         workflows.sort_by(|left, right| left.id.cmp(&right.id));
 
         Ok(WorkflowList { workflows })
+    }
+
+    pub async fn list_workflow_events(
+        &self,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<Option<WorkflowEvents>> {
+        if self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+
+        let events = self
+            .storage
+            .get_workflow_instance_events(workflow_instance_id)
+            .await?;
+
+        Ok(Some(WorkflowEvents {
+            workflow_instance_id: workflow_instance_id.to_string(),
+            events,
+        }))
     }
 
     pub async fn get_task_result(
@@ -559,6 +583,15 @@ mod tests {
         assert_eq!(instance.status, WorkflowStatus::Pending);
         assert!(instance.tasks.is_empty());
         assert!(instance.verifier_states.is_empty());
+
+        let events = service
+            .list_workflow_events(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(events.workflow_instance_id, instance_id);
+        assert_eq!(events.events.len(), 1);
+        assert!(events.events[0].created_time > 0);
     }
 
     #[tokio::test]
@@ -604,5 +637,16 @@ mod tests {
         assert_eq!(workflows.workflows[0].id, "running-workflow");
         assert_eq!(workflows.workflows[0].workflow_def_id, "workflow-1");
         assert_eq!(workflows.workflows[0].status, WorkflowStatus::Running);
+        assert_eq!(workflows.workflows[0].total_task_count, 0);
+        assert_eq!(workflows.workflows[0].completed_task_count, 0);
+    }
+
+    #[tokio::test]
+    async fn list_workflow_events_returns_none_for_unknown_instance() {
+        let service = WorkflowService::new(Arc::new(MemoryStorage::new()));
+
+        let events = service.list_workflow_events("missing").await.unwrap();
+
+        assert!(events.is_none());
     }
 }

@@ -54,6 +54,7 @@ pub fn create_public_router(
         )
         .route("/workflow-queue/{id}", delete(handlers::delete_queue_item))
         .route("/workflows", get(handlers::list_workflows))
+        .route("/workflows/{id}/events", get(handlers::get_workflow_events))
         .route("/workflows/{id}", get(handlers::get_workflow_instance))
         .route(
             "/workflows/{workflow_instance_id}/tasks",

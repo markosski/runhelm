@@ -29,7 +29,7 @@ That approach is practical while storage is in-memory, but it weakens observabil
 
 ### Use event-backed snapshots instead of full event sourcing
 
-The first implementation should append workflow instance events and save the resulting snapshot. Reads continue to use snapshots.
+The first implementation should commit workflow instance events together with the resulting snapshot. Reads continue to use snapshots.
 
 This gives RunHelm transition history without paying the complexity cost of replay-based reads, projections, checkpointing, and event-version migration before durable storage exists.
 
@@ -42,17 +42,17 @@ Alternatives considered:
 
 Workflow event processing should be implemented as pure reducer functions that apply one event or an ordered event slice to a `WorkflowInstance`.
 
-Storage adapters should only persist raw events and snapshots. A memory, SQLite, or Postgres adapter should not know what `TaskCompleted`, `VerifierRejected`, or `StartupRecoveryApplied` means.
+Storage adapters should only persist event records, snapshots, and summary rows. A memory, SQLite, or Postgres adapter should not know what `TaskCompleted`, `VerifierRejected`, or `StartupRecoveryApplied` means. Each event record should contain a `WorkflowInstanceEvent` payload plus `created_time` metadata assigned by the core workflow state manager when the batch is committed.
 
 Alternatives considered:
 
 - Let storage append events and mutate snapshots: centralizes persistence mechanics, but leaks domain rules into adapters and makes storage implementations harder to test and swap.
 
-### Append events in ordered batches
+### Commit ordered event batches with their resulting state
 
-The storage interface should accept a vector of events for a single workflow transition decision. Ordering is meaningful and reducer application order must match persisted order.
+The storage interface should accept timestamped event records and the resulting `WorkflowInstance` in one commit call for a single workflow transition decision. Ordering is meaningful and reducer application order must match persisted order.
 
-Empty event batches should be rejected by the core state store before storage is called.
+Empty event batches should be rejected by the core workflow state manager before storage is called.
 
 This supports transitions where one engine decision creates multiple state changes, such as verifier rejection marking a generation unsatisfied and materializing the next generation.
 
@@ -60,18 +60,18 @@ Alternatives considered:
 
 - Append one event at a time: simpler signature, but risks partially persisted logical transitions or requires a separate transaction/session API.
 
-### Add a core workflow instance state store
+### Add a core workflow state manager
 
-A core-level store or repository should own the write sequence:
+A core-level manager should own the write sequence:
 
 1. Load the current snapshot.
 2. Apply the event batch through the reducer.
-3. Append the raw events through storage.
-4. Save the updated snapshot through storage.
-5. Let storage update the lightweight `WorkflowInfo` projection from that already-reduced snapshot.
+3. Wrap events in timestamped records.
+4. Ask storage to commit the event records and updated snapshot together.
+5. Let storage maintain any lightweight `WorkflowInfo` projection from the committed snapshot.
 6. Return the updated snapshot.
 
-Storage may maintain summary/index data as part of snapshot persistence, but it should derive that data from the updated `WorkflowInstance`, not by interpreting the event payloads. For in-memory storage this is straightforward. For durable storage, the adapter should eventually make event append, snapshot save, and summary projection update atomic in one database transaction without taking ownership of reducer logic.
+Storage may maintain summary/index data as part of the workflow instance commit, deriving it from the committed `WorkflowInstance` snapshot rather than from event semantics. This keeps optimization-only fields out of `WorkflowInstance` and out of the state manager API. For in-memory storage this is straightforward. For durable storage, the adapter should make event append, snapshot save, and summary projection update atomic in one database transaction without taking ownership of reducer logic.
 
 ### Keep public reads snapshot-backed
 
@@ -81,7 +81,7 @@ Event replay is useful for audit and debugging, but should not become the normal
 
 ### Replace full-instance list methods with filtered summaries
 
-`StoragePort` should expose one workflow instance listing method that accepts a workflow state filter and returns lightweight summary rows `WorkflowInfo` instead of full `WorkflowInstance` values. The main value of this model is efficient retrieval of past and active workflow information: list calls should not load each full workflow snapshot to assemble `WorkflowInfo`; storage should maintain this summary data separately from the full snapshot, derived from the latest saved snapshot when workflow state is written.
+`StoragePort` should expose one workflow instance listing method that accepts a workflow state filter and returns lightweight summary rows `WorkflowInfo` instead of full `WorkflowInstance` values. The main value of this model is efficient retrieval of past and active workflow information: list calls should not load each full workflow snapshot to assemble `WorkflowInfo`; storage should maintain this summary data separately from the full snapshot.
 
 The summary should include the fields needed for list and scheduler decisions without loading task inputs, outputs, verifier history, or full task maps:
 
@@ -90,11 +90,10 @@ The summary should include the fields needed for list and scheduler decisions wi
 - created time when available
 - completed time when available
 - current workflow state
-- dynamic workflow - true/false (whether or not workflow may produce more tasks as it progresses, based on control flow)
 - total task count
 - completed task count
 
-The state filter should support the existing list use cases, including all instances, a specific workflow status, and active instances. Active filtering should continue to include instances that are pending/running or otherwise have pending/running task or verifier state according to summary data derived from the latest saved snapshot.
+The state filter should support the existing list use cases, including all instances, one workflow status, or a set of workflow statuses. Active discovery should request pending and running statuses explicitly rather than introducing a separate active concept.
 
 `get_workflow_instance` should be the only storage read that retrieves a full `WorkflowInstance`.
 
@@ -118,8 +117,8 @@ Event payloads should carry the data needed for the reducer to produce the same 
 ## Migration Plan
 
 1. Introduce `WorkflowInstanceEvent` and reducer tests without changing runtime behavior.
-2. Add storage event append, snapshot persistence, and filtered summary listing methods.
-3. Add a core workflow instance state store that appends event batches and saves snapshots.
+2. Add a storage commit method for event records and snapshot persistence, plus filtered summary listing.
+3. Add a core workflow state manager that commits event batches with their resulting snapshots.
 4. Update `MemoryStorage` to store raw event logs and snapshots without interpreting event payloads.
 5. Replace full-instance workflow list callers with summary-list callers where full snapshots are not needed.
 6. Refactor a narrow first path, such as workflow instance creation or startup recovery, to use event batches.
@@ -131,7 +130,7 @@ Rollback is straightforward while reads remain snapshot-backed: direct snapshot 
 ## Risks / Trade-offs
 
 - Events can duplicate data already present in snapshots, increasing storage volume.
-- Summary counters such as total task count and completed task count can become stale if they are computed outside the saved snapshot; compute them from the saved snapshot at write/projection time or directly in the adapter from the snapshot.
-- Without durable transactions, event append and snapshot save can diverge in future non-memory adapters if not designed carefully.
+- Summary counters such as total task count and completed task count can become stale if they are not updated with the saved snapshot; derive the `WorkflowInfo` projection from the committed snapshot inside the storage adapter.
+- Without durable transactions, event records, snapshot state, and summary rows can diverge in future non-memory adapters if the commit method is not implemented atomically.
 - Event schemas can ossify too early; keep initial payloads close to current domain state and add versioning only when durable replay needs it.
 - Partial refactors can leave mixed direct-mutation and event-backed paths; tests should make this visible and the tasks should keep the transition scoped.

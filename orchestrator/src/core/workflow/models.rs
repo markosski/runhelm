@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::models::{TaskDef, TaskInstance};
+use crate::core::models::{TaskDef, TaskInstance, TaskStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkflowStatus {
@@ -23,6 +23,35 @@ pub struct WorkflowInstance {
     pub tasks: HashMap<String, TaskInstance>,
     #[serde(default)]
     pub verifier_states: HashMap<String, VerifierGenerationState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowInfo {
+    pub id: String,
+    pub workflow_def_id: String,
+    pub created_at_epoch_ms: Option<u64>,
+    pub completed_at_epoch_ms: Option<u64>,
+    pub status: WorkflowStatus,
+    pub total_task_count: usize,
+    pub completed_task_count: usize,
+}
+
+impl WorkflowInfo {
+    pub fn from_instance(instance: &WorkflowInstance) -> Self {
+        Self {
+            id: instance.id.clone(),
+            workflow_def_id: instance.workflow_def_id.clone(),
+            created_at_epoch_ms: None,
+            completed_at_epoch_ms: None,
+            status: instance.status.clone(),
+            total_task_count: instance.tasks.len(),
+            completed_task_count: instance
+                .tasks
+                .values()
+                .filter(|task| task.status == TaskStatus::Completed)
+                .count(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -150,6 +150,17 @@ pub async fn get_workflow_instance(
     }
 }
 
+pub async fn get_workflow_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    match state.workflow_service.list_workflow_events(&id).await {
+        Ok(Some(events)) => Ok(Json(serde_json::to_value(events).unwrap())),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct WorkflowListQuery {
     status: Option<String>,

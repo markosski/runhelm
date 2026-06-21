@@ -5,10 +5,12 @@ use crate::core::models::{
     TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus,
     VerifierControlConfig, VerifierDecision, VerifierExecutionResult,
 };
+use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
     VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowDef,
     WorkflowInstance, WorkflowStatus,
 };
+use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
@@ -118,21 +120,26 @@ impl WorkflowEngine {
             None => anyhow::bail!("Workflow definition not found"),
         };
 
-        workflow_instance.status = WorkflowStatus::Running;
-        self.storage
-            .save_workflow_instance(workflow_instance.clone())
+        let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
+        workflow_instance = state_manager
+            .commit_events(
+                &workflow_inst_id,
+                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                    status: WorkflowStatus::Running,
+                }],
+            )
             .await?;
 
         let loop_slices = self.compute_loop_slices(&workflow_def);
 
         // Initialize tasks if not already done
         if workflow_instance.tasks.is_empty() {
+            let mut events = Vec::with_capacity(workflow_def.tasks.len());
             for task_def in &workflow_def.tasks {
                 let task_attempt_id = TaskInstance::make_task_attempt_id(&task_def.id, 1);
-
-                workflow_instance.tasks.insert(
-                    task_attempt_id.clone(),
-                    TaskInstance {
+                events.push(WorkflowInstanceEvent::TaskMaterialized {
+                    task_attempt_id,
+                    task: TaskInstance {
                         task_def_id: task_def.id.clone(),
                         status: TaskStatus::Pending,
                         satisfaction_status: TaskSatisfactionStatus::Pending,
@@ -142,11 +149,13 @@ impl WorkflowEngine {
                         generation_index: 1,
                         verifier_metadata: None,
                     },
-                );
+                });
             }
-            self.storage
-                .save_workflow_instance(workflow_instance.clone())
-                .await?;
+            if !events.is_empty() {
+                workflow_instance = state_manager
+                    .commit_events(&workflow_inst_id, events)
+                    .await?;
+            }
         }
 
         // Main Execution Loop

@@ -6,8 +6,8 @@ RunHelm currently records workflow execution progress by directly mutating a ful
 
 - Add workflow instance events for workflow lifecycle, task attempt, verifier, failure, completion, and recovery transitions.
 - Add pure core/domain reducer logic that applies ordered workflow instance events to a `WorkflowInstance`.
-- Add a core-level workflow instance state store that loads the current snapshot, applies event batches, appends the raw events, saves the resulting snapshot, and returns updated state.
-- Extend storage interfaces with event append and snapshot persistence operations while keeping storage adapters free of workflow transition semantics.
+- Add a core-level workflow state manager that loads the current snapshot, applies event batches, and commits event records together with the resulting snapshot.
+- Extend storage interfaces with one workflow transition commit operation while keeping storage adapters free of workflow transition semantics.
 - Replace full-instance list methods with a single filtered workflow instance summary listing method backed by snapshots.
 - Keep full workflow instance retrieval limited to `get_workflow_instance`.
 - Defer full event sourcing, replay-based reads, snapshot checkpoints, optimistic concurrency, and durable database transaction details until durable storage requires them.

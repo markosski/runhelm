@@ -27,7 +27,7 @@ The orchestrator SHALL apply workflow instance events through core reducer logic
 - **THEN** it stores the events without applying workflow transition rules
 
 ### Requirement: Event-Backed Snapshot Persistence
-The orchestrator SHALL persist workflow instance event batches and the resulting `WorkflowInstance` snapshot.
+The orchestrator SHALL persist workflow instance event batches and the resulting `WorkflowInstance` snapshot as one transition commit.
 
 #### Scenario: Event batch updates snapshot
 - **WHEN** core code commits an ordered batch of workflow instance events
@@ -35,14 +35,23 @@ The orchestrator SHALL persist workflow instance event batches and the resulting
 
 #### Scenario: Event batch is persisted
 - **WHEN** core code commits an ordered batch of workflow instance events
-- **THEN** the system appends the raw events for that workflow instance
+- **THEN** the system appends timestamped event records for that workflow instance
+
+#### Scenario: Event batch commit updates summary
+- **WHEN** core code commits an ordered batch of workflow instance events
+- **THEN** storage receives the event records and reduced workflow snapshot in one commit operation
+- **THEN** storage updates any lightweight summary projection from the reduced workflow snapshot
+
+#### Scenario: Event record contains occurrence time
+- **WHEN** core code commits workflow instance events
+- **THEN** each persisted workflow event record includes a `created_time` value
 
 #### Scenario: Empty event batch
 - **WHEN** core code attempts to commit an empty event batch
 - **THEN** the system rejects the operation without saving a snapshot
 
 ### Requirement: Snapshot-Backed Workflow Reads
-The orchestrator SHALL continue serving full current workflow instance reads from snapshots and list queries from lightweight summary data maintained from snapshots.
+The orchestrator SHALL continue serving full current workflow instance reads from snapshots and list queries from lightweight summary data produced with snapshots.
 
 #### Scenario: Workflow instance read
 - **WHEN** a caller requests a workflow instance by ID
@@ -50,7 +59,7 @@ The orchestrator SHALL continue serving full current workflow instance reads fro
 
 #### Scenario: Workflow list read
 - **WHEN** a caller lists workflow instances
-- **THEN** the system returns lightweight summary data maintained from saved workflow instance snapshots
+- **THEN** the system returns lightweight summary data produced by core from saved workflow instance snapshots
 - **THEN** the list operation does not return full workflow instance state
 - **THEN** the list operation does not load each full workflow instance snapshot to assemble the result
 
@@ -58,9 +67,13 @@ The orchestrator SHALL continue serving full current workflow instance reads fro
 - **WHEN** a caller lists workflow instances with a workflow state filter
 - **THEN** the system returns only summaries matching that filter
 
+#### Scenario: Workflow list multi-state filter
+- **WHEN** a caller lists workflow instances with multiple workflow states
+- **THEN** the system returns only summaries whose workflow status is included in that set
+
 #### Scenario: Active workflow discovery
 - **WHEN** the orchestrator discovers active workflow instances
-- **THEN** the system evaluates active state from lightweight summary data maintained from saved workflow instance snapshots and returns matching workflow summaries
+- **THEN** the system lists workflow summaries using a multi-state filter for pending and running workflow statuses
 
 #### Scenario: Full workflow instance read is explicit
 - **WHEN** a caller needs task inputs, task outputs, verifier history, or other full workflow instance state
@@ -79,18 +92,19 @@ The orchestrator SHALL expose storage-level workflow instance list results as li
 
 #### Scenario: Summary contains task counts
 - **WHEN** a workflow instance appears in a storage-level list result
-- **THEN** the summary includes total task count and completed task count maintained from the saved snapshot
+- **THEN** the summary includes total task count and completed task count produced from the saved snapshot
 
 ### Requirement: Storage Adapter Boundary
 Storage adapters SHALL be responsible for persistence mechanics and SHALL NOT own workflow event semantics.
 
-#### Scenario: Memory storage appends events
-- **WHEN** memory storage appends workflow instance events
-- **THEN** it stores the event payloads without deciding how they affect workflow, task, or verifier state
+#### Scenario: Memory storage commits events
+- **WHEN** memory storage commits workflow instance event records with a reduced snapshot
+- **THEN** it stores the event records without deciding how their payloads affect workflow, task, or verifier state
 
-#### Scenario: Snapshot save receives reduced state
-- **WHEN** storage saves a workflow instance snapshot after event append
-- **THEN** the snapshot has already been produced by core reducer logic
+#### Scenario: Commit receives reduced state
+- **WHEN** storage commits workflow instance event records and snapshot state
+- **THEN** the snapshot has already been produced by core logic
+- **THEN** any summary projection is derived from the committed snapshot, not from event payload semantics
 
 ### Requirement: Atomic Transition Batches
 The orchestrator SHALL treat an ordered event batch from one workflow decision as a single transition.
@@ -101,4 +115,4 @@ The orchestrator SHALL treat an ordered event batch from one workflow decision a
 
 #### Scenario: Durable storage transaction expectation
 - **WHEN** a durable storage adapter implements event-backed snapshots
-- **THEN** event append and snapshot save for one transition batch are performed atomically by the adapter's persistence mechanism
+- **THEN** event append, snapshot save, and summary projection update for one transition batch are performed atomically by the adapter's persistence mechanism
