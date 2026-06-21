@@ -1,5 +1,5 @@
 use crate::core::models::{ExecutionMetadata, TaskDef};
-use crate::core::workflow::models::WorkerHostId;
+use crate::core::workflow::models::{WorkerHostId, WorkerId, WorkerIdentity};
 use crate::ports::executor::ExecutionResult;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,15 @@ const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 pub struct WorkerRegistration {
     pub worker_id: String,
     pub host_id: WorkerHostId,
+}
+
+impl WorkerRegistration {
+    fn into_identity(self) -> WorkerIdentity {
+        WorkerIdentity {
+            worker_id: WorkerId::new(self.worker_id),
+            host_id: self.host_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +85,7 @@ pub enum WorkerResponse {
 
 #[derive(Debug)]
 struct WorkerState {
+    identity: WorkerIdentity,
     current_task_id: Option<String>,
 }
 
@@ -138,15 +148,18 @@ impl WorkerPool {
     }
 
     pub async fn register_worker(&self, registration: WorkerRegistration) {
-        let worker_id = registration.worker_id.clone();
+        let identity = registration.into_identity();
+        let worker_id = identity.worker_id.0.clone();
+        let host_id = identity.host_id.0.clone();
         self.workers.write().await.insert(
             worker_id.clone(),
             WorkerState {
+                identity,
                 current_task_id: None,
             },
         );
 
-        debug!(%worker_id, "registered worker");
+        debug!(%worker_id, %host_id, "registered worker");
     }
 
     /// Enqueues a task and waits until it reaches a terminal worker result.
@@ -353,6 +366,22 @@ mod tests {
             worker_id: worker_id.to_string(),
             host_id: WorkerHostId::new("test-host"),
         }
+    }
+
+    #[tokio::test]
+    async fn registration_preserves_worker_identity_separately_from_host_identity() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration("worker-1")).await;
+        pool.register_worker(test_registration("worker-2")).await;
+
+        let workers = pool.workers.read().await;
+        let worker_1 = workers.get("worker-1").unwrap();
+        let worker_2 = workers.get("worker-2").unwrap();
+
+        assert_eq!(worker_1.identity.worker_id, WorkerId::new("worker-1"));
+        assert_eq!(worker_2.identity.worker_id, WorkerId::new("worker-2"));
+        assert_eq!(worker_1.identity.host_id, WorkerHostId::new("test-host"));
+        assert_eq!(worker_2.identity.host_id, WorkerHostId::new("test-host"));
     }
 
     #[tokio::test]

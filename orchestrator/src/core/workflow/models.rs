@@ -6,10 +6,8 @@ use crate::core::models::{TaskDef, TaskInstance, TaskStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-#[allow(dead_code)]
 pub struct WorkerId(pub String);
 
-#[allow(dead_code)]
 impl WorkerId {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
@@ -21,10 +19,15 @@ impl WorkerId {
 pub struct WorkerHostId(pub String);
 
 impl WorkerHostId {
-    #[allow(dead_code)]
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerIdentity {
+    pub worker_id: WorkerId,
+    pub host_id: WorkerHostId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
