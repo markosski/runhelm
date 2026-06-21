@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
 };
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, error};
 
 use crate::adapters::worker_pool::{
     TaskResult, WorkerExecutionResult, WorkerRegistration, WorkerResponse,
@@ -36,11 +36,14 @@ pub async fn create_workflow_def(
         .create_workflow_def(workflow_def)
         .await
         .map_err(|error| {
+            let code;
             if error.to_string().contains("cannot be overwritten") {
-                StatusCode::CONFLICT
+                code = StatusCode::CONFLICT
             } else {
-                StatusCode::INTERNAL_SERVER_ERROR
+                code = StatusCode::INTERNAL_SERVER_ERROR
             }
+            error!("Error while registering workflow: {}", error);
+            code
         })?;
     info!(
         "Registered workflow definition with ID: {}",
