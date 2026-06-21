@@ -212,6 +212,7 @@ mod tests {
             id: id.to_string(),
             workflow_def_id: workflow_def_id.to_string(),
             status,
+            pinned_worker_host: None,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
         }

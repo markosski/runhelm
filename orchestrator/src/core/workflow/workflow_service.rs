@@ -61,6 +61,7 @@ impl WorkflowService {
             id: instance_id.clone(),
             workflow_def_id: workflow_def_id.to_string(),
             status: WorkflowStatus::Pending,
+            pinned_worker_host: None,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
         };
@@ -690,6 +691,7 @@ mod tests {
                     id: "completed-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
                     status: WorkflowStatus::Completed,
+                    pinned_worker_host: None,
                     tasks: HashMap::new(),
                     verifier_states: HashMap::new(),
                 },
@@ -763,6 +765,7 @@ mod tests {
             id: "completed-workflow".to_string(),
             workflow_def_id: "workflow-1".to_string(),
             status: WorkflowStatus::Completed,
+            pinned_worker_host: None,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
         };

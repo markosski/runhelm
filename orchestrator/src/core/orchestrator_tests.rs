@@ -207,6 +207,7 @@ fn workflow_instance(id: &str, workflow_def_id: &str) -> WorkflowInstance {
         id: id.to_string(),
         workflow_def_id: workflow_def_id.to_string(),
         status: WorkflowStatus::Pending,
+        pinned_worker_host: None,
         tasks: HashMap::new(),
         verifier_states: HashMap::new(),
     }

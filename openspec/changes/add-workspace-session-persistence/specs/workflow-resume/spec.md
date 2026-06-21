@@ -44,7 +44,7 @@ The system SHALL allow a workflow waiting for human input to resume by committin
 - **THEN** the continuation attempt uses the existing host pin
 
 ### Requirement: Dispatch Lease Recovery
-The system SHALL track claimed task dispatches with durable lease metadata so abandoned running work can be recovered after orchestrator or worker failure.
+The system SHALL track claimed task dispatches with in-memory worker-pool lease metadata while the orchestrator process is running, and SHALL recover abandoned running work from durable workflow state after orchestrator restart.
 
 #### Scenario: Claimed task lease is active
 - **WHEN** a worker claims a task dispatch

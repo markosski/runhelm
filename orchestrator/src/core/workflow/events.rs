@@ -225,6 +225,7 @@ mod tests {
             id: "wf-1".to_string(),
             workflow_def_id: "wf".to_string(),
             status: WorkflowStatus::Pending,
+            pinned_worker_host: None,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
         }

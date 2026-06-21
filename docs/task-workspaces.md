@@ -130,7 +130,11 @@ The OpenSpec change `add-workspace-session-persistence` defines the planned remo
 
 Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution. After the pin is established, every task in that workflow instance must execute on workers registered with the same host identifier. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots; any of those workers can execute work for the pinned workflow.
 
+The workflow instance snapshot carries the durable `pinned_host_id`. Worker heartbeat state and active dispatch leases are in-memory `WorkerPool` state for the initial implementation. Dispatch leases track the claimed task attempt, worker process, host, and lease expiration while the orchestrator process is running, and enforce one active dispatch lease per workflow instance. Host-loss failure remains workflow state.
+
 Workers maintain registration by sending heartbeats. A heartbeat with valid worker and host identity joins or renews the worker registration. After the configured missed-heartbeat threshold, the orchestrator deregisters that worker process. A later valid heartbeat may join again.
+
+If the orchestrator restarts before a worker reports a task result, the restarted orchestrator begins with an empty worker registry and no in-memory dispatch leases. For the initial remote-worker implementation, a result from a worker that has not rejoined is rejected as unregistered and does not advance workflow state. Workflow recovery or retry policy handles the corresponding running attempt. A future durable lease-backed result path may accept such results only when the result can be matched to a valid persisted dispatch lease.
 
 RunHelm should dispatch at most one active task at a time for a workflow instance, even when multiple workers share the pinned host. This avoids concurrent writes to the same workflow workspace or host-local Agent session state.
 

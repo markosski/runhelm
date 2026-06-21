@@ -92,7 +92,7 @@ struct InFlightTask {
     timeout: Duration,
 }
 
-/// Manages queued and in-flight worker tasks.
+/// Manages queues and in-flight worker tasks.
 /// Tasks are claimed by workers in FIFO order, and execution timeout tracking
 /// starts when a worker claims a task.
 #[derive(Debug, Clone)]

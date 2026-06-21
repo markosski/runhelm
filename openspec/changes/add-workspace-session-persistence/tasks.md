@@ -1,21 +1,21 @@
 ## 1. Domain Models and Storage
 
-- [ ] 1.1 Add core models for stable worker host identity, logical workspace keys, workflow instance host pins, worker heartbeat state, and dispatch leases
-- [ ] 1.2 Extend `StoragePort` with workflow pin operations for get-or-create, lookup, update/touch, and fail-on-host-loss semantics
-- [ ] 1.3 Extend `StoragePort` with dispatch lease operations for claim, release, expire, and startup recovery queries
-- [ ] 1.4 Implement workflow pin and dispatch lease storage in the memory storage adapter
-- [ ] 1.5 Add unit tests for workflow pin creation at instance creation, pinned workflow reuse, heartbeat deregistration, pinned host loss failure, force retry reassignment, and lease expiration behavior
+- [x] 1.1 Add core models for stable worker host identity, workflow instance `pinned_host_id`, in-memory worker heartbeat state, and in-memory dispatch leases
+- [x] 1.2 Ensure `StoragePort` persists workflow instance `pinned_host_id` through workflow snapshots
+- [x] 1.3 Keep worker registration and dispatch lease operations out of `StoragePort`
+- [x] 1.4 Implement workflow pin snapshot persistence in the memory storage adapter
+- [x] 1.5 Add unit tests for workflow pin snapshot persistence
 
 ## 2. Worker Registration and Affinity-Aware Dispatch
 
-- [ ] 2.1 Require `RUNHELM_WORKER_HOST_ID` during worker startup and include it as `host_id` in worker registration payloads with optional labels and capabilities
+- [ ] 2.1 Require `RUNHELM_WORKER_HOST_ID` during worker startup and include it as `host_id` in worker registration payloads
 - [ ] 2.2 Preserve worker process identity separately from host identity in `WorkerPool`
 - [ ] 2.3 Implement heartbeat join-or-renew semantics and deregister workers after the configured missed heartbeat threshold
 - [ ] 2.4 Add workflow pin constraints to pending task dispatch state
 - [ ] 2.5 Update workflow instance creation to select and persist a `pinned_host_id` from currently registered eligible workers
 - [ ] 2.6 Update worker claim logic to dispatch only tasks whose workflow pin matches the claiming worker host
 - [ ] 2.7 Prevent more than one active task dispatch per workflow instance
-- [ ] 2.8 Record durable dispatch lease metadata when a task is claimed by a worker
+- [ ] 2.8 Record in-memory dispatch lease metadata in `WorkerPool` when a task is claimed by a worker
 - [ ] 2.9 Release or expire dispatch leases on task completion, worker disconnect, timeout, and late result paths
 - [ ] 2.10 Add worker pool tests for heartbeat registration, heartbeat deregistration, matching host claims, mismatched host rejection, multiple workers sharing a host, single active task per workflow instance, and pinned host loss behavior
 
@@ -33,7 +33,7 @@
 
 - [ ] 4.1 Add workflow recovery logic that discovers non-terminal workflow instances on orchestrator startup
 - [ ] 4.2 Reconstruct or reload runnable workflow work while preserving existing workflow host pins
-- [ ] 4.3 Add recovery handling for expired in-flight dispatch leases
+- [ ] 4.3 Add restart recovery handling for abandoned running task attempts after in-memory dispatch leases are lost
 - [ ] 4.4 Add human-input submission API and domain events for durably recording submitted input
 - [ ] 4.5 Materialize or resume human-input continuation attempts with preserved workflow instance ID, logical task ID, and generation lineage
 - [ ] 4.6 Mark a pinned workflow instance failed when its pinned host is declared lost after heartbeat policy

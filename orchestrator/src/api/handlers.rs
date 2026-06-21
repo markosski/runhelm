@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
 };
 use std::time::Duration;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use crate::adapters::worker_pool::{
     TaskResult, WorkerExecutionResult, WorkerRegistration, WorkerResponse,

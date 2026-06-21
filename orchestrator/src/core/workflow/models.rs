@@ -4,6 +4,64 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::models::{TaskDef, TaskInstance, TaskStatus};
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+#[allow(dead_code)]
+pub struct WorkerId(pub String);
+
+#[allow(dead_code)]
+impl WorkerId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkerHostId(pub String);
+
+impl WorkerHostId {
+    #[allow(dead_code)]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct WorkerHeartbeatState {
+    pub worker_id: WorkerId,
+    pub host_id: WorkerHostId,
+    pub last_heartbeat_at_epoch_ms: u64,
+    pub expires_at_epoch_ms: u64,
+}
+
+#[allow(dead_code)]
+impl WorkerHeartbeatState {
+    pub fn is_expired_at(&self, now_epoch_ms: u64) -> bool {
+        self.expires_at_epoch_ms <= now_epoch_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct DispatchLease {
+    pub dispatch_id: String,
+    pub workflow_instance_id: String,
+    pub task_attempt_id: String,
+    pub worker_id: WorkerId,
+    pub host_id: WorkerHostId,
+    pub claimed_at_epoch_ms: u64,
+    pub expires_at_epoch_ms: u64,
+}
+
+#[allow(dead_code)]
+impl DispatchLease {
+    pub fn is_expired_at(&self, now_epoch_ms: u64) -> bool {
+        self.expires_at_epoch_ms <= now_epoch_ms
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkflowStatus {
     Pending,
@@ -19,6 +77,8 @@ pub struct WorkflowInstance {
     pub id: String,
     pub workflow_def_id: String,
     pub status: WorkflowStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_worker_host: Option<WorkerHostId>,
     // Keyed by task_attempt_id, e.g. "task-a[2]".
     pub tasks: HashMap<String, TaskInstance>,
     #[serde(default)]

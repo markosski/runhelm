@@ -5,7 +5,7 @@ The orchestrator SHALL only allow a worker to claim a task when the worker satis
 
 #### Scenario: Workflow pin already exists before claim
 - **WHEN** a task dispatch belongs to a workflow instance
-- **THEN** the dispatch has an existing workflow host pin before any worker claims it
+- **THEN** the dispatch has an existing workflow instance `pinned_host_id` before any worker claims it
 
 #### Scenario: Workflow has required host pin
 - **WHEN** a task dispatch belongs to a workflow instance pinned to a specific host ID
@@ -24,7 +24,7 @@ The orchestrator SHALL only allow a worker to claim a task when the worker satis
 ## MODIFIED Requirements
 
 ### Requirement: Worker Connection and Registration
-Workers SHALL connect to the Orchestrator's socket and provide a registration message identifying their worker process, configured stable host identity, capabilities, and scheduling labels.
+Workers SHALL connect to the Orchestrator's socket and provide a registration message identifying their worker process and configured stable host identity.
 
 #### Scenario: Worker host id is required
 - **WHEN** a Worker process starts without `RUNHELM_WORKER_HOST_ID`
@@ -46,7 +46,7 @@ Workers SHALL connect to the Orchestrator's socket and provide a registration me
 Workers SHALL maintain registration by sending heartbeat messages that join or renew the worker registration.
 
 #### Scenario: Heartbeat joins worker
-- **WHEN** a worker sends a heartbeat with valid worker ID, host ID, and capabilities
+- **WHEN** a worker sends a heartbeat with valid worker ID and host ID
 - **AND** that worker ID is not currently registered
 - **THEN** the orchestrator registers the worker as available
 
@@ -90,7 +90,7 @@ The Orchestrator SHALL dispatch a task to exactly one idle worker from the pool 
 - **THEN** the Orchestrator marks non-terminal workflow instances pinned to that host as failed
 
 ### Requirement: Connection Failure Detection
-The Orchestrator SHALL detect when a worker connection is closed or lost and update dispatch lease state for any task owned by that connection.
+The Orchestrator SHALL detect when a worker connection is closed or lost and update in-memory dispatch lease state for any task owned by that connection.
 
 #### Scenario: Worker disconnects while idle
 - **WHEN** an "Idle" worker closes its socket connection
@@ -99,17 +99,24 @@ The Orchestrator SHALL detect when a worker connection is closed or lost and upd
 #### Scenario: Worker disconnects while busy
 - **WHEN** a "Busy" worker closes its socket connection before sending a result
 - **THEN** the Orchestrator removes the worker from the pool
-- **THEN** the Orchestrator expires or releases the task dispatch lease according to recovery policy
+- **THEN** the Orchestrator expires or releases the in-memory task dispatch lease according to recovery policy
+
+#### Scenario: Unregistered worker reports task result after orchestrator restart
+- **WHEN** the Orchestrator has restarted and has no active registration for a worker ID
+- **AND** that worker reports completion for a task it claimed before the restart
+- **THEN** the Orchestrator rejects the result as coming from an unregistered worker
+- **THEN** the Orchestrator does not advance workflow state from that result
+- **THEN** recovery or retry policy handles the corresponding running task attempt
 
 ### Requirement: Orchestrator Startup Recovery
-The Orchestrator SHALL synchronize its internal task queue, workflow host pins, and in-flight dispatch leases with durable storage upon application startup.
+The Orchestrator SHALL reconstruct runnable workflow work from durable workflow state upon application startup while treating worker registrations and dispatch leases as empty in-memory state.
 
 #### Scenario: Orchestrator recovers tasks after crash
 - **WHEN** the Orchestrator application starts up
-- **THEN** it queries durable workflow and dispatch state for all non-terminal runnable or in-flight work
+- **THEN** it queries durable workflow state for all non-terminal runnable or in-flight work
 - **THEN** it restores pending work to its internal dispatch queue with persisted workflow pin constraints
 
-#### Scenario: Orchestrator expires stale dispatches after crash
+#### Scenario: Orchestrator recovers abandoned running attempts after crash
 - **WHEN** the Orchestrator application starts up
-- **AND** durable dispatch state contains an expired in-flight lease
-- **THEN** it expires that lease and requeues or fails the task according to recovery policy
+- **AND** durable workflow state contains a running task attempt without an in-memory dispatch lease
+- **THEN** it requeues or fails the task according to recovery policy

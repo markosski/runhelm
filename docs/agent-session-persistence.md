@@ -74,6 +74,8 @@ The OpenSpec change `add-workspace-session-persistence` defines the planned inte
 
 Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution, and reusable Agent sessions in that workflow instance continue on the pinned host. This keeps host-local session files and workspace files aligned. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots.
 
+RunHelm records the workflow `pinned_host_id` on the workflow instance snapshot, separately from task results and Agent transcripts. Dispatch leases record the worker process currently executing an attempt. This keeps Agent session placement out of workflow output data while still giving restart and retry code a durable scheduling source of truth.
+
 Worker container restart does not by itself imply session loss. A replacement worker can resume work for the pinned host when it registers or renews via heartbeat with the same `RUNHELM_WORKER_HOST_ID` and has access to the same session store root.
 
 If no worker is currently registered for the pinned host, RunHelm should wait rather than silently continuing a reusable Agent session on another host. If the host remains unavailable past the host-loss policy, RunHelm should fail the pinned workflow instance. Default retry keeps the same pinned host. A force retry may reassign the workflow to another registered host, but that explicitly accepts that host-local Agent session and workspace context may be lost.

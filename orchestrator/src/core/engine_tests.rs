@@ -274,6 +274,7 @@ async fn setup(engine: &WorkflowEngine, def: WorkflowDef) -> String {
         id: instance_id.clone(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Pending,
+        pinned_worker_host: None,
         tasks: HashMap::new(),
         verifier_states: HashMap::new(),
     };
@@ -360,6 +361,7 @@ fn test_workspace_group_does_not_create_scheduling_dependency() {
         id: "inst-workspace-group-no-edge".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
+        pinned_worker_host: None,
         tasks: HashMap::from([
             ("task-a[1]".to_string(), pending_task_instance("task-a")),
             ("task-b[1]".to_string(), pending_task_instance("task-b")),
@@ -411,6 +413,7 @@ fn test_workspace_group_tasks_still_wait_for_data_binding() {
         id: "inst-workspace-group-data-binding".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
+        pinned_worker_host: None,
         tasks: HashMap::from([
             ("task-a[1]".to_string(), pending_task_instance("task-a")),
             ("task-b[1]".to_string(), pending_task_instance("task-b")),
@@ -538,6 +541,7 @@ fn test_loop_execution_metadata_includes_feedback_history() {
         id: "inst-loop-metadata".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
+        pinned_worker_host: None,
         tasks: HashMap::from([
             (
                 "task-a[1]".to_string(),
@@ -616,6 +620,7 @@ fn test_execution_metadata_includes_task_instance_generation_index() {
         id: "inst-generation-metadata".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
+        pinned_worker_host: None,
         tasks: HashMap::from([("task-a[2]".to_string(), task_instance.clone())]),
         verifier_states: HashMap::new(),
     };
@@ -923,6 +928,7 @@ fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
         id: "inst-verifier-latest-completed-source".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
+        pinned_worker_host: None,
         tasks: HashMap::from([
             (
                 "task-b[1]".to_string(),
@@ -1023,6 +1029,7 @@ fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
         id: "inst-verifier-waits-current-source".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
+        pinned_worker_host: None,
         tasks: HashMap::from([
             (
                 "task-b[1]".to_string(),
@@ -1311,6 +1318,7 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
         id: "inst-exhaustion-no-valid-output".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
+        pinned_worker_host: None,
         tasks: HashMap::from([(
             "verify[1]".to_string(),
             TaskInstance {

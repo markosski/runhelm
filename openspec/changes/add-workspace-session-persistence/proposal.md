@@ -27,6 +27,6 @@ RunHelm currently passes an orchestrator-local workspace path to whichever worke
 ## Impact
 
 - Affects orchestrator workflow execution, worker registration, worker task claiming, task dispatch payloads, workspace management, and workflow recovery paths.
-- Requires storage support for durable workflow host pin metadata and restartable workflow queue or lease state.
+- Requires storage support for durable workflow instance `pinned_host_id` metadata and restartable workflow queue or lease state.
 - May change worker API payloads by adding host identity and logical workspace metadata while preserving task execution semantics.
 - Documentation in `docs/` will need updates describing remote-worker workflow pinning, paused workflow resume, pinned-host failure, and cleanup behavior.
