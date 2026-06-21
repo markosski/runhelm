@@ -24,6 +24,19 @@ The orchestrator SHALL normalize workflow definition IDs and task definition IDs
 - **WHEN** the orchestrator materializes an internal task attempt ID such as `taska[1]`
 - **THEN** that generated attempt ID is not subject to workflow definition ID validation
 
+### Requirement: Workflow Definition Immutability After Instantiation
+The orchestrator SHALL reject overwriting an existing workflow definition after any workflow instance has been created for that definition.
+
+#### Scenario: Definition overwrite before instances
+- **WHEN** a workflow definition is registered with the same normalized ID as an existing definition
+- **AND** no workflow instances exist for that workflow definition ID
+- **THEN** the system overwrites the existing workflow definition
+
+#### Scenario: Definition overwrite after instance creation
+- **WHEN** a workflow definition is registered with the same normalized ID as an existing definition
+- **AND** at least one workflow instance exists for that workflow definition ID
+- **THEN** the system rejects the workflow definition overwrite
+
 ### Requirement: Bounded Backedge Validation
 The orchestrator SHALL preserve ordinary data binding cycle validation and SHALL allow bounded verifier backedges only through `control.verifier` configuration.
 
@@ -233,6 +246,7 @@ The orchestrator SHALL persist workflow instance event batches and the resulting
 - **WHEN** core code commits an ordered batch of workflow instance events
 - **THEN** storage receives the event records and reduced workflow snapshot in one commit operation
 - **THEN** storage updates any lightweight summary projection from the reduced workflow snapshot
+- **THEN** summary lifecycle timestamps are derived from workflow event record timestamps, not embedded snapshot fields
 
 #### Scenario: Event record contains occurrence time
 - **WHEN** core code commits workflow instance events
@@ -255,6 +269,10 @@ The orchestrator SHALL continue serving full current workflow instance reads fro
 - **THEN** the list operation does not return full workflow instance state
 - **THEN** the list operation does not load each full workflow instance snapshot to assemble the result
 
+#### Scenario: Workflow list without filters
+- **WHEN** a caller lists workflow instances with no filters
+- **THEN** the system returns a bounded page of workflow instance summaries
+
 #### Scenario: Workflow list state filter
 - **WHEN** a caller lists workflow instances with a workflow state filter
 - **THEN** the system returns only summaries matching that filter
@@ -263,9 +281,27 @@ The orchestrator SHALL continue serving full current workflow instance reads fro
 - **WHEN** a caller lists workflow instances with multiple workflow states
 - **THEN** the system returns only summaries whose workflow status is included in that set
 
+#### Scenario: Workflow list definition filter
+- **WHEN** a caller lists workflow instances with a workflow definition ID filter
+- **THEN** the system returns only summaries for that workflow definition ID
+
+#### Scenario: Workflow list combined filters
+- **WHEN** a caller lists workflow instances with multiple filters
+- **THEN** the system returns only summaries matching all filters
+
+#### Scenario: Workflow list sort order
+- **WHEN** a caller lists workflow instances
+- **THEN** the system returns summaries sorted by most recent modification time first
+- **THEN** summaries with equal modification times are sorted by workflow instance ID descending
+
+#### Scenario: Workflow list pagination
+- **WHEN** more workflow instance summaries match than the requested page limit
+- **THEN** the system returns at most the requested limit
+- **THEN** the system returns a cursor that can retrieve the next page after the last returned summary
+
 #### Scenario: Active workflow discovery
 - **WHEN** the orchestrator discovers active workflow instances
-- **THEN** the system lists workflow summaries using a multi-state filter for pending and running workflow statuses
+- **THEN** the system pages through workflow summaries using a multi-state filter for pending and running workflow statuses
 
 #### Scenario: Full workflow instance read is explicit
 - **WHEN** a caller needs task inputs, task outputs, verifier history, or other full workflow instance state
@@ -280,7 +316,7 @@ The orchestrator SHALL expose storage-level workflow instance list results as li
 
 #### Scenario: Summary contains lifecycle timestamps
 - **WHEN** lifecycle timestamps are available for a workflow instance
-- **THEN** the summary includes created time and completed time
+- **THEN** the summary includes created time, modified time, and completed time
 
 #### Scenario: Summary contains task counts
 - **WHEN** a workflow instance appears in a storage-level list result

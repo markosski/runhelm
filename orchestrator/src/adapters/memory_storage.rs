@@ -3,9 +3,13 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 use crate::core::models::FunctionDef;
+use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::WorkflowEventRecord;
-use crate::core::workflow::models::{WorkflowDef, WorkflowInfo, WorkflowInstance};
-use crate::ports::storage::{StoragePort, WorkflowInstanceFilter};
+use crate::core::workflow::models::{WorkflowDef, WorkflowInfo, WorkflowInstance, WorkflowStatus};
+use crate::ports::storage::{
+    StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPage,
+    WorkflowInstanceFilter,
+};
 
 pub struct MemoryStorage {
     workflow_defs: RwLock<HashMap<String, WorkflowDef>>,
@@ -27,6 +31,9 @@ impl MemoryStorage {
     }
 }
 
+/// This implementation is intended for testing and development purposes only.
+/// It is not designed for high-performance or persistent storage.
+/// and should not be used in production environments.
 #[async_trait]
 impl StoragePort for MemoryStorage {
     async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
@@ -71,18 +78,42 @@ impl StoragePort for MemoryStorage {
 
     async fn list_workflow_info(
         &self,
-        filter: WorkflowInstanceFilter,
-    ) -> anyhow::Result<Vec<WorkflowInfo>> {
+        request: WorkflowInfoListRequest,
+    ) -> anyhow::Result<WorkflowInfoPage> {
         let map = self.workflow_infos.read().await;
-        Ok(map
+        let mut workflows: Vec<WorkflowInfo> = map
             .values()
-            .filter(|info| match &filter {
-                WorkflowInstanceFilter::All => true,
-                WorkflowInstanceFilter::Status(status) => info.status == *status,
-                WorkflowInstanceFilter::Statuses(statuses) => statuses.contains(&info.status),
+            .filter(|info| {
+                request
+                    .filters
+                    .iter()
+                    .all(|filter| workflow_info_matches(info, filter))
             })
             .cloned()
-            .collect())
+            .collect();
+
+        workflows.sort_by(|left, right| {
+            right
+                .modified_at_epoch_ms
+                .cmp(&left.modified_at_epoch_ms)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+
+        if let Some(cursor) = &request.page.cursor {
+            workflows.retain(|info| is_after_cursor(info, cursor));
+        }
+
+        let has_more = workflows.len() > request.page.limit;
+        workflows.truncate(request.page.limit);
+        let next_cursor = has_more
+            .then(|| workflows.last())
+            .flatten()
+            .map(workflow_info_cursor);
+
+        Ok(WorkflowInfoPage {
+            workflows,
+            next_cursor,
+        })
     }
 
     async fn commit_workflow_instance_events(
@@ -90,8 +121,32 @@ impl StoragePort for MemoryStorage {
         events: Vec<WorkflowEventRecord>,
         instance: WorkflowInstance,
     ) -> anyhow::Result<()> {
-        let info = WorkflowInfo::from_instance(&instance);
         let workflow_instance_id = instance.id.clone();
+        let created_from_events_at_epoch_ms = events
+            .first()
+            .map(|event| event.created_time)
+            .unwrap_or(unix_timestamp_ms()?);
+        let modified_at_epoch_ms = events
+            .last()
+            .map(|event| event.created_time)
+            .unwrap_or(created_from_events_at_epoch_ms);
+
+        let mut infos = self.workflow_infos.write().await;
+        let existing_info = infos.get(&workflow_instance_id);
+        let created_at_epoch_ms = existing_info
+            .and_then(|info| info.created_at_epoch_ms)
+            .or(Some(created_from_events_at_epoch_ms));
+        let completed_at_epoch_ms = existing_info
+            .and_then(|info| info.completed_at_epoch_ms)
+            .or_else(|| workflow_completed_at(&instance, modified_at_epoch_ms));
+        let info = WorkflowInfo::from_instance_with_timestamps(
+            &instance,
+            created_at_epoch_ms,
+            modified_at_epoch_ms,
+            completed_at_epoch_ms,
+        );
+        infos.insert(info.id.clone(), info);
+        drop(infos);
 
         let mut events_map = self.workflow_instance_events.write().await;
         events_map
@@ -102,12 +157,38 @@ impl StoragePort for MemoryStorage {
 
         let mut instances = self.workflow_instances.write().await;
         instances.insert(instance.id.clone(), instance);
-        drop(instances);
-
-        let mut infos = self.workflow_infos.write().await;
-        infos.insert(info.id.clone(), info);
         Ok(())
     }
+}
+
+fn workflow_info_matches(info: &WorkflowInfo, filter: &WorkflowInstanceFilter) -> bool {
+    match filter {
+        WorkflowInstanceFilter::Statuses(statuses) => statuses.contains(&info.status),
+        WorkflowInstanceFilter::WorkflowDefId(workflow_def_id) => {
+            info.workflow_def_id == workflow_def_id.as_str()
+        }
+    }
+}
+
+fn is_after_cursor(info: &WorkflowInfo, cursor: &WorkflowInfoCursor) -> bool {
+    info.modified_at_epoch_ms < cursor.modified_at_epoch_ms
+        || (info.modified_at_epoch_ms == cursor.modified_at_epoch_ms
+            && info.id.as_str() < cursor.workflow_instance_id.as_str())
+}
+
+fn workflow_info_cursor(info: &WorkflowInfo) -> WorkflowInfoCursor {
+    WorkflowInfoCursor {
+        modified_at_epoch_ms: info.modified_at_epoch_ms,
+        workflow_instance_id: info.id.clone(),
+    }
+}
+
+fn workflow_completed_at(instance: &WorkflowInstance, modified_at_epoch_ms: u64) -> Option<u64> {
+    matches!(
+        instance.status,
+        WorkflowStatus::Completed | WorkflowStatus::Failed
+    )
+    .then_some(modified_at_epoch_ms)
 }
 
 #[cfg(test)]
@@ -115,16 +196,54 @@ mod tests {
     use super::*;
     use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus};
     use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
-    use crate::core::workflow::models::WorkflowStatus;
+    use crate::ports::storage::WorkflowInfoPageRequest;
     use std::collections::HashMap;
 
     fn instance(id: &str, status: WorkflowStatus) -> WorkflowInstance {
+        instance_for_def(id, "wf", status)
+    }
+
+    fn instance_for_def(
+        id: &str,
+        workflow_def_id: &str,
+        status: WorkflowStatus,
+    ) -> WorkflowInstance {
         WorkflowInstance {
             id: id.to_string(),
-            workflow_def_id: "wf".to_string(),
+            workflow_def_id: workflow_def_id.to_string(),
             status,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
+        }
+    }
+
+    fn list_request(filters: Vec<WorkflowInstanceFilter>) -> WorkflowInfoListRequest {
+        WorkflowInfoListRequest {
+            filters,
+            page: WorkflowInfoPageRequest {
+                limit: 100,
+                cursor: None,
+            },
+        }
+    }
+
+    fn paged_request(
+        filters: Vec<WorkflowInstanceFilter>,
+        limit: usize,
+        cursor: Option<WorkflowInfoCursor>,
+    ) -> WorkflowInfoListRequest {
+        WorkflowInfoListRequest {
+            filters,
+            page: WorkflowInfoPageRequest { limit, cursor },
+        }
+    }
+
+    fn event_record(created_time: u64) -> WorkflowEventRecord {
+        WorkflowEventRecord {
+            created_time,
+            event: WorkflowInstanceEvent::WorkflowStatusChanged {
+                status: WorkflowStatus::Running,
+            },
         }
     }
 
@@ -161,11 +280,17 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].created_time, 42);
         let infos = storage
-            .list_workflow_info(WorkflowInstanceFilter::Status(WorkflowStatus::Completed))
+            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![
+                WorkflowStatus::Completed,
+            ])]))
             .await
-            .unwrap();
+            .unwrap()
+            .workflows;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].id, "wf-1");
+        assert!(infos[0].created_at_epoch_ms.is_some());
+        assert!(infos[0].modified_at_epoch_ms >= 42);
+        assert_eq!(infos[0].completed_at_epoch_ms, Some(42));
     }
 
     #[tokio::test]
@@ -205,12 +330,145 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(WorkflowInstanceFilter::All)
+            .list_workflow_info(list_request(vec![]))
             .await
-            .unwrap();
+            .unwrap()
+            .workflows;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].total_task_count, 2);
         assert_eq!(infos[0].completed_task_count, 1);
+    }
+
+    #[tokio::test]
+    async fn summary_timestamps_track_creation_modification_and_completion() {
+        let storage = MemoryStorage::new();
+        let mut instance = instance("wf-1", WorkflowStatus::Running);
+        storage
+            .commit_workflow_instance_events(vec![event_record(1000)], instance.clone())
+            .await
+            .unwrap();
+
+        instance.status = WorkflowStatus::Completed;
+        storage
+            .commit_workflow_instance_events(vec![event_record(2000)], instance)
+            .await
+            .unwrap();
+
+        let infos = storage
+            .list_workflow_info(list_request(vec![]))
+            .await
+            .unwrap()
+            .workflows;
+        assert_eq!(infos[0].created_at_epoch_ms, Some(1000));
+        assert_eq!(infos[0].modified_at_epoch_ms, 2000);
+        assert_eq!(infos[0].completed_at_epoch_ms, Some(2000));
+    }
+
+    #[tokio::test]
+    async fn summary_creation_uses_first_event_and_modification_uses_last_event() {
+        let storage = MemoryStorage::new();
+        storage
+            .commit_workflow_instance_events(
+                vec![event_record(1000), event_record(1500)],
+                instance("wf-1", WorkflowStatus::Running),
+            )
+            .await
+            .unwrap();
+
+        let infos = storage
+            .list_workflow_info(list_request(vec![]))
+            .await
+            .unwrap()
+            .workflows;
+        assert_eq!(infos[0].created_at_epoch_ms, Some(1000));
+        assert_eq!(infos[0].modified_at_epoch_ms, 1500);
+    }
+
+    #[tokio::test]
+    async fn list_workflow_info_sorts_by_modified_time_desc_then_id_desc() {
+        let storage = MemoryStorage::new();
+        storage
+            .commit_workflow_instance_events(
+                vec![event_record(1000)],
+                instance("older", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![event_record(2000)],
+                instance("same-a", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![event_record(2000)],
+                instance("same-b", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+
+        let infos = storage
+            .list_workflow_info(list_request(vec![]))
+            .await
+            .unwrap()
+            .workflows;
+
+        let ids: Vec<&str> = infos.iter().map(|info| info.id.as_str()).collect();
+        assert_eq!(ids, vec!["same-b", "same-a", "older"]);
+    }
+
+    #[tokio::test]
+    async fn list_workflow_info_paginates_after_cursor() {
+        let storage = MemoryStorage::new();
+        storage
+            .commit_workflow_instance_events(
+                vec![event_record(3000)],
+                instance("newest", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![event_record(2000)],
+                instance("middle", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![event_record(1000)],
+                instance("oldest", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+
+        let first_page = storage
+            .list_workflow_info(paged_request(vec![], 1, None))
+            .await
+            .unwrap();
+        assert_eq!(first_page.workflows.len(), 1);
+        assert_eq!(first_page.workflows[0].id, "newest");
+        assert_eq!(
+            first_page.next_cursor,
+            Some(WorkflowInfoCursor {
+                modified_at_epoch_ms: 3000,
+                workflow_instance_id: "newest".to_string(),
+            })
+        );
+
+        let second_page = storage
+            .list_workflow_info(paged_request(vec![], 2, first_page.next_cursor))
+            .await
+            .unwrap();
+        let ids: Vec<&str> = second_page
+            .workflows
+            .iter()
+            .map(|info| info.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["middle", "oldest"]);
+        assert!(second_page.next_cursor.is_none());
     }
 
     #[tokio::test]
@@ -228,21 +486,121 @@ mod tests {
             .unwrap();
 
         let active = storage
-            .list_workflow_info(WorkflowInstanceFilter::Statuses(vec![
+            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![
                 WorkflowStatus::Pending,
                 WorkflowStatus::Running,
-            ]))
+            ])]))
             .await
-            .unwrap();
+            .unwrap()
+            .workflows;
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, "pending");
 
         let completed = storage
-            .list_workflow_info(WorkflowInstanceFilter::Status(WorkflowStatus::Completed))
+            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![
+                WorkflowStatus::Completed,
+            ])]))
             .await
-            .unwrap();
+            .unwrap()
+            .workflows;
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].id, "completed");
+    }
+
+    #[tokio::test]
+    async fn filters_summary_queries_by_workflow_def_id() {
+        let storage = MemoryStorage::new();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                instance_for_def("workflow-1-instance", "workflow-1", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                instance_for_def(
+                    "workflow-2-instance",
+                    "workflow-2",
+                    WorkflowStatus::Completed,
+                ),
+            )
+            .await
+            .unwrap();
+
+        let infos = storage
+            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::WorkflowDefId(
+                "workflow-2".to_string(),
+            )]))
+            .await
+            .unwrap()
+            .workflows;
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].id, "workflow-2-instance");
+    }
+
+    #[tokio::test]
+    async fn combines_summary_query_filters_with_and_semantics() {
+        let storage = MemoryStorage::new();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                instance_for_def("workflow-1-pending", "workflow-1", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                instance_for_def(
+                    "workflow-1-completed",
+                    "workflow-1",
+                    WorkflowStatus::Completed,
+                ),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                instance_for_def("workflow-2-pending", "workflow-2", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+
+        let infos = storage
+            .list_workflow_info(list_request(vec![
+                WorkflowInstanceFilter::WorkflowDefId("workflow-1".to_string()),
+                WorkflowInstanceFilter::Statuses(vec![WorkflowStatus::Pending]),
+            ]))
+            .await
+            .unwrap()
+            .workflows;
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].id, "workflow-1-pending");
+    }
+
+    #[tokio::test]
+    async fn empty_statuses_filter_matches_no_summaries() {
+        let storage = MemoryStorage::new();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                instance_for_def("workflow-1-pending", "workflow-1", WorkflowStatus::Pending),
+            )
+            .await
+            .unwrap();
+
+        let infos = storage
+            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![])]))
+            .await
+            .unwrap()
+            .workflows;
+
+        assert!(infos.is_empty());
     }
 
     #[tokio::test]
@@ -269,9 +627,10 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(WorkflowInstanceFilter::All)
+            .list_workflow_info(list_request(vec![]))
             .await
-            .unwrap();
+            .unwrap()
+            .workflows;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].total_task_count, 1);
         assert_eq!(infos[0].completed_task_count, 1);

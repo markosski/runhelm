@@ -30,6 +30,7 @@ pub struct WorkflowInfo {
     pub id: String,
     pub workflow_def_id: String,
     pub created_at_epoch_ms: Option<u64>,
+    pub modified_at_epoch_ms: u64,
     pub completed_at_epoch_ms: Option<u64>,
     pub status: WorkflowStatus,
     pub total_task_count: usize,
@@ -37,12 +38,18 @@ pub struct WorkflowInfo {
 }
 
 impl WorkflowInfo {
-    pub fn from_instance(instance: &WorkflowInstance) -> Self {
+    pub fn from_instance_with_timestamps(
+        instance: &WorkflowInstance,
+        created_at_epoch_ms: Option<u64>,
+        modified_at_epoch_ms: u64,
+        completed_at_epoch_ms: Option<u64>,
+    ) -> Self {
         Self {
             id: instance.id.clone(),
             workflow_def_id: instance.workflow_def_id.clone(),
-            created_at_epoch_ms: None,
-            completed_at_epoch_ms: None,
+            created_at_epoch_ms,
+            modified_at_epoch_ms,
+            completed_at_epoch_ms,
             status: instance.status.clone(),
             total_task_count: instance.tasks.len(),
             completed_task_count: instance

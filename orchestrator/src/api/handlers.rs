@@ -35,7 +35,13 @@ pub async fn create_workflow_def(
         .workflow_service
         .create_workflow_def(workflow_def)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|error| {
+            if error.to_string().contains("cannot be overwritten") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
     info!(
         "Registered workflow definition with ID: {}",
         workflow_def_id
@@ -164,6 +170,8 @@ pub async fn get_workflow_events(
 #[derive(Deserialize)]
 pub struct WorkflowListQuery {
     status: Option<String>,
+    limit: Option<usize>,
+    cursor: Option<String>,
 }
 
 pub async fn list_workflows(
@@ -176,8 +184,15 @@ pub async fn list_workflows(
         .map(parse_workflow_status)
         .transpose()?;
 
-    match state.workflow_service.list_workflows(status).await {
+    match state
+        .workflow_service
+        .list_workflows(status, query.limit, query.cursor.as_deref())
+        .await
+    {
         Ok(workflows) => Ok(Json(serde_json::to_value(workflows).unwrap())),
+        Err(error) if error.to_string().contains("invalid workflow list cursor") => {
+            Err(StatusCode::BAD_REQUEST)
+        }
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
