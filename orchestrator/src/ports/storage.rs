@@ -9,9 +9,32 @@ use serde::ser::{SerializeMap, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowInstanceFilter {
-    All,
-    Status(WorkflowStatus),
     Statuses(Vec<WorkflowStatus>),
+    WorkflowDefId(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowInfoListRequest {
+    pub filters: Vec<WorkflowInstanceFilter>,
+    pub page: WorkflowInfoPageRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowInfoPageRequest {
+    pub limit: usize,
+    pub cursor: Option<WorkflowInfoCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowInfoCursor {
+    pub modified_at_epoch_ms: u64,
+    pub workflow_instance_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowInfoPage {
+    pub workflows: Vec<WorkflowInfo>,
+    pub next_cursor: Option<WorkflowInfoCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,8 +164,8 @@ pub trait StoragePort {
     ) -> anyhow::Result<Vec<WorkflowEventRecord>>;
     async fn list_workflow_info(
         &self,
-        filter: WorkflowInstanceFilter,
-    ) -> anyhow::Result<Vec<WorkflowInfo>>;
+        request: WorkflowInfoListRequest,
+    ) -> anyhow::Result<WorkflowInfoPage>;
     async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()>;
     async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()>;
     async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool>;

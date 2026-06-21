@@ -6,7 +6,8 @@ use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::{
-    StoragePort, TaskResult, TaskResultMetadata, WorkflowInstanceFilter, WorkflowTaskResult,
+    StoragePort, TaskResult, TaskResultMetadata, WorkflowInfoCursor, WorkflowInfoListRequest,
+    WorkflowInfoPageRequest, WorkflowInstanceFilter, WorkflowTaskResult,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -16,6 +17,9 @@ pub struct WorkflowService {
     storage: Arc<dyn StoragePort + Send + Sync>,
 }
 
+pub const DEFAULT_WORKFLOW_LIST_LIMIT: usize = 50;
+pub const MAX_WORKFLOW_LIST_LIMIT: usize = 100;
+
 impl WorkflowService {
     pub fn new(storage: Arc<dyn StoragePort + Send + Sync>) -> Self {
         Self { storage }
@@ -23,6 +27,24 @@ impl WorkflowService {
 
     pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
         let def = validate_and_normalize_workflow_def(def)?;
+        if self.storage.get_workflow_def(&def.id).await?.is_some() {
+            let existing_instances = self
+                .storage
+                .list_workflow_info(WorkflowInfoListRequest {
+                    filters: vec![WorkflowInstanceFilter::WorkflowDefId(def.id.clone())],
+                    page: WorkflowInfoPageRequest {
+                        limit: 1,
+                        cursor: None,
+                    },
+                })
+                .await?;
+            if !existing_instances.workflows.is_empty() {
+                anyhow::bail!(
+                    "workflow definition {} already has workflow instances and cannot be overwritten",
+                    def.id
+                );
+            }
+        }
         self.storage.save_workflow_def(def).await
     }
 
@@ -56,18 +78,27 @@ impl WorkflowService {
     pub async fn list_workflows(
         &self,
         status: Option<WorkflowStatus>,
+        limit: Option<usize>,
+        cursor: Option<&str>,
     ) -> anyhow::Result<WorkflowList> {
-        let mut workflows = self
+        let cursor = cursor.map(decode_workflow_info_cursor).transpose()?;
+        let page = self
             .storage
-            .list_workflow_info(match status {
-                Some(status) => WorkflowInstanceFilter::Status(status),
-                None => WorkflowInstanceFilter::All,
+            .list_workflow_info(WorkflowInfoListRequest {
+                filters: status
+                    .map(|status| vec![WorkflowInstanceFilter::Statuses(vec![status])])
+                    .unwrap_or_default(),
+                page: WorkflowInfoPageRequest {
+                    limit: clamp_workflow_list_limit(limit),
+                    cursor,
+                },
             })
             .await?;
 
-        workflows.sort_by(|left, right| left.id.cmp(&right.id));
-
-        Ok(WorkflowList { workflows })
+        Ok(WorkflowList {
+            workflows: page.workflows,
+            next_cursor: page.next_cursor.map(encode_workflow_info_cursor),
+        })
     }
 
     pub async fn list_workflow_events(
@@ -255,6 +286,35 @@ fn task_result_for_instance(
 fn create_instance_id(workflow_def_id: &str) -> anyhow::Result<String> {
     let timestamp_nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(format!("{workflow_def_id}-{timestamp_nanos}"))
+}
+
+fn clamp_workflow_list_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_WORKFLOW_LIST_LIMIT)
+        .clamp(1, MAX_WORKFLOW_LIST_LIMIT)
+}
+
+fn encode_workflow_info_cursor(cursor: WorkflowInfoCursor) -> String {
+    format!(
+        "{}:{}",
+        cursor.modified_at_epoch_ms, cursor.workflow_instance_id
+    )
+}
+
+fn decode_workflow_info_cursor(cursor: &str) -> anyhow::Result<WorkflowInfoCursor> {
+    let Some((modified_at_epoch_ms, workflow_instance_id)) = cursor.split_once(':') else {
+        anyhow::bail!("invalid workflow list cursor");
+    };
+    if workflow_instance_id.is_empty() {
+        anyhow::bail!("invalid workflow list cursor");
+    }
+
+    Ok(WorkflowInfoCursor {
+        modified_at_epoch_ms: modified_at_epoch_ms
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid workflow list cursor"))?,
+        workflow_instance_id: workflow_instance_id.to_string(),
+    })
 }
 
 // Returns a map of verifier task ID to the set of task IDs that are in its loop slice.
@@ -541,10 +601,14 @@ mod tests {
     use serde_json::json;
 
     fn workflow_def(id: &str) -> WorkflowDef {
+        workflow_def_with_task(id, "taska")
+    }
+
+    fn workflow_def_with_task(id: &str, task_id: &str) -> WorkflowDef {
         WorkflowDef {
             id: id.to_string(),
             tasks: vec![TaskDef {
-                id: "taska".to_string(),
+                id: task_id.to_string(),
                 kind: TaskTypeDef::Function(FunctionTaskDef::Inline {
                     dependencies: vec![],
                     code: "export default async function run() { return {}; }".to_string(),
@@ -558,6 +622,87 @@ mod tests {
             }],
             data_bindings: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn create_workflow_def_allows_overwrite_before_instances_exist() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+
+        service
+            .create_workflow_def(workflow_def_with_task("workflow1", "taska"))
+            .await
+            .unwrap();
+        service
+            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+            .await
+            .unwrap();
+
+        let stored = storage
+            .get_workflow_def("workflow1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.tasks[0].id, "taskb");
+    }
+
+    #[tokio::test]
+    async fn create_workflow_def_rejects_overwrite_after_instance_exists() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+
+        service
+            .create_workflow_def(workflow_def("workflow1"))
+            .await
+            .unwrap();
+        service
+            .create_workflow_instance_for_def("workflow1")
+            .await
+            .unwrap();
+
+        let error = service
+            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("cannot be overwritten"));
+        let stored = storage
+            .get_workflow_def("workflow1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.tasks[0].id, "taska");
+    }
+
+    #[tokio::test]
+    async fn create_workflow_def_rejects_overwrite_after_terminal_instance_exists() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+
+        service
+            .create_workflow_def(workflow_def("workflow1"))
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "completed-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Completed,
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let error = service
+            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("cannot be overwritten"));
     }
 
     #[tokio::test]
@@ -635,7 +780,7 @@ mod tests {
             .unwrap();
 
         let workflows = service
-            .list_workflows(Some(WorkflowStatus::Running))
+            .list_workflows(Some(WorkflowStatus::Running), None, None)
             .await
             .unwrap();
 

@@ -20,6 +20,7 @@ pub struct WorkflowStatusReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowList {
     pub workflows: Vec<WorkflowInfo>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

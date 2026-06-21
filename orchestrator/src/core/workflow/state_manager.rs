@@ -1,4 +1,4 @@
-use crate::core::util::unix_timestamp;
+use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::{
     WorkflowEventRecord, WorkflowInstanceEvent, reduce_workflow_instance_events,
 };
@@ -24,8 +24,7 @@ impl WorkflowStateManager {
             .storage
             .get_workflow_instance(workflow_instance_id)
             .await?;
-        self.commit_events_for_current(current, events)
-            .await
+        self.commit_events_for_current(current, events).await
     }
 
     pub async fn commit_events_for_instance(
@@ -33,8 +32,7 @@ impl WorkflowStateManager {
         current: WorkflowInstance,
         events: Vec<WorkflowInstanceEvent>,
     ) -> anyhow::Result<WorkflowInstance> {
-        self.commit_events_for_current(Some(current), events)
-            .await
+        self.commit_events_for_current(Some(current), events).await
     }
 
     async fn commit_events_for_current(
@@ -48,7 +46,7 @@ impl WorkflowStateManager {
 
         let updated = reduce_workflow_instance_events(current, &events)?;
 
-        let created_time = unix_timestamp()?;
+        let created_time = unix_timestamp_ms()?;
         let records = events
             .into_iter()
             .map(|event| WorkflowEventRecord {
@@ -71,8 +69,18 @@ mod tests {
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::core::workflow::events::WorkflowInstanceEvent;
     use crate::core::workflow::models::{WorkflowInstance, WorkflowStatus};
-    use crate::ports::storage::WorkflowInstanceFilter;
+    use crate::ports::storage::{WorkflowInfoListRequest, WorkflowInfoPageRequest};
     use std::collections::HashMap;
+
+    fn list_all_request() -> WorkflowInfoListRequest {
+        WorkflowInfoListRequest {
+            filters: vec![],
+            page: WorkflowInfoPageRequest {
+                limit: 100,
+                cursor: None,
+            },
+        }
+    }
 
     #[tokio::test]
     async fn state_manager_rejects_empty_batches() {
@@ -116,9 +124,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(events[0].created_time > 0);
         let summaries = storage
-            .list_workflow_info(WorkflowInstanceFilter::All)
+            .list_workflow_info(list_all_request())
             .await
-            .unwrap();
+            .unwrap()
+            .workflows;
         assert_eq!(summaries[0].id, "wf-1");
         assert_eq!(summaries[0].workflow_def_id, "wf");
     }
@@ -154,9 +163,10 @@ mod tests {
         let events = storage.get_workflow_instance_events("wf-1").await.unwrap();
         assert_eq!(events.len(), 1);
         let summaries = storage
-            .list_workflow_info(WorkflowInstanceFilter::All)
+            .list_workflow_info(list_all_request())
             .await
-            .unwrap();
+            .unwrap()
+            .workflows;
         assert_eq!(summaries[0].status, WorkflowStatus::Running);
     }
 }

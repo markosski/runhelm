@@ -3,11 +3,14 @@ use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::workflow::events::WorkflowInstanceEvent;
-use crate::core::workflow::models::WorkflowStatus;
+use crate::core::workflow::models::{WorkflowInfo, WorkflowStatus};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::ExecutorPort;
-use crate::ports::storage::{StoragePort, WorkflowInstanceFilter};
+use crate::ports::storage::{
+    StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPageRequest,
+    WorkflowInstanceFilter,
+};
 use crate::ports::workflow_queue::WorkflowQueuePort;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,11 +157,7 @@ impl Orchestrator {
 
         let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
 
-        for info in self
-            .storage
-            .list_workflow_info(active_workflow_filter())
-            .await?
-        {
+        for info in self.list_active_workflow_info().await? {
             let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
                 continue;
             };
@@ -184,10 +183,7 @@ impl Orchestrator {
 
     /// Requeues all active workflow instances found in storage.
     pub async fn enqueue_active_workflow_instances(&self) -> anyhow::Result<usize> {
-        let infos = self
-            .storage
-            .list_workflow_info(active_workflow_filter())
-            .await?;
+        let infos = self.list_active_workflow_info().await?;
         let count = infos.len();
 
         for info in infos {
@@ -221,10 +217,35 @@ impl Orchestrator {
     async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
         resolve_task_function_ref(self.storage.as_ref(), task).await
     }
+
+    async fn list_active_workflow_info(&self) -> anyhow::Result<Vec<WorkflowInfo>> {
+        let mut cursor: Option<WorkflowInfoCursor> = None;
+        let mut infos = Vec::new();
+
+        loop {
+            let page = self
+                .storage
+                .list_workflow_info(WorkflowInfoListRequest {
+                    filters: active_workflow_filter(),
+                    page: WorkflowInfoPageRequest { limit: 100, cursor },
+                })
+                .await?;
+            infos.extend(page.workflows);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        Ok(infos)
+    }
 }
 
-fn active_workflow_filter() -> WorkflowInstanceFilter {
-    WorkflowInstanceFilter::Statuses(vec![WorkflowStatus::Pending, WorkflowStatus::Running])
+fn active_workflow_filter() -> Vec<WorkflowInstanceFilter> {
+    vec![WorkflowInstanceFilter::Statuses(vec![
+        WorkflowStatus::Pending,
+        WorkflowStatus::Running,
+    ])]
 }
 
 fn isolated_workflow_task_execution_id(
