@@ -2,10 +2,12 @@ use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
+use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::WorkflowStatus;
+use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::ExecutorPort;
-use crate::ports::storage::StoragePort;
+use crate::ports::storage::{StoragePort, WorkflowInstanceFilter};
 use crate::ports::workflow_queue::WorkflowQueuePort;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -150,23 +152,29 @@ impl Orchestrator {
     pub async fn synchronize_startup_tasks(&self) -> anyhow::Result<usize> {
         let mut recovered = 0;
 
-        for mut instance in self.storage.list_active_workflow_instances().await? {
-            let mut changed = false;
+        let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
 
-            for task in instance.tasks.values_mut() {
-                if task.status == TaskStatus::Running {
-                    task.status = TaskStatus::Pending;
-                    changed = true;
-                }
-            }
-
-            if instance.status == WorkflowStatus::Running {
-                instance.status = WorkflowStatus::Pending;
-                changed = true;
-            }
+        for info in self
+            .storage
+            .list_workflow_info(active_workflow_filter())
+            .await?
+        {
+            let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
+                continue;
+            };
+            let changed = instance.status == WorkflowStatus::Running
+                || instance
+                    .tasks
+                    .values()
+                    .any(|task| task.status == TaskStatus::Running);
 
             if changed {
-                self.storage.save_workflow_instance(instance).await?;
+                state_manager
+                    .commit_events(
+                        &info.id,
+                        vec![WorkflowInstanceEvent::StartupRecoveryApplied],
+                    )
+                    .await?;
                 recovered += 1;
             }
         }
@@ -176,11 +184,14 @@ impl Orchestrator {
 
     /// Requeues all active workflow instances found in storage.
     pub async fn enqueue_active_workflow_instances(&self) -> anyhow::Result<usize> {
-        let instances = self.storage.list_active_workflow_instances().await?;
-        let count = instances.len();
+        let infos = self
+            .storage
+            .list_workflow_info(active_workflow_filter())
+            .await?;
+        let count = infos.len();
 
-        for instance in instances {
-            self.enqueue_workflow_instance(instance.id).await?;
+        for info in infos {
+            self.enqueue_workflow_instance(info.id).await?;
         }
 
         Ok(count)
@@ -210,6 +221,10 @@ impl Orchestrator {
     async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
         resolve_task_function_ref(self.storage.as_ref(), task).await
     }
+}
+
+fn active_workflow_filter() -> WorkflowInstanceFilter {
+    WorkflowInstanceFilter::Statuses(vec![WorkflowStatus::Pending, WorkflowStatus::Running])
 }
 
 fn isolated_workflow_task_execution_id(

@@ -280,7 +280,7 @@ async fn setup(engine: &WorkflowEngine, def: WorkflowDef) -> String {
     engine.storage.save_workflow_def(def).await.unwrap();
     engine
         .storage
-        .save_workflow_instance(instance)
+        .commit_workflow_instance_events(vec![], instance)
         .await
         .unwrap();
     instance_id
@@ -762,6 +762,26 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
         .await
         .unwrap()
         .unwrap();
+    let events = engine
+        .storage
+        .get_workflow_instance_events(&instance_id)
+        .await
+        .unwrap();
+
+    assert!(events.iter().any(|record| matches!(
+        &record.event,
+        WorkflowInstanceEvent::VerifierFeedbackRecorded {
+            verifier_task_id,
+            ..
+        } if verifier_task_id == "verify"
+    )));
+    assert!(events.iter().any(|record| matches!(
+        &record.event,
+        WorkflowInstanceEvent::TaskMaterialized {
+            task_attempt_id,
+            ..
+        } if task_attempt_id == "task-a[2]"
+    )));
 
     for task_id in ["task-a[1]", "task-b[1]", "verify[1]"] {
         assert_eq!(
@@ -1287,7 +1307,7 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
         }],
     };
     let loop_slices = engine.compute_loop_slices(&def);
-    let mut instance = WorkflowInstance {
+    let instance = WorkflowInstance {
         id: "inst-exhaustion-no-valid-output".to_string(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Running,
@@ -1318,9 +1338,9 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
         )]),
     };
 
-    let error = engine
-        .apply_verifier_result(
-            &mut instance,
+    let transition = engine
+        .verifier_result_transition(
+            &instance,
             &def,
             &loop_slices,
             "verify[1]",
@@ -1334,9 +1354,20 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
                 }),
             },
         )
-        .unwrap_err();
+        .unwrap();
 
-    assert!(error.to_string().contains("no schema-valid output"));
+    assert!(
+        transition
+            .error_message
+            .as_ref()
+            .unwrap()
+            .contains("no schema-valid output")
+    );
+    let instance = crate::core::workflow::events::reduce_workflow_instance_events(
+        Some(instance),
+        &transition.events,
+    )
+    .unwrap();
     assert_eq!(instance.status, WorkflowStatus::Failed);
     assert_eq!(
         instance.verifier_states["verify"].status,

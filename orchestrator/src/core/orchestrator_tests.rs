@@ -409,7 +409,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
             .await
             .unwrap();
         storage
-            .save_workflow_instance(workflow_instance(id, id))
+            .commit_workflow_instance_events(vec![], workflow_instance(id, id))
             .await
             .unwrap();
         orchestrator
@@ -894,7 +894,10 @@ async fn queue_status_lists_pending_workflows() {
 
     let mut running = workflow_instance("running-workflow", "workflow-1");
     running.status = WorkflowStatus::Running;
-    storage.save_workflow_instance(running).await.unwrap();
+    storage
+        .commit_workflow_instance_events(vec![], running)
+        .await
+        .unwrap();
 
     orchestrator
         .enqueue_workflow_instance("pending-workflow".to_string())
