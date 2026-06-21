@@ -8,7 +8,7 @@ RunHelm currently has three related persistence boundaries:
 
 That shape is adequate for a single-machine deployment, but remote workers make the path meaningless unless they share the same filesystem. Paused workflows and orchestrator restarts create the same class of problem: a workflow can resume later, but its workspace or Agent session may exist only on the host that ran the previous task attempt.
 
-The design should treat workspace/session continuity as a workflow-instance scheduling decision, not as an incidental local path. To keep the first distributed-worker implementation simple, RunHelm pins every workflow instance to one host on first task execution. The orchestrator owns logical workflow state and pinning constraints. Workers own host-local materialization of workspaces and session stores.
+The design should treat workspace/session continuity as a workflow-instance scheduling decision, not as an incidental local path. To keep the first distributed-worker implementation simple, RunHelm pins every workflow instance to one host when the workflow instance is created for execution. The orchestrator owns logical workflow state and pinning constraints. Workers own host-local materialization of workspaces and session stores.
 
 ## Goals / Non-Goals
 
@@ -32,30 +32,34 @@ The design should treat workspace/session continuity as a workflow-instance sche
 
 ## Decisions
 
-### Pin Every Workflow Instance On First Claim
+### Pin Every Workflow Instance At Creation
 
 Introduce a durable workflow-instance placement record:
 
 - `workflow_instance_id`
 - `pinned_host_id`
-- `pin_reason`, initially `first_task_claim`
+- `pin_reason`, initially `workflow_instance_created`
 - timestamps for creation and last use
 
-The first eligible worker claim for a workflow instance establishes the `pinned_host_id`. After that, every task in the workflow instance must run on that host.
+When a queued workflow instance is created, the orchestrator selects a host ID from the currently registered eligible workers and persists it as `pinned_host_id`. After that, every task in the workflow instance must run on that host. If no eligible worker is registered when a caller tries to create a queued workflow instance, the orchestrator rejects the creation with a capacity-unavailable error rather than creating an unpinned instance.
 
 Rationale: workflow-instance pinning keeps workspaces, host-local Agent sessions, pauses, and restart recovery on one simple placement rule. It avoids separate scheduling logic for shared workspaces and Agent session reuse.
 
 Alternative considered: pin only workflow instances that use workspace groups. That preserves more scheduling flexibility, but Agent session reuse still benefits from locality and the conditional rule adds another branch to recovery behavior. Always pinning trades cross-host parallelism for a simpler and safer first implementation.
 
-### Worker Registration Carries Host Identity
+### Worker Registration Requires Configured Host Identity
 
-Extend worker registration to include stable host identity, and keep worker identity separate:
+Workers must be configured with `RUNHELM_WORKER_HOST_ID`. Worker startup or registration fails when this value is missing or empty. Registration includes stable host identity, and keeps worker identity separate:
 
 - `worker_id`: identifies one worker process or connection and may change when the process restarts.
 - `host_id`: identifies the machine or node whose local workspace/session store contains durable state.
 - optional labels/capabilities: allow future scheduling filters without changing task semantics.
 
+Multiple worker processes may register the same `host_id` when they share the same durable workspace and session roots. All such workers are eligible to execute tasks for workflow instances pinned to that host. The orchestrator treats heartbeat messages as join-or-renew messages: a heartbeat with valid worker identity and `host_id` registers the worker if needed and refreshes its liveness deadline. If a worker misses the configured heartbeat threshold, that worker registration is removed. A later heartbeat with the required identity fields may join again.
+
 Rationale: a worker process can restart without invalidating host-local workspace state. Scheduling needs to match tasks to hosts, not only to current worker process IDs.
+
+Alternative considered: auto-detect `host_id` from hostname, cloud metadata, or Kubernetes metadata. That improves convenience but risks unstable or misleading identity, especially when storage is mounted independently of the container or node name. Requiring explicit configuration forces deployments to choose the identity that matches their durable execution state.
 
 Alternative considered: use `worker_id` as the affinity target. This would make every worker restart look like state loss even when the same host still has the workspace.
 
@@ -63,11 +67,11 @@ Alternative considered: use `worker_id` as the affinity target. This would make 
 
 Pending work should carry placement constraints derived from the workflow instance pin. A worker can claim a task only when its registration satisfies the task's constraints:
 
-- workflow not yet pinned: any otherwise eligible worker may claim and establish the workflow's `pinned_host_id`
 - pin established: only workers with the matching `host_id` may claim
-- pinned host lost: the workflow instance is marked failed rather than silently moving to a different host
+- pinned host unavailable: if at least one worker remains registered for that `host_id`, any matching idle worker may claim
+- pinned host lost: after heartbeat loss policy determines no worker for the pinned host is recoverable, the workflow instance is marked failed rather than silently moving to a different host
 
-The queue can stay simple for the first implementation by scanning pending tasks for the first one a worker can claim. Later, this can be optimized with per-host queues.
+The queue can stay simple for the first implementation by scanning pending tasks for the first one a worker can claim. Later, this can be optimized with per-host queues. To avoid concurrent writes to the same workflow workspace or Agent session state, the orchestrator dispatches at most one active task per workflow instance at a time, even when multiple workers share the pinned host.
 
 Rationale: claim-time matching preserves the current worker-pull API style while adding deterministic placement.
 
@@ -97,6 +101,12 @@ Rationale: workflow state answers "what has happened"; lease state answers "who 
 
 Alternative considered: infer all recovery from `TaskStatus::Running`. That is insufficient to distinguish active work from abandoned work after a crash.
 
+### Retry Defaults To Same Host, Force Can Reassign
+
+Retries for failed pinned workflow instances default to the existing `pinned_host_id`. A force retry option may explicitly clear the prior pin and assign the workflow instance to a new registered host. Force retry is allowed to lose host-local workspace and Agent session context; the user chooses it when they decide that loss is acceptable.
+
+Rationale: the safe default preserves context and avoids accidental migration. The force path provides an escape hatch when the original host is gone and the user prefers a best-effort rerun over abandoning the instance.
+
 ### Human-Input Resume Reuses Existing Placement
 
 When a task returns `InputNeeded`, workflow state remains durable in `InputNeeded`. A later human-input submission should commit a domain event that records the input and materializes or releases the next attempt according to existing dataflow/session rules.
@@ -117,19 +127,19 @@ Alternative considered: increase the default TTL. That reduces but does not remo
 
 ## Risks / Trade-offs
 
-- Pinned host becomes unavailable -> The workflow instance is marked failed; the user can decide whether to give up or explicitly retry in a future flow.
+- Pinned host becomes unavailable -> Worker registrations are removed after missed heartbeats; the workflow instance is marked failed only after host loss policy determines the pinned host has no recoverable workers.
 - Pending queue scan may become inefficient with many pinned tasks -> Start with a simple scan, then add host-indexed pending queues if load requires it.
-- Workers may register unstable `host_id` values -> Document configuration expectations and reject missing host IDs once remote affinity is enabled.
+- Workers may register unstable `host_id` values -> Require explicit `RUNHELM_WORKER_HOST_ID` configuration and document that it must identify the durable execution state domain, not the container process.
 - Local workspace/session state can still be lost if the host disk is lost -> Treat replication/snapshotting as a future capability, not a hidden guarantee.
 - More state must be kept consistent across workflow events and queue leases -> Keep workflow pin operations behind storage methods and write tests around claim, crash recovery, host loss, and human-input resume flows.
 
 ## Migration Plan
 
-1. Add schema/model types for worker host identity, logical workspace keys, workflow instance host pins, and dispatch leases.
+1. Add schema/model types for worker host identity, logical workspace keys, workflow instance host pins, worker heartbeat state, and dispatch leases.
 2. Extend storage ports and memory storage with workflow pin and lease operations.
-3. Extend worker registration and dispatch payloads in a backward-compatible transition where possible.
+3. Extend worker startup, registration, and dispatch payloads to require `RUNHELM_WORKER_HOST_ID`.
 4. Move workspace materialization for dispatched worker tasks to the worker side, while preserving local fake/executor behavior for tests.
-5. Update workflow execution to establish and preserve workflow pins across retries, verifier reruns, and human-input resumes.
+5. Update workflow instance creation to establish pins from registered worker hosts, and update execution to preserve workflow pins across retries, verifier reruns, and human-input resumes.
 6. Update workspace cleanup to consult workflow status and placement ownership before deleting directories.
 7. Update `docs/` with remote-worker workflow pinning, pause/resume, and cleanup behavior.
 
@@ -137,6 +147,4 @@ Rollback is simplest before enabling remote workers: keep the current single-hos
 
 ## Open Questions
 
-- Should retry of a failed pinned workflow create a new workflow instance, clear the pin on the same instance, or require a future explicit migration command?
-- Should first-claim pinning be created during enqueue, claim, or worker acknowledgement after local materialization succeeds?
-- What is the minimum compatibility period for workers that do not yet send `host_id`?
+- Should force retry create a new workflow instance or clear/reassign the pin on the same workflow instance?

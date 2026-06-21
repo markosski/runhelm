@@ -70,6 +70,10 @@ Blob-backed implementations should add concurrency protection, such as ETags, ge
 
 ## Remote Worker Pinning
 
-The OpenSpec change `add-workspace-session-persistence` defines the planned interaction between Agent sessions and remote worker placement. Every workflow instance is pinned to the first worker host that executes work for that instance, and reusable Agent sessions in that workflow instance continue on the pinned host. This keeps host-local session files and workspace files aligned.
+The OpenSpec change `add-workspace-session-persistence` defines the planned interaction between Agent sessions and remote worker placement. Workers must be configured with `RUNHELM_WORKER_HOST_ID`; RunHelm does not auto-detect this identity. The value should identify the durable execution state domain that owns the workspace and session roots, not the worker container or process.
 
-If a pinned host is lost, RunHelm should fail the pinned workflow instance rather than silently continuing a reusable Agent session on a different host without the expected local session and workspace state.
+Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution, and reusable Agent sessions in that workflow instance continue on the pinned host. This keeps host-local session files and workspace files aligned. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots.
+
+Worker container restart does not by itself imply session loss. A replacement worker can resume work for the pinned host when it registers or renews via heartbeat with the same `RUNHELM_WORKER_HOST_ID` and has access to the same session store root.
+
+If no worker is currently registered for the pinned host, RunHelm should wait rather than silently continuing a reusable Agent session on another host. If the host remains unavailable past the host-loss policy, RunHelm should fail the pinned workflow instance. Default retry keeps the same pinned host. A force retry may reassign the workflow to another registered host, but that explicitly accepts that host-local Agent session and workspace context may be lost.

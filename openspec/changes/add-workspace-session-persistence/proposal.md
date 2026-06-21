@@ -4,11 +4,14 @@ RunHelm currently passes an orchestrator-local workspace path to whichever worke
 
 ## What Changes
 
-- Persist a workflow-instance host pin for every workflow instance on first task execution.
-- Extend worker registration and task dispatch semantics so workers advertise stable host identity and task claims honor workflow pinning.
+- Persist a workflow-instance host pin for every workflow instance when it is created for execution.
+- Require workers to configure `RUNHELM_WORKER_HOST_ID` and advertise that stable host identity during registration.
+- Treat worker heartbeat messages as join-or-renew liveness signals and remove worker registrations after missed heartbeat thresholds.
+- Extend task dispatch semantics so task claims honor workflow pinning.
 - Resume paused or restarted workflows from durable workflow state while preserving any workflow host pin and session placement.
 - Prevent workspace cleanup from deleting workspaces that may still be needed by pending, running, or input-waiting workflows.
 - Mark a pinned workflow instance as failed if its pinned worker host is lost and leave retry/give-up decisions to the user.
+- Allow explicit force retry to reassign a failed pinned workflow to a new host while acknowledging local context loss.
 
 ## Capabilities
 
@@ -17,7 +20,7 @@ RunHelm currently passes an orchestrator-local workspace path to whichever worke
 
 ### Modified Capabilities
 - `task-workspace`: Workspace selection changes from an orchestrator-local path assumption to workflow-instance host pinning for all workflow instances, with active-workflow retention.
-- `worker-pool-ipc`: Worker registration and task dispatch add stable host identity, workflow pin constraints, and affinity-aware task claiming.
+- `worker-pool-ipc`: Worker registration requires stable host identity from `RUNHELM_WORKER_HOST_ID`, and task dispatch adds workflow pin constraints and affinity-aware task claiming.
 - `agent-session-persistence`: Agent session continuation must respect workflow host pinning or report explicit recovery behavior when the pinned host is unavailable.
 - `workflow-dataflow-engine`: Human-input continuation and resumed task materialization must preserve logical task identity, generation lineage, and workflow pin constraints.
 

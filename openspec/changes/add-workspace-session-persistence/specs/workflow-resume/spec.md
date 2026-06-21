@@ -14,6 +14,21 @@ The system SHALL persist enough workflow and scheduling state to resume non-term
 - **AND** a workflow instance snapshot is terminal
 - **THEN** the orchestrator does not enqueue new task execution for that instance
 
+### Requirement: Workflow Pin Creation
+The system SHALL create a workflow-instance host pin when a workflow instance is created for execution.
+
+#### Scenario: Workflow pin is selected from registered workers
+- **WHEN** a queued workflow instance is created
+- **AND** at least one eligible worker is registered
+- **THEN** the system selects a host ID from the eligible registered workers
+- **THEN** the system persists that host ID as the workflow instance pin
+
+#### Scenario: Workflow creation has no eligible host
+- **WHEN** a queued workflow instance is created
+- **AND** no eligible worker is registered
+- **THEN** the system rejects the creation with a capacity-unavailable error
+- **THEN** the system does not create an unpinned workflow instance
+
 ### Requirement: Human Input Resume
 The system SHALL allow a workflow waiting for human input to resume by committing the submitted input as durable workflow state and continuing execution with the original logical task identity.
 
@@ -45,17 +60,39 @@ The system SHALL track claimed task dispatches with durable lease metadata so ab
 - **THEN** the system ignores the late result for workflow state transition purposes
 
 ### Requirement: Pinned Host Loss Handling
-The system SHALL mark a pinned workflow instance as failed when the pinned host is lost or unavailable for required execution.
+The system SHALL mark a pinned workflow instance as failed when the pinned host is declared lost.
 
-#### Scenario: Pinned host has no workers
+#### Scenario: Pinned host temporarily has no workers
 - **WHEN** a task is ready to run
 - **AND** the workflow instance is pinned to a host with no eligible registered worker
 - **THEN** the task is not dispatched to another host silently
+- **THEN** the workflow reports that the pinned host is currently unavailable
+
+#### Scenario: Pinned host is declared lost
+- **WHEN** the pinned host remains unavailable past the configured host loss policy
 - **THEN** the workflow instance is marked `Failed`
-- **THEN** the workflow reports that the pinned host is unavailable
+- **THEN** the workflow reports that the pinned host is lost
 
 #### Scenario: Replacement host is not selected implicitly
 - **WHEN** a workflow instance is pinned to a host
 - **AND** that host is lost
 - **THEN** the system MUST NOT bind the workflow instance to a different host
-- **THEN** the user must decide whether to give up on that workflow instance or retry through an explicit future retry flow
+- **THEN** the user must decide whether to give up on that workflow instance, retry on the same host, or force retry on a new host
+
+### Requirement: Pinned Workflow Retry
+The system SHALL preserve host pins for ordinary retries and SHALL allow explicit force retry to reassign a workflow instance to a new host.
+
+#### Scenario: Default retry uses same host
+- **WHEN** a failed pinned workflow instance is retried without force
+- **THEN** the retry keeps the existing workflow host pin
+
+#### Scenario: Force retry reassigns host
+- **WHEN** a failed pinned workflow instance is retried with force
+- **AND** at least one eligible worker is registered
+- **THEN** the system assigns a new host ID from eligible registered workers
+- **THEN** the workflow records that host-local workspace and Agent session context may be lost
+
+#### Scenario: Force retry has no eligible host
+- **WHEN** a failed pinned workflow instance is retried with force
+- **AND** no eligible worker is registered
+- **THEN** the system rejects the retry with a capacity-unavailable error

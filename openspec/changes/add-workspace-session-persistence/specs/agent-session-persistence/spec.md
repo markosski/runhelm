@@ -19,9 +19,9 @@ The system SHALL preserve host-local Agent session continuity by using the workf
 ### Requirement: Agent Session Pin Failure Diagnostics
 The system SHALL report clear diagnostics when a reusable Agent continuation cannot run because the workflow instance's pinned host is unavailable.
 
-#### Scenario: Pinned session host unavailable
+#### Scenario: Pinned session host declared lost
 - **WHEN** an Agent continuation attempt belongs to a workflow instance pinned to a host with no eligible registered worker
-- **THEN** the attempt is not silently dispatched to another host
+- **AND** the pinned host is declared lost by host loss policy
 - **THEN** the workflow instance is marked `Failed`
 - **THEN** the workflow reports that the pinned Agent session host is unavailable
 

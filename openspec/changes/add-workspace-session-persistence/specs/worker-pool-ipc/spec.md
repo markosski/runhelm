@@ -3,11 +3,9 @@
 ### Requirement: Workflow-Pin Task Claiming
 The orchestrator SHALL only allow a worker to claim a task when the worker satisfies the workflow instance's host pin constraint.
 
-#### Scenario: Workflow pin is established on first claim
-- **WHEN** a task dispatch belongs to a workflow instance with no host pin
-- **AND** an otherwise eligible idle worker claims work
-- **THEN** the orchestrator persists that worker's host ID as the workflow instance host pin
-- **THEN** the orchestrator may dispatch that task to the worker
+#### Scenario: Workflow pin already exists before claim
+- **WHEN** a task dispatch belongs to a workflow instance
+- **THEN** the dispatch has an existing workflow host pin before any worker claims it
 
 #### Scenario: Workflow has required host pin
 - **WHEN** a task dispatch belongs to a workflow instance pinned to a specific host ID
@@ -19,10 +17,18 @@ The orchestrator SHALL only allow a worker to claim a task when the worker satis
 - **AND** an eligible worker registered with that host ID claims work
 - **THEN** the orchestrator may dispatch that task to the worker
 
+#### Scenario: Single active task per workflow instance
+- **WHEN** a workflow instance already has an active task dispatch
+- **THEN** the orchestrator does not dispatch another task for the same workflow instance until the active dispatch completes, expires, or is released
+
 ## MODIFIED Requirements
 
 ### Requirement: Worker Connection and Registration
-Workers SHALL connect to the Orchestrator's socket and provide a registration message identifying their worker process, stable host identity, capabilities, and scheduling labels.
+Workers SHALL connect to the Orchestrator's socket and provide a registration message identifying their worker process, configured stable host identity, capabilities, and scheduling labels.
+
+#### Scenario: Worker host id is required
+- **WHEN** a Worker process starts without `RUNHELM_WORKER_HOST_ID`
+- **THEN** the Worker fails startup or registration with a clear host identity configuration error
 
 #### Scenario: Successful worker registration
 - **WHEN** a Worker process connects to the socket and sends a valid registration JSON with worker ID and host ID
@@ -30,12 +36,36 @@ Workers SHALL connect to the Orchestrator's socket and provide a registration me
 
 #### Scenario: Worker registers stable host identity
 - **WHEN** a Worker process registers
-- **THEN** the registration identifies the stable host whose local workspace and session stores the worker can access
+- **THEN** the registration identifies the stable host from `RUNHELM_WORKER_HOST_ID` whose local workspace and session stores the worker can access
 
 #### Scenario: Worker registration omits host identity
-- **WHEN** remote-worker placement is enabled
-- **AND** a Worker process registers without a host ID
+- **WHEN** a Worker process registers without a host ID
 - **THEN** the Orchestrator rejects the registration
+
+### Requirement: Worker Heartbeat Registration
+Workers SHALL maintain registration by sending heartbeat messages that join or renew the worker registration.
+
+#### Scenario: Heartbeat joins worker
+- **WHEN** a worker sends a heartbeat with valid worker ID, host ID, and capabilities
+- **AND** that worker ID is not currently registered
+- **THEN** the orchestrator registers the worker as available
+
+#### Scenario: Heartbeat renews worker
+- **WHEN** a registered worker sends a heartbeat before its liveness deadline expires
+- **THEN** the orchestrator extends that worker registration's liveness deadline
+
+#### Scenario: Missed heartbeat deregisters worker
+- **WHEN** a worker misses the configured heartbeat threshold
+- **THEN** the orchestrator deregisters that worker ID
+- **THEN** the host ID remains a durable placement identity for workflow pins
+
+#### Scenario: Deregistered worker rejoins by heartbeat
+- **WHEN** a deregistered worker later sends a valid heartbeat
+- **THEN** the orchestrator treats the heartbeat as a fresh join for that worker ID
+
+#### Scenario: Multiple workers share host
+- **WHEN** multiple registered workers advertise the same host ID
+- **THEN** each worker is eligible to execute tasks for workflow instances pinned to that host ID
 
 ### Requirement: Exclusive Task Dispatching
 The Orchestrator SHALL dispatch a task to exactly one idle worker from the pool whose registration satisfies the task's workflow pin and capability constraints.
@@ -50,10 +80,14 @@ The Orchestrator SHALL dispatch a task to exactly one idle worker from the pool 
 - **AND** no idle worker satisfies the task constraints
 - **THEN** the Orchestrator leaves the task undispatched and observable as waiting for eligible capacity
 
-#### Scenario: Pinned workflow host is lost
+#### Scenario: Pinned workflow host is unavailable
 - **WHEN** the Workflow Engine needs to execute a task for a pinned workflow instance
-- **AND** the pinned host is lost or has no eligible registered worker
-- **THEN** the Orchestrator marks the workflow instance as failed
+- **AND** no eligible registered worker currently advertises the pinned host ID
+- **THEN** the Orchestrator does not dispatch the task to another host
+
+#### Scenario: Pinned workflow host is declared lost
+- **WHEN** the pinned host is unavailable past the configured host loss policy
+- **THEN** the Orchestrator marks non-terminal workflow instances pinned to that host as failed
 
 ### Requirement: Connection Failure Detection
 The Orchestrator SHALL detect when a worker connection is closed or lost and update dispatch lease state for any task owned by that connection.

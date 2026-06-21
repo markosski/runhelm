@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: Workflow Host Pinning
-The system SHALL pin every workflow instance to one worker host on first task execution.
+The system SHALL pin every workflow instance to one worker host when the workflow instance is created for execution.
 
 #### Scenario: Workflow is pinned on first task assignment
-- **WHEN** a task for a workflow instance is first assigned to a worker host
+- **WHEN** a workflow instance is created for execution
 - **THEN** the system persists a workflow-instance host pin to that host ID
 
 #### Scenario: Group workspace uses workflow pin

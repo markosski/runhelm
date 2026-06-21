@@ -126,9 +126,15 @@ If a task needs files produced by another task in the same workspace group, the 
 
 ## Remote Worker Pinning
 
-The OpenSpec change `add-workspace-session-persistence` defines the planned remote-worker behavior for workspace continuity. Every workflow instance is pinned to the first worker host that executes work for that instance. After the pin is established, every task in that workflow instance must execute on workers registered with the same host identifier.
+The OpenSpec change `add-workspace-session-persistence` defines the planned remote-worker behavior for workspace continuity. Workers must be configured with `RUNHELM_WORKER_HOST_ID`; RunHelm does not auto-detect this identity. The value should identify the durable execution state domain that owns the workspace and session roots, not the worker container or process.
 
-If the pinned host is lost, RunHelm should mark the pinned workflow instance as failed instead of silently moving it to another host without the local workspace state. The user can then decide whether to abandon that instance or retry through an explicit recovery flow.
+Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution. After the pin is established, every task in that workflow instance must execute on workers registered with the same host identifier. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots; any of those workers can execute work for the pinned workflow.
+
+Workers maintain registration by sending heartbeats. A heartbeat with valid worker and host identity joins or renews the worker registration. After the configured missed-heartbeat threshold, the orchestrator deregisters that worker process. A later valid heartbeat may join again.
+
+RunHelm should dispatch at most one active task at a time for a workflow instance, even when multiple workers share the pinned host. This avoids concurrent writes to the same workflow workspace or host-local Agent session state.
+
+If no worker is currently registered for the pinned host, RunHelm should wait rather than silently moving the workflow to another host. If the host remains unavailable past the host-loss policy, RunHelm should mark the pinned workflow instance as failed. Default retry keeps the same pinned host. A force retry may reassign the workflow to another registered host, but that explicitly accepts that host-local workspace and Agent session context may be lost.
 
 ## Cleanup
 
