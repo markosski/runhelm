@@ -12,8 +12,8 @@
 - [x] 2.2 Preserve worker process identity separately from host identity in `WorkerPool`
 - [x] 2.3 Implement heartbeat join-or-renew semantics and deregister workers after the configured missed heartbeat threshold
 - [x] 2.4 Add workflow pin constraints to pending task dispatch state
-- [ ] 2.5 Update workflow instance creation to select and persist a `pinned_host_id` from currently registered eligible workers
-- [ ] 2.6 Update worker claim logic to dispatch only tasks whose workflow pin matches the claiming worker host
+- [x] 2.5 Update workflow instance creation to select and persist a `pinned_host_id` from currently registered eligible workers
+- [x] 2.6 Update worker claim logic to dispatch only tasks whose workflow pin matches the claiming worker host
 - [ ] 2.7 Prevent more than one active task dispatch per workflow instance
 - [ ] 2.8 Record in-memory dispatch lease metadata in `WorkerPool` when a task is claimed by a worker
 - [ ] 2.9 Release or expire dispatch leases on task completion, worker disconnect, timeout, and late result paths

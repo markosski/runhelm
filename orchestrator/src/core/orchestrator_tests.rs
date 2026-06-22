@@ -8,7 +8,7 @@ use crate::core::models::{
     ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskStatus, TaskTypeDef, Workspace,
     verifier_decision_schema,
 };
-use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance};
+use crate::core::workflow::models::{DataBinding, WorkerHostId, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
 use crate::core::workspace_manager::WorkspaceManagerConfig;
 use crate::ports::executor::ExecutionResult;
@@ -522,7 +522,7 @@ async fn workflow_without_control_verifier_deserializes_and_executes() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1")
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -553,7 +553,7 @@ async fn get_task_result_resolves_logical_task_id_to_generation_one() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1")
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -590,7 +590,7 @@ async fn list_task_results_returns_materialized_attempts() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1")
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 

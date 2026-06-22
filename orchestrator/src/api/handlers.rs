@@ -98,9 +98,13 @@ pub async fn trigger_workflow_instance(
     Path(workflow_def_id): Path<String>,
     Json(_payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
+    let Some(pinned_worker_host) = state.worker_pool.select_eligible_host().await else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+
     let instance_id = state
         .workflow_service
-        .create_workflow_instance_for_def(&workflow_def_id)
+        .create_workflow_instance_for_def(&workflow_def_id, pinned_worker_host.clone())
         .await
         .map_err(|error| {
             if error.to_string().contains("not found") {
@@ -116,11 +120,16 @@ pub async fn trigger_workflow_instance(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    info!("Created queued workflow instance with ID: {}", instance_id);
+    info!(
+        %instance_id,
+        pinned_host_id = %pinned_worker_host.0,
+        "Created queued workflow instance"
+    );
 
     Ok(Json(json!({
         "status": "queued",
-        "id": instance_id
+        "id": instance_id,
+        "pinned_host_id": pinned_worker_host
     })))
 }
 

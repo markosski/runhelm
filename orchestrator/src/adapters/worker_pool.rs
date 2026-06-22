@@ -56,6 +56,15 @@ pub struct TaskDispatchConstraints {
     pub pinned_host_id: Option<WorkerHostId>,
 }
 
+impl TaskDispatchConstraints {
+    fn matches_worker(&self, worker: &WorkerIdentity) -> bool {
+        match &self.pinned_host_id {
+            Some(host_id) => host_id == &worker.host_id,
+            None => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: String,
@@ -217,6 +226,19 @@ impl WorkerPool {
         }
     }
 
+    pub async fn select_eligible_host(&self) -> Option<WorkerHostId> {
+        self.update_worker_liveness().await;
+        let workers = self.workers.read().await;
+        let mut host_ids = workers
+            .values()
+            .filter(|worker| !worker.heartbeat.missed_heartbeat)
+            .map(|worker| worker.identity.host_id.clone())
+            .collect::<Vec<_>>();
+        host_ids.sort_by(|left, right| left.0.cmp(&right.0));
+        host_ids.dedup();
+        host_ids.into_iter().next()
+    }
+
     /// Enqueues a task and waits until it reaches a terminal worker result.
     /// Execution timeout is tracked separately after the task is claimed.
     pub async fn enqueue_task(
@@ -278,8 +300,21 @@ impl WorkerPool {
             loop {
                 let notified = self.task_available.notified();
                 self.update_worker_liveness().await;
-                self.ensure_worker_can_claim(worker_id).await?;
-                if let Some(task) = self.pending_tasks.lock().await.pop_front() {
+                let worker = self.claiming_worker(worker_id).await?;
+                let task = {
+                    let mut pending_tasks = self.pending_tasks.lock().await;
+                    let Some(index) = pending_tasks
+                        .iter()
+                        .position(|task| task.constraints.matches_worker(&worker))
+                    else {
+                        drop(pending_tasks);
+                        notified.await;
+                        continue;
+                    };
+                    pending_tasks.remove(index).unwrap()
+                };
+
+                {
                     let task_id = task.dispatch.task_id.clone();
                     let pinned_host_id = task.constraints.pinned_host_id.clone();
                     debug!(
@@ -308,7 +343,6 @@ impl WorkerPool {
                     let _ = task.claimed_tx.send(());
                     return Ok(task.dispatch);
                 }
-                notified.await;
             }
         };
 
@@ -422,7 +456,7 @@ impl WorkerPool {
         }
     }
 
-    async fn ensure_worker_can_claim(&self, worker_id: &str) -> anyhow::Result<()> {
+    async fn claiming_worker(&self, worker_id: &str) -> anyhow::Result<WorkerIdentity> {
         let workers = self.workers.read().await;
         let Some(worker) = workers.get(worker_id) else {
             anyhow::bail!("worker {worker_id} is not registered");
@@ -432,7 +466,7 @@ impl WorkerPool {
             anyhow::bail!("worker {worker_id} missed heartbeat");
         }
 
-        Ok(())
+        Ok(worker.identity.clone())
     }
 
     fn heartbeat_state(&self, identity: WorkerIdentity, now_epoch_ms: u64) -> WorkerHeartbeatState {
@@ -486,9 +520,13 @@ mod tests {
     }
 
     fn test_registration(worker_id: &str) -> WorkerRegistration {
+        test_registration_for_host(worker_id, "test-host")
+    }
+
+    fn test_registration_for_host(worker_id: &str, host_id: &str) -> WorkerRegistration {
         WorkerRegistration {
             worker_id: worker_id.to_string(),
-            host_id: WorkerHostId::new("test-host"),
+            host_id: WorkerHostId::new(host_id),
         }
     }
 
@@ -601,6 +639,31 @@ mod tests {
         pool.update_worker_liveness().await;
 
         assert!(!pool.workers.read().await.contains_key("worker-1"));
+    }
+
+    #[tokio::test]
+    async fn select_eligible_host_returns_registered_non_suspicious_host() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-z", "host-z"))
+            .await;
+        pool.register_worker(test_registration_for_host("worker-a", "host-a"))
+            .await;
+
+        assert_eq!(
+            pool.select_eligible_host().await,
+            Some(WorkerHostId::new("host-a"))
+        );
+    }
+
+    #[tokio::test]
+    async fn select_eligible_host_ignores_missed_heartbeat_workers() {
+        let pool = heartbeat_test_pool();
+        pool.register_worker(test_registration_for_host("worker-1", "host-a"))
+            .await;
+
+        time::sleep(Duration::from_millis(15)).await;
+
+        assert_eq!(pool.select_eligible_host().await, None);
     }
 
     #[tokio::test]
@@ -799,6 +862,130 @@ mod tests {
         );
 
         execution.abort();
+    }
+
+    #[tokio::test]
+    async fn matching_host_claims_pinned_task() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-1", "host-a"))
+            .await;
+
+        let task = test_task("task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        let claimed = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claimed.workflow_inst_id, "workflow-1");
+        execution.abort();
+    }
+
+    #[tokio::test]
+    async fn mismatched_host_does_not_claim_pinned_task() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-1", "host-b"))
+            .await;
+
+        let task = test_task("task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+        wait_for_pending_tasks(&pool, 1).await;
+
+        let claimed = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        assert!(claimed.is_none());
+        assert!(!execution.is_finished());
+        assert_eq!(pool.pending_tasks.lock().await.len(), 1);
+        execution.abort();
+    }
+
+    #[tokio::test]
+    async fn worker_claim_scans_past_nonmatching_pinned_tasks() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-1", "host-b"))
+            .await;
+
+        let task_a = test_task("task-a");
+        let task_b = test_task("task-b");
+        let first_pool = pool.clone();
+        let first = tokio::spawn(async move {
+            first_pool
+                .enqueue_task(
+                    "workflow-a",
+                    &task_a,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+        let second_pool = pool.clone();
+        let second = tokio::spawn(async move {
+            second_pool
+                .enqueue_task(
+                    "workflow-b",
+                    &task_b,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-b")),
+                    },
+                )
+                .await
+        });
+        wait_for_pending_tasks(&pool, 2).await;
+
+        let claimed = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claimed.workflow_inst_id, "workflow-b");
+        assert_eq!(pool.pending_tasks.lock().await.len(), 1);
+        first.abort();
+        second.abort();
     }
 
     #[tokio::test]

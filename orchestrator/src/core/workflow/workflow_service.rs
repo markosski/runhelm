@@ -3,7 +3,7 @@ use crate::core::models::{
     TaskDef, TaskInstance, TaskStatus, VerifierControlConfig, verifier_decision_schema,
 };
 use crate::core::workflow::events::WorkflowInstanceEvent;
-use crate::core::workflow::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
+use crate::core::workflow::models::{WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::{
     StoragePort, TaskResult, TaskResultMetadata, WorkflowInfoCursor, WorkflowInfoListRequest,
@@ -51,6 +51,7 @@ impl WorkflowService {
     pub async fn create_workflow_instance_for_def(
         &self,
         workflow_def_id: &str,
+        pinned_worker_host: WorkerHostId,
     ) -> anyhow::Result<String> {
         let Some(_) = self.storage.get_workflow_def(workflow_def_id).await? else {
             anyhow::bail!("workflow definition {workflow_def_id} not found");
@@ -61,7 +62,7 @@ impl WorkflowService {
             id: instance_id.clone(),
             workflow_def_id: workflow_def_id.to_string(),
             status: WorkflowStatus::Pending,
-            pinned_worker_host: None,
+            pinned_worker_host: Some(pinned_worker_host),
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
         };
@@ -657,7 +658,7 @@ mod tests {
             .await
             .unwrap();
         service
-            .create_workflow_instance_for_def("workflow1")
+            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
             .await
             .unwrap();
 
@@ -717,7 +718,7 @@ mod tests {
             .unwrap();
 
         let instance_id = service
-            .create_workflow_instance_for_def("workflow1")
+            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
             .await
             .unwrap();
 
@@ -728,6 +729,10 @@ mod tests {
             .unwrap();
         assert_eq!(instance.workflow_def_id, "workflow1");
         assert_eq!(instance.status, WorkflowStatus::Pending);
+        assert_eq!(
+            instance.pinned_worker_host,
+            Some(WorkerHostId::new("test-host"))
+        );
         assert!(instance.tasks.is_empty());
         assert!(instance.verifier_states.is_empty());
 
@@ -746,7 +751,7 @@ mod tests {
         let service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
         let error = service
-            .create_workflow_instance_for_def("missing")
+            .create_workflow_instance_for_def("missing", WorkerHostId::new("test-host"))
             .await
             .unwrap_err();
 
