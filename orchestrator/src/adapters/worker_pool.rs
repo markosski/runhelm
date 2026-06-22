@@ -51,6 +51,11 @@ pub struct TaskDispatch {
     pub execution_metadata: ExecutionMetadata,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskDispatchConstraints {
+    pub pinned_host_id: Option<WorkerHostId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: String,
@@ -106,6 +111,7 @@ struct WorkerState {
 #[derive(Debug)]
 struct PendingTask {
     dispatch: TaskDispatch,
+    constraints: TaskDispatchConstraints,
     result_tx: oneshot::Sender<WorkerExecutionResult>,
     claimed_tx: oneshot::Sender<()>,
     timeout: Duration,
@@ -221,6 +227,7 @@ impl WorkerPool {
         timeout: Duration,
         execution_metadata: ExecutionMetadata,
         workspace_path: &Path,
+        constraints: TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let task_id = format!(
             "{}-{}",
@@ -240,6 +247,7 @@ impl WorkerPool {
                 inputs: inputs.to_vec(),
                 execution_metadata,
             },
+            constraints,
             result_tx,
             claimed_tx,
             timeout,
@@ -273,6 +281,14 @@ impl WorkerPool {
                 self.ensure_worker_can_claim(worker_id).await?;
                 if let Some(task) = self.pending_tasks.lock().await.pop_front() {
                     let task_id = task.dispatch.task_id.clone();
+                    let pinned_host_id = task.constraints.pinned_host_id.clone();
+                    debug!(
+                        %worker_id,
+                        task_id = %task_id,
+                        workflow_inst_id = %task.dispatch.workflow_inst_id,
+                        pinned_host_id = ?pinned_host_id,
+                        "worker claimed pending task"
+                    );
 
                     self.result_waiters
                         .lock()
@@ -480,6 +496,17 @@ mod tests {
         WorkerPool::new_with_heartbeat_config(Duration::from_millis(10), 3)
     }
 
+    async fn wait_for_pending_tasks(pool: &WorkerPool, expected_count: usize) {
+        for _ in 0..10 {
+            if pool.pending_tasks.lock().await.len() == expected_count {
+                return;
+            }
+            time::sleep(Duration::from_millis(1)).await;
+        }
+
+        assert_eq!(pool.pending_tasks.lock().await.len(), expected_count);
+    }
+
     #[tokio::test]
     async fn registration_preserves_worker_identity_separately_from_host_identity() {
         let pool = WorkerPool::new();
@@ -592,6 +619,7 @@ mod tests {
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
                     test_workspace_path(),
+                    TaskDispatchConstraints::default(),
                 )
                 .await
         });
@@ -638,6 +666,7 @@ mod tests {
                     Duration::from_millis(10),
                     ExecutionMetadata::default(),
                     test_workspace_path(),
+                    TaskDispatchConstraints::default(),
                 )
                 .await
         });
@@ -685,6 +714,7 @@ mod tests {
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
                     test_workspace_path(),
+                    TaskDispatchConstraints::default(),
                 )
                 .await
         });
@@ -717,6 +747,7 @@ mod tests {
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
                     workspace_path,
+                    TaskDispatchConstraints::default(),
                 )
                 .await
         });
@@ -731,6 +762,40 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&claimed).unwrap()["workspace_path"],
             json!("/workspaces/workflow-1/taskid-task-1")
+        );
+
+        execution.abort();
+    }
+
+    #[tokio::test]
+    async fn pending_task_preserves_workflow_pin_constraint() {
+        let pool = WorkerPool::new();
+        let task = test_task("task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        wait_for_pending_tasks(&pool, 1).await;
+
+        let pending_tasks = pool.pending_tasks.lock().await;
+        let pending = pending_tasks.front().unwrap();
+        assert_eq!(pending.dispatch.workflow_inst_id, "workflow-1");
+        assert_eq!(
+            pending.constraints.pinned_host_id,
+            Some(WorkerHostId::new("host-a"))
         );
 
         execution.abort();
@@ -752,6 +817,7 @@ mod tests {
                     Duration::from_millis(10),
                     ExecutionMetadata::default(),
                     test_workspace_path(),
+                    TaskDispatchConstraints::default(),
                 )
                 .await
         });

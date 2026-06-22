@@ -1,4 +1,4 @@
-use crate::adapters::worker_pool::WorkerPool;
+use crate::adapters::worker_pool::{TaskDispatchConstraints, WorkerPool};
 use crate::core::models::{ExecutionMetadata, TaskDef};
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
@@ -51,6 +51,7 @@ impl ExecutorPort for DockerExecutor {
                 task_timeout,
                 metadata.clone(),
                 workspace_path,
+                TaskDispatchConstraints::default(),
             )
             .await
     }

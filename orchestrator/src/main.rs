@@ -11,9 +11,7 @@ use tracing_subscriber::EnvFilter;
 use crate::adapters::docker_executor::DockerExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-use crate::adapters::worker_pool::{
-    self, WorkerPool
-};
+use crate::adapters::worker_pool::{self, WorkerPool};
 use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
