@@ -16,7 +16,7 @@ const DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS = 1_000;
 const DEFAULT_RESULT_ACK_RETRY_DELAY_MS = 1_000;
 const DEFAULT_RESULT_ACK_MAX_ATTEMPTS = 3;
 
-type WorkerRegistrationMessage = {
+type WorkerPresenceMessage = {
     type: 'register';
     worker_id: string;
     host_id: string;
@@ -25,6 +25,7 @@ type WorkerRegistrationMessage = {
 type RegistrationAckMessage = {
     type: 'registration_ack';
     worker_id: string;
+    heartbeat_interval_ms: number;
 };
 
 type NoTaskMessage = {
@@ -40,6 +41,7 @@ type WorkerResponse = RegistrationAckMessage | NoTaskMessage | TaskDispatchMessa
 
 type ResultAckMessage = {
     status: 'accepted';
+    worker_id?: string;
 };
 
 type WorkerExecutionResult =
@@ -119,12 +121,21 @@ async function processTask(
     }
 }
 
-function workerRegistration(workerId: string, workerHostId: string): WorkerRegistrationMessage {
+function workerPresence(workerId: string, workerHostId: string): WorkerPresenceMessage {
     return {
         type: 'register',
         worker_id: workerId,
         host_id: workerHostId,
     };
+}
+
+async function postWorkerPresence<T>(
+    baseUrl: string,
+    endpoint: string,
+    workerId: string,
+    workerHostId: string
+): Promise<T> {
+    return await postJson<T>(`${baseUrl}${endpoint}`, workerPresence(workerId, workerHostId));
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -158,16 +169,38 @@ function describeError(error: unknown): string {
     return String(error);
 }
 
-async function registerWorkerUntilAck(baseUrl: string, workerId: string, workerHostId: string): Promise<void> {
-    const url = `${baseUrl}/workers/register`;
+type WorkerHeartbeatPolicy = {
+    heartbeatIntervalMs: number;
+};
+
+async function registerWorkerUntilAck(baseUrl: string, workerId: string, workerHostId: string): Promise<WorkerHeartbeatPolicy> {
     let attempt = 0;
 
     while (true) {
         try {
-            const ack = await postJson<RegistrationAckMessage>(url, workerRegistration(workerId, workerHostId));
-            if (ack.type === 'registration_ack' && ack.worker_id === workerId) {
-                logger.info({ workerId, workerHostId }, "Worker registered with orchestrator");
-                return;
+            const ack = await postWorkerPresence<RegistrationAckMessage>(
+                baseUrl,
+                '/workers/register',
+                workerId,
+                workerHostId
+            );
+            if (
+                ack.type === 'registration_ack' &&
+                ack.worker_id === workerId &&
+                Number.isFinite(ack.heartbeat_interval_ms) &&
+                ack.heartbeat_interval_ms > 0
+            ) {
+                logger.info(
+                    {
+                        workerId,
+                        workerHostId,
+                        heartbeatIntervalMs: ack.heartbeat_interval_ms,
+                    },
+                    "Worker registered with orchestrator"
+                );
+                return {
+                    heartbeatIntervalMs: ack.heartbeat_interval_ms,
+                };
             }
 
             logger.warn({ ack, workerId, workerHostId }, "Unexpected worker registration ack");
@@ -190,6 +223,33 @@ async function registerWorkerUntilAck(baseUrl: string, workerId: string, workerH
 
         await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
     }
+}
+
+function startHeartbeatLoop(
+    baseUrl: string,
+    workerId: string,
+    workerHostId: string,
+    heartbeatPolicy: WorkerHeartbeatPolicy
+): NodeJS.Timeout {
+    return setInterval(() => {
+        void postWorkerPresence<ResultAckMessage>(
+            baseUrl,
+            '/workers/heartbeat',
+            workerId,
+            workerHostId
+        )
+            .catch((err) => {
+                logger.warn(
+                    {
+                        error: describeError(err),
+                        workerId,
+                        workerHostId,
+                        retryDelayMs: heartbeatPolicy.heartbeatIntervalMs,
+                    },
+                    "Worker heartbeat failed; will retry"
+                );
+            });
+    }, heartbeatPolicy.heartbeatIntervalMs);
 }
 
 async function postTaskResultUntilAck(
@@ -240,7 +300,8 @@ async function runWorker(
         .replace(/\/$/, '');
     logger.info({ baseUrl, workerId, workerHostId }, "Connecting to orchestrator HTTP API");
 
-    await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
+    let heartbeatPolicy = await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
+    let heartbeatTimer = startHeartbeatLoop(baseUrl, workerId, workerHostId, heartbeatPolicy);
 
     while(true) {
         let message: WorkerResponse;
@@ -251,7 +312,9 @@ async function runWorker(
         } catch (err) {
             if (err instanceof HttpError && err.status === 404) {
                 logger.warn({ workerId }, "Worker is not registered with orchestrator; re-registering");
-                await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
+                heartbeatPolicy = await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = startHeartbeatLoop(baseUrl, workerId, workerHostId, heartbeatPolicy);
             } else {
                 logger.warn({ error: describeError(err), workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker task claim failed; retrying");
                 await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);

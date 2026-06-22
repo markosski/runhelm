@@ -106,6 +106,8 @@ mod tests {
     #[tokio::test]
     async fn task_timeout_overrides_executor_default_timeout() {
         let worker_pool = WorkerPool::new();
+        let _timeout_monitor =
+            crate::adapters::worker_pool::start_task_timeout_monitor(worker_pool.clone());
         worker_pool
             .register_worker(crate::adapters::worker_pool::WorkerRegistration {
                 worker_id: "worker-1".to_string(),

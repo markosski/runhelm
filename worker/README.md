@@ -318,7 +318,8 @@ Response:
 ```json
 {
   "type": "registration_ack",
-  "worker_id": "remote-worker-1"
+  "worker_id": "remote-worker-1",
+  "heartbeat_interval_ms": 5000
 }
 ```
 
@@ -348,6 +349,26 @@ Empty response:
 ```json
 {
   "type": "no_task"
+}
+```
+
+### `POST /workers/heartbeat`
+
+Joins or renews a worker registration using the worker process ID and stable host ID.
+
+```json
+{
+  "worker_id": "remote-worker-1",
+  "host_id": "local-dev-host"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "accepted",
+  "worker_id": "remote-worker-1"
 }
 ```
 

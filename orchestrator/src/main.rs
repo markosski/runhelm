@@ -11,7 +11,9 @@ use tracing_subscriber::EnvFilter;
 use crate::adapters::docker_executor::DockerExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-use crate::adapters::worker_pool::WorkerPool;
+use crate::adapters::worker_pool::{
+    self, WorkerPool
+};
 use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
@@ -64,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         orchestrator,
         workflow_service,
         function_service,
-        worker_pool,
+        worker_pool.clone(),
     );
 
     let public_addr = resolve_public_http_addr();
@@ -75,6 +77,8 @@ async fn main() -> anyhow::Result<()> {
     info!("Public API listening on {}", public_listener.local_addr()?);
     info!("Worker API listening on {}", worker_listener.local_addr()?);
 
+    let _ = worker_pool::start_task_timeout_monitor(worker_pool.clone());
+    let _ = worker_pool::start_worker_heartbeat_monitor(worker_pool.clone());
     let _ = workspace_manager::start_workspace_vacuum_task(workspace_manager.clone());
 
     tokio::try_join!(

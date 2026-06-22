@@ -33,6 +33,7 @@ Workers SHALL connect to the Orchestrator's socket and provide a registration me
 #### Scenario: Successful worker registration
 - **WHEN** a Worker process connects to the socket and sends a valid registration JSON with worker ID and host ID
 - **THEN** the Orchestrator adds that connection to its active worker pool and marks it as "Idle"
+- **AND** the Orchestrator returns the heartbeat interval the worker must use
 
 #### Scenario: Worker registers stable host identity
 - **WHEN** a Worker process registers
@@ -58,6 +59,12 @@ Workers SHALL maintain registration by sending heartbeat messages that join or r
 - **WHEN** a worker misses the configured heartbeat threshold
 - **THEN** the orchestrator deregisters that worker ID
 - **THEN** the host ID remains a durable placement identity for workflow pins
+
+#### Scenario: Missed heartbeat makes worker ineligible before deregistration
+- **WHEN** a registered worker misses one heartbeat deadline
+- **THEN** the orchestrator marks that worker registration as having missed a heartbeat
+- **THEN** the orchestrator does not assign new task dispatches to that worker
+- **AND** the orchestrator keeps the worker registration until the configured missed heartbeat threshold elapses
 
 #### Scenario: Deregistered worker rejoins by heartbeat
 - **WHEN** a deregistered worker later sends a valid heartbeat

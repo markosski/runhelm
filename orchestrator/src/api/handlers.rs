@@ -294,10 +294,28 @@ pub async fn register_worker(
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
     state.worker_pool.register_worker(registration).await;
+    let heartbeat_policy = state.worker_pool.heartbeat_policy();
 
     Ok(Json(
-        serde_json::to_value(WorkerResponse::RegistrationAck { worker_id }).unwrap(),
+        serde_json::to_value(WorkerResponse::RegistrationAck {
+            worker_id,
+            heartbeat_interval_ms: heartbeat_policy.heartbeat_interval_ms,
+        })
+        .unwrap(),
     ))
+}
+
+pub async fn heartbeat_worker(
+    State(state): State<AppState>,
+    Json(registration): Json<WorkerRegistration>,
+) -> Result<Json<Value>, StatusCode> {
+    let worker_id = registration.worker_id.clone();
+    state.worker_pool.tick_worker_heartbeat(registration).await;
+
+    Ok(Json(json!({
+        "status": "accepted",
+        "worker_id": worker_id
+    })))
 }
 
 pub async fn claim_worker_task(
@@ -314,6 +332,9 @@ pub async fn claim_worker_task(
         )),
         Ok(None) => Ok(Json(serde_json::to_value(WorkerResponse::NoTask).unwrap())),
         Err(error) if error.to_string().contains("not registered") => Err(StatusCode::NOT_FOUND),
+        Err(error) if error.to_string().contains("missed heartbeat") => {
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
         Err(error) => {
             tracing::error!(worker_id = %payload.worker_id, %error, "worker failed to claim task");
             Err(StatusCode::INTERNAL_SERVER_ERROR)

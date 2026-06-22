@@ -88,6 +88,7 @@ pub fn create_worker_router(
     Router::new()
         .route("/health", get(handlers::health_check))
         .route("/workers/register", post(handlers::register_worker))
+        .route("/workers/heartbeat", post(handlers::heartbeat_worker))
         .route("/workers/tasks/claim", post(handlers::claim_worker_task))
         .route(
             "/workers/tasks/{task_id}/result",

@@ -1,5 +1,5 @@
 use crate::core::models::{ExecutionMetadata, TaskDef};
-use crate::core::workflow::models::{WorkerHostId, WorkerId, WorkerIdentity};
+use crate::core::workflow::models::{WorkerHeartbeatState, WorkerHostId, WorkerId, WorkerIdentity};
 use crate::ports::executor::ExecutionResult;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -9,10 +9,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
 use tracing::{debug, warn};
 
 const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
+const HEARTBEAT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
+const DEFAULT_WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_MISSED_HEARTBEAT_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkerRegistration {
@@ -27,6 +31,12 @@ impl WorkerRegistration {
             host_id: self.host_id,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerHeartbeatPolicy {
+    pub heartbeat_interval_ms: u64,
+    pub missed_heartbeat_threshold: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +88,10 @@ impl From<WorkerExecutionResult> for ExecutionResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerResponse {
-    RegistrationAck { worker_id: String },
+    RegistrationAck {
+        worker_id: String,
+        heartbeat_interval_ms: u64,
+    },
     NoTask,
     TaskDispatch(TaskDispatch),
 }
@@ -86,6 +99,7 @@ pub enum WorkerResponse {
 #[derive(Debug)]
 struct WorkerState {
     identity: WorkerIdentity,
+    heartbeat: WorkerHeartbeatState,
     current_task_id: Option<String>,
 }
 
@@ -121,6 +135,8 @@ pub struct WorkerPool {
     next_dispatch_id: Arc<AtomicU64>,
     // Notify workers when a new task is available for claiming
     task_available: Arc<Notify>,
+    heartbeat_interval: Duration,
+    missed_heartbeat_threshold: u32,
 }
 
 impl Default for WorkerPool {
@@ -131,12 +147,16 @@ impl Default for WorkerPool {
 
 impl WorkerPool {
     pub fn new() -> Self {
-        let pool = Self::new_without_monitor();
-        pool.spawn_timeout_monitor(TASK_TIMEOUT_MONITOR_INTERVAL);
-        pool
+        Self::new_with_heartbeat_config(
+            DEFAULT_WORKER_HEARTBEAT_INTERVAL,
+            DEFAULT_MISSED_HEARTBEAT_THRESHOLD,
+        )
     }
 
-    fn new_without_monitor() -> Self {
+    fn new_with_heartbeat_config(
+        heartbeat_interval: Duration,
+        missed_heartbeat_threshold: u32,
+    ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
             pending_tasks: Arc::new(Mutex::new(VecDeque::new())),
@@ -144,22 +164,51 @@ impl WorkerPool {
             result_waiters: Arc::new(Mutex::new(HashMap::new())),
             next_dispatch_id: Arc::new(AtomicU64::new(0)),
             task_available: Arc::new(Notify::new()),
+            heartbeat_interval,
+            missed_heartbeat_threshold,
         }
     }
 
     pub async fn register_worker(&self, registration: WorkerRegistration) {
+        self.tick_worker_heartbeat(registration).await;
+    }
+
+    /// Joins or renews a worker's in-memory liveness registration.
+    ///
+    /// Heartbeats are the worker pool's source of truth for which worker
+    /// processes are currently available on each durable host identity.
+    pub async fn tick_worker_heartbeat(&self, registration: WorkerRegistration) {
         let identity = registration.into_identity();
         let worker_id = identity.worker_id.0.clone();
         let host_id = identity.host_id.0.clone();
-        self.workers.write().await.insert(
-            worker_id.clone(),
-            WorkerState {
-                identity,
-                current_task_id: None,
-            },
-        );
+        let now = epoch_ms();
+        let heartbeat = self.heartbeat_state(identity.clone(), now);
+        let mut workers = self.workers.write().await;
+        match workers.get_mut(&worker_id) {
+            Some(worker) => {
+                worker.identity = identity;
+                worker.heartbeat = heartbeat;
+            }
+            None => {
+                workers.insert(
+                    worker_id.clone(),
+                    WorkerState {
+                        identity,
+                        heartbeat,
+                        current_task_id: None,
+                    },
+                );
+            }
+        }
 
-        debug!(%worker_id, %host_id, "registered worker");
+        debug!(%worker_id, %host_id, "worker heartbeat joined or renewed registration");
+    }
+
+    pub fn heartbeat_policy(&self) -> WorkerHeartbeatPolicy {
+        WorkerHeartbeatPolicy {
+            heartbeat_interval_ms: self.heartbeat_interval.as_millis() as u64,
+            missed_heartbeat_threshold: self.missed_heartbeat_threshold,
+        }
     }
 
     /// Enqueues a task and waits until it reaches a terminal worker result.
@@ -217,19 +266,19 @@ impl WorkerPool {
         worker_id: &str,
         timeout: Duration,
     ) -> anyhow::Result<Option<TaskDispatch>> {
-        if !self.workers.read().await.contains_key(worker_id) {
-            anyhow::bail!("worker {worker_id} is not registered");
-        }
-
         let claim = async {
             loop {
                 let notified = self.task_available.notified();
+                self.update_worker_liveness().await;
+                self.ensure_worker_can_claim(worker_id).await?;
                 if let Some(task) = self.pending_tasks.lock().await.pop_front() {
                     let task_id = task.dispatch.task_id.clone();
+
                     self.result_waiters
                         .lock()
                         .await
                         .insert(task_id.clone(), task.result_tx);
+
                     self.in_flight_tasks.lock().await.insert(
                         task_id.clone(),
                         InFlightTask {
@@ -238,15 +287,19 @@ impl WorkerPool {
                             timeout: task.timeout,
                         },
                     );
+
                     self.mark_worker_running(worker_id, &task_id).await;
                     let _ = task.claimed_tx.send(());
-                    return task.dispatch;
+                    return Ok(task.dispatch);
                 }
                 notified.await;
             }
         };
 
-        Ok(time::timeout(timeout, claim).await.ok())
+        match time::timeout(timeout, claim).await {
+            Ok(result) => result.map(Some),
+            Err(_) => Ok(None),
+        }
     }
 
     pub async fn complete_task_result(
@@ -276,14 +329,17 @@ impl WorkerPool {
             .map(|task| task.worker_id.clone())
     }
 
-    fn spawn_timeout_monitor(&self, interval: Duration) {
-        let pool = self.clone();
-        tokio::spawn(async move {
-            let mut ticker = time::interval(interval);
-            loop {
-                ticker.tick().await;
-                pool.complete_timed_out_tasks().await;
+    async fn update_worker_liveness(&self) {
+        let now = epoch_ms();
+        let mut workers = self.workers.write().await;
+        workers.retain(|worker_id, worker| {
+            if worker.heartbeat.deregister_after_epoch_ms <= now {
+                debug!(%worker_id, "deregistering worker after missed heartbeat threshold");
+                return false;
             }
+
+            worker.heartbeat.missed_heartbeat = worker.heartbeat.next_heartbeat_due_epoch_ms <= now;
+            true
         });
     }
 
@@ -349,6 +405,58 @@ impl WorkerPool {
             }
         }
     }
+
+    async fn ensure_worker_can_claim(&self, worker_id: &str) -> anyhow::Result<()> {
+        let workers = self.workers.read().await;
+        let Some(worker) = workers.get(worker_id) else {
+            anyhow::bail!("worker {worker_id} is not registered");
+        };
+
+        if worker.heartbeat.missed_heartbeat {
+            anyhow::bail!("worker {worker_id} missed heartbeat");
+        }
+
+        Ok(())
+    }
+
+    fn heartbeat_state(&self, identity: WorkerIdentity, now_epoch_ms: u64) -> WorkerHeartbeatState {
+        let interval_ms = self.heartbeat_interval.as_millis() as u64;
+        let threshold = u64::from(self.missed_heartbeat_threshold.max(1));
+        WorkerHeartbeatState {
+            identity,
+            last_heartbeat_at_epoch_ms: now_epoch_ms,
+            next_heartbeat_due_epoch_ms: now_epoch_ms + interval_ms,
+            deregister_after_epoch_ms: now_epoch_ms + (interval_ms * threshold),
+            missed_heartbeat: false,
+        }
+    }
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+pub fn start_task_timeout_monitor(worker_pool: WorkerPool) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = time::interval(TASK_TIMEOUT_MONITOR_INTERVAL);
+        loop {
+            ticker.tick().await;
+            worker_pool.complete_timed_out_tasks().await;
+        }
+    })
+}
+
+pub fn start_worker_heartbeat_monitor(worker_pool: WorkerPool) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = time::interval(HEARTBEAT_MONITOR_INTERVAL);
+        loop {
+            ticker.tick().await;
+            worker_pool.update_worker_liveness().await;
+        }
+    })
 }
 
 #[cfg(test)]
@@ -368,6 +476,10 @@ mod tests {
         }
     }
 
+    fn heartbeat_test_pool() -> WorkerPool {
+        WorkerPool::new_with_heartbeat_config(Duration::from_millis(10), 3)
+    }
+
     #[tokio::test]
     async fn registration_preserves_worker_identity_separately_from_host_identity() {
         let pool = WorkerPool::new();
@@ -382,6 +494,86 @@ mod tests {
         assert_eq!(worker_2.identity.worker_id, WorkerId::new("worker-2"));
         assert_eq!(worker_1.identity.host_id, WorkerHostId::new("test-host"));
         assert_eq!(worker_2.identity.host_id, WorkerHostId::new("test-host"));
+    }
+
+    #[tokio::test]
+    async fn heartbeat_joins_worker_registration() {
+        let pool = heartbeat_test_pool();
+        pool.tick_worker_heartbeat(test_registration("worker-1"))
+            .await;
+
+        let workers = pool.workers.read().await;
+        let worker = workers.get("worker-1").unwrap();
+
+        assert_eq!(worker.identity.worker_id, WorkerId::new("worker-1"));
+        assert_eq!(worker.identity.host_id, WorkerHostId::new("test-host"));
+        assert!(!worker.heartbeat.missed_heartbeat);
+    }
+
+    #[tokio::test]
+    async fn missed_heartbeat_marks_worker_suspicious_and_prevents_claims() {
+        let pool = heartbeat_test_pool();
+        pool.tick_worker_heartbeat(test_registration("worker-1"))
+            .await;
+
+        time::sleep(Duration::from_millis(15)).await;
+        pool.update_worker_liveness().await;
+
+        {
+            let workers = pool.workers.read().await;
+            assert!(workers.get("worker-1").unwrap().heartbeat.missed_heartbeat);
+        }
+
+        let error = pool
+            .claim_task("worker-1", Duration::from_millis(1))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("missed heartbeat"));
+    }
+
+    #[tokio::test]
+    async fn heartbeat_renewal_clears_missed_heartbeat() {
+        let pool = heartbeat_test_pool();
+        pool.tick_worker_heartbeat(test_registration("worker-1"))
+            .await;
+
+        time::sleep(Duration::from_millis(15)).await;
+        pool.update_worker_liveness().await;
+        assert!(
+            pool.workers
+                .read()
+                .await
+                .get("worker-1")
+                .unwrap()
+                .heartbeat
+                .missed_heartbeat
+        );
+
+        pool.tick_worker_heartbeat(test_registration("worker-1"))
+            .await;
+
+        assert!(
+            !pool
+                .workers
+                .read()
+                .await
+                .get("worker-1")
+                .unwrap()
+                .heartbeat
+                .missed_heartbeat
+        );
+    }
+
+    #[tokio::test]
+    async fn missed_heartbeat_threshold_deregisters_worker() {
+        let pool = heartbeat_test_pool();
+        pool.tick_worker_heartbeat(test_registration("worker-1"))
+            .await;
+
+        time::sleep(Duration::from_millis(35)).await;
+        pool.update_worker_liveness().await;
+
+        assert!(!pool.workers.read().await.contains_key("worker-1"));
     }
 
     #[tokio::test]

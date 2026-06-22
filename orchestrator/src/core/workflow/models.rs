@@ -33,16 +33,17 @@ pub struct WorkerIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct WorkerHeartbeatState {
-    pub worker_id: WorkerId,
-    pub host_id: WorkerHostId,
+    pub identity: WorkerIdentity,
     pub last_heartbeat_at_epoch_ms: u64,
-    pub expires_at_epoch_ms: u64,
+    pub next_heartbeat_due_epoch_ms: u64,
+    pub deregister_after_epoch_ms: u64,
+    pub missed_heartbeat: bool,
 }
 
 #[allow(dead_code)]
 impl WorkerHeartbeatState {
     pub fn is_expired_at(&self, now_epoch_ms: u64) -> bool {
-        self.expires_at_epoch_ms <= now_epoch_ms
+        self.deregister_after_epoch_ms <= now_epoch_ms
     }
 }
 
