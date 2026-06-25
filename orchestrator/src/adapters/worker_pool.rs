@@ -128,7 +128,8 @@ struct PendingTask {
 
 #[derive(Debug)]
 struct InFlightTask {
-    worker_id: String,
+    workflow_inst_id: String,
+    worker_id: WorkerIdentity,
     claimed_at: Instant,
     timeout: Duration,
 }
@@ -301,48 +302,53 @@ impl WorkerPool {
                 let notified = self.task_available.notified();
                 self.update_worker_liveness().await;
                 let worker = self.claiming_worker(worker_id).await?;
+
                 let task = {
+                    let mut in_flight_tasks = self.in_flight_tasks.lock().await;
                     let mut pending_tasks = self.pending_tasks.lock().await;
-                    let Some(index) = pending_tasks
-                        .iter()
-                        .position(|task| task.constraints.matches_worker(&worker))
-                    else {
+                    let Some(index) = pending_tasks.iter().position(|task| {
+                        task.constraints.matches_worker(&worker)
+                            && !Self::is_workflow_instance_task_in_flight(&in_flight_tasks, task)
+                    }) else {
                         drop(pending_tasks);
+                        drop(in_flight_tasks);
+
+                        // Block until notified
                         notified.await;
                         continue;
                     };
-                    pending_tasks.remove(index).unwrap()
-                };
+                    let pending_task = pending_tasks.remove(index).unwrap();
 
-                {
-                    let task_id = task.dispatch.task_id.clone();
-                    let pinned_host_id = task.constraints.pinned_host_id.clone();
-                    debug!(
-                        %worker_id,
-                        task_id = %task_id,
-                        workflow_inst_id = %task.dispatch.workflow_inst_id,
-                        pinned_host_id = ?pinned_host_id,
-                        "worker claimed pending task"
-                    );
-
-                    self.result_waiters
-                        .lock()
-                        .await
-                        .insert(task_id.clone(), task.result_tx);
-
-                    self.in_flight_tasks.lock().await.insert(
-                        task_id.clone(),
+                    in_flight_tasks.insert(
+                        pending_task.dispatch.task_id.clone(),
                         InFlightTask {
-                            worker_id: worker_id.to_string(),
+                            workflow_inst_id: pending_task.dispatch.workflow_inst_id.clone(),
+                            worker_id: worker.clone(),
                             claimed_at: Instant::now(),
-                            timeout: task.timeout,
+                            timeout: pending_task.timeout,
                         },
                     );
+                    pending_task
+                };
 
-                    self.mark_worker_running(worker_id, &task_id).await;
-                    let _ = task.claimed_tx.send(());
-                    return Ok(task.dispatch);
-                }
+                let task_id = task.dispatch.task_id.clone();
+                let pinned_host_id = task.constraints.pinned_host_id.clone();
+                debug!(
+                    %worker_id,
+                    task_id = %task_id,
+                    workflow_inst_id = %task.dispatch.workflow_inst_id,
+                    pinned_host_id = ?pinned_host_id,
+                    "worker claimed pending task"
+                );
+
+                self.result_waiters
+                    .lock()
+                    .await
+                    .insert(task_id.clone(), task.result_tx);
+
+                self.mark_worker_running(worker_id, &task_id).await;
+                let _ = task.claimed_tx.send(());
+                return Ok(task.dispatch);
             }
         };
 
@@ -350,6 +356,16 @@ impl WorkerPool {
             Ok(result) => result.map(Some),
             Err(_) => Ok(None),
         }
+    }
+
+    // Ensure that given pending task does not have matching in-flight tasks running for same workflow instance
+    fn is_workflow_instance_task_in_flight(
+        in_flight_tasks: &HashMap<String, InFlightTask>,
+        pending_task: &PendingTask,
+    ) -> bool {
+        in_flight_tasks
+            .iter()
+            .any(|(_, v)| v.workflow_inst_id == pending_task.dispatch.workflow_inst_id)
     }
 
     pub async fn complete_task_result(
@@ -376,7 +392,7 @@ impl WorkerPool {
             .lock()
             .await
             .get(task_id)
-            .map(|task| task.worker_id.clone())
+            .map(|task| task.worker_id.worker_id.0.clone())
     }
 
     async fn update_worker_liveness(&self) {
@@ -415,7 +431,7 @@ impl WorkerPool {
         };
 
         let waiter = self.result_waiters.lock().await.remove(task_id);
-        self.mark_worker_idle_if_current(&in_flight_task.worker_id, task_id)
+        self.mark_worker_idle_if_current(&in_flight_task.worker_id.worker_id.0, task_id)
             .await;
 
         if let Some(waiter) = waiter {
@@ -426,7 +442,7 @@ impl WorkerPool {
                 ),
             });
         } else {
-            warn!(worker_id = %in_flight_task.worker_id, task_id = %task_id, "timed out task had no result waiter");
+            warn!(worker_id = %in_flight_task.worker_id.worker_id.0, task_id = %task_id, "timed out task had no result waiter");
         }
     }
 
@@ -986,6 +1002,143 @@ mod tests {
         assert_eq!(pool.pending_tasks.lock().await.len(), 1);
         first.abort();
         second.abort();
+    }
+
+    #[tokio::test]
+    async fn worker_claim_skips_workflow_with_active_dispatch() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-1", "host-a"))
+            .await;
+        pool.register_worker(test_registration_for_host("worker-2", "host-a"))
+            .await;
+
+        let active_task = test_task("active-task");
+        let active_pool = pool.clone();
+        let active_execution = tokio::spawn(async move {
+            active_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &active_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        let active_claim = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let blocked_task = test_task("blocked-task");
+        let blocked_pool = pool.clone();
+        let blocked_execution = tokio::spawn(async move {
+            blocked_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &blocked_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        let other_task = test_task("other-task");
+        let other_pool = pool.clone();
+        let other_execution = tokio::spawn(async move {
+            other_pool
+                .enqueue_task(
+                    "workflow-2",
+                    &other_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        wait_for_pending_tasks(&pool, 2).await;
+
+        let other_claim = pool
+            .claim_task("worker-2", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(other_claim.workflow_inst_id, "workflow-2");
+        assert_eq!(pool.pending_tasks.lock().await.len(), 1);
+
+        pool.complete_task_result(
+            "worker-1",
+            TaskResult {
+                task_id: active_claim.task_id,
+                result: WorkerExecutionResult::Success {
+                    output: json!({"task": "active"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        let blocked_claim = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(blocked_claim.workflow_inst_id, "workflow-1");
+        assert_eq!(blocked_claim.task.id, "blocked-task");
+
+        pool.complete_task_result(
+            "worker-1",
+            TaskResult {
+                task_id: blocked_claim.task_id,
+                result: WorkerExecutionResult::Success {
+                    output: json!({"task": "blocked"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        pool.complete_task_result(
+            "worker-2",
+            TaskResult {
+                task_id: other_claim.task_id,
+                result: WorkerExecutionResult::Success {
+                    output: json!({"task": "other"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            unwrap_success(active_execution.await.unwrap().unwrap()),
+            json!({"task": "active"})
+        );
+        assert_eq!(
+            unwrap_success(blocked_execution.await.unwrap().unwrap()),
+            json!({"task": "blocked"})
+        );
+        assert_eq!(
+            unwrap_success(other_execution.await.unwrap().unwrap()),
+            json!({"task": "other"})
+        );
     }
 
     #[tokio::test]
