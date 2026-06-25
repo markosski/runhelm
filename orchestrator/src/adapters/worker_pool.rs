@@ -1,5 +1,7 @@
-use crate::core::models::{ExecutionMetadata, TaskDef};
-use crate::core::workflow::models::{WorkerHeartbeatState, WorkerHostId, WorkerId, WorkerIdentity};
+use crate::core::models::{ExecutionMetadata, TaskDef, TaskInstance};
+use crate::core::workflow::models::{
+    DispatchLease, WorkerHeartbeatState, WorkerHostId, WorkerId, WorkerIdentity,
+};
 use crate::ports::executor::ExecutionResult;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -10,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{self, Instant};
+use tokio::time;
 use tracing::{debug, warn};
 
 const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
@@ -126,14 +128,6 @@ struct PendingTask {
     timeout: Duration,
 }
 
-#[derive(Debug)]
-struct InFlightTask {
-    workflow_inst_id: String,
-    worker_id: WorkerIdentity,
-    claimed_at: Instant,
-    timeout: Duration,
-}
-
 /// Manages queues and in-flight worker tasks.
 /// Tasks are claimed by workers in FIFO order, and execution timeout tracking
 /// starts when a worker claims a task.
@@ -143,8 +137,8 @@ pub struct WorkerPool {
     workers: Arc<RwLock<HashMap<String, WorkerState>>>,
     // Queue of pending tasks waiting to be claimed by workers
     pending_tasks: Arc<Mutex<VecDeque<PendingTask>>>,
-    // Map of in-flight task IDs to their execution state
-    in_flight_tasks: Arc<Mutex<HashMap<String, InFlightTask>>>,
+    // Map of in-flight task IDs to their active dispatch lease
+    in_flight_tasks: Arc<Mutex<HashMap<String, DispatchLease>>>,
     // Map of task IDs to the oneshot sender waiting for their result
     result_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<WorkerExecutionResult>>>>,
     // Atomic counter for generating unique task dispatch IDs
@@ -319,13 +313,22 @@ impl WorkerPool {
                     };
                     let pending_task = pending_tasks.remove(index).unwrap();
 
+                    let claimed_at_epoch_ms = epoch_ms();
+                    let expires_at_epoch_ms =
+                        claimed_at_epoch_ms + pending_task.timeout.as_millis() as u64;
                     in_flight_tasks.insert(
                         pending_task.dispatch.task_id.clone(),
-                        InFlightTask {
-                            workflow_inst_id: pending_task.dispatch.workflow_inst_id.clone(),
-                            worker_id: worker.clone(),
-                            claimed_at: Instant::now(),
-                            timeout: pending_task.timeout,
+                        DispatchLease {
+                            dispatch_id: pending_task.dispatch.task_id.clone(),
+                            workflow_instance_id: pending_task.dispatch.workflow_inst_id.clone(),
+                            task_attempt_id: TaskInstance::make_task_attempt_id(
+                                &pending_task.dispatch.task.id,
+                                pending_task.dispatch.execution_metadata.generation_index,
+                            ),
+                            worker_id: worker.worker_id.clone(),
+                            host_id: worker.host_id.clone(),
+                            claimed_at_epoch_ms,
+                            expires_at_epoch_ms,
                         },
                     );
                     pending_task
@@ -360,12 +363,12 @@ impl WorkerPool {
 
     // Ensure that given pending task does not have matching in-flight tasks running for same workflow instance
     fn is_workflow_instance_task_in_flight(
-        in_flight_tasks: &HashMap<String, InFlightTask>,
+        in_flight_tasks: &HashMap<String, DispatchLease>,
         pending_task: &PendingTask,
     ) -> bool {
         in_flight_tasks
             .iter()
-            .any(|(_, v)| v.workflow_inst_id == pending_task.dispatch.workflow_inst_id)
+            .any(|(_, lease)| lease.workflow_instance_id == pending_task.dispatch.workflow_inst_id)
     }
 
     pub async fn complete_task_result(
@@ -392,7 +395,7 @@ impl WorkerPool {
             .lock()
             .await
             .get(task_id)
-            .map(|task| task.worker_id.worker_id.0.clone())
+            .map(|lease| lease.worker_id.0.clone())
     }
 
     async fn update_worker_liveness(&self) {
@@ -410,12 +413,12 @@ impl WorkerPool {
     }
 
     async fn complete_timed_out_tasks(&self) {
-        let now = Instant::now();
+        let now = epoch_ms();
         let timed_out_task_ids = {
             let in_flight_tasks = self.in_flight_tasks.lock().await;
             in_flight_tasks
                 .iter()
-                .filter(|(_, task)| now.duration_since(task.claimed_at) >= task.timeout)
+                .filter(|(_, lease)| lease.is_expired_at(now))
                 .map(|(task_id, _)| task_id.clone())
                 .collect::<Vec<_>>()
         };
@@ -426,23 +429,22 @@ impl WorkerPool {
     }
 
     async fn complete_task_timeout(&self, task_id: &str) {
-        let Some(in_flight_task) = self.in_flight_tasks.lock().await.remove(task_id) else {
+        let Some(lease) = self.in_flight_tasks.lock().await.remove(task_id) else {
             return;
         };
 
         let waiter = self.result_waiters.lock().await.remove(task_id);
-        self.mark_worker_idle_if_current(&in_flight_task.worker_id.worker_id.0, task_id)
+        self.mark_worker_idle_if_current(&lease.worker_id.0, task_id)
             .await;
 
         if let Some(waiter) = waiter {
+            let timeout =
+                Duration::from_millis(lease.expires_at_epoch_ms - lease.claimed_at_epoch_ms);
             let _ = waiter.send(WorkerExecutionResult::Failure {
-                reason: format!(
-                    "task {task_id} timed out after {:?}",
-                    in_flight_task.timeout
-                ),
+                reason: format!("task {task_id} timed out after {:?}", timeout),
             });
         } else {
-            warn!(worker_id = %in_flight_task.worker_id.worker_id.0, task_id = %task_id, "timed out task had no result waiter");
+            warn!(worker_id = %lease.worker_id.0, task_id = %task_id, "timed out task had no result waiter");
         }
     }
 
@@ -911,6 +913,56 @@ mod tests {
             .unwrap();
 
         assert_eq!(claimed.workflow_inst_id, "workflow-1");
+        execution.abort();
+    }
+
+    #[tokio::test]
+    async fn claimed_task_records_dispatch_lease_metadata() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-1", "host-a"))
+            .await;
+
+        let task = test_task("task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata {
+                        generation_index: 3,
+                        loop_context: None,
+                    },
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        let before_claim_epoch_ms = epoch_ms();
+        let claimed = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+        let after_claim_epoch_ms = epoch_ms();
+
+        let in_flight_tasks = pool.in_flight_tasks.lock().await;
+        let lease = in_flight_tasks.get(&claimed.task_id).unwrap();
+
+        assert_eq!(lease.dispatch_id, claimed.task_id);
+        assert_eq!(lease.workflow_instance_id, "workflow-1");
+        assert_eq!(lease.task_attempt_id, "task-1[3]");
+        assert_eq!(lease.worker_id, WorkerId::new("worker-1"));
+        assert_eq!(lease.host_id, WorkerHostId::new("host-a"));
+        assert!(lease.claimed_at_epoch_ms >= before_claim_epoch_ms);
+        assert!(lease.claimed_at_epoch_ms <= after_claim_epoch_ms);
+        assert_eq!(lease.expires_at_epoch_ms - lease.claimed_at_epoch_ms, 5_000);
+
         execution.abort();
     }
 
