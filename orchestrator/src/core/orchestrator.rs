@@ -3,7 +3,9 @@ use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::workflow::events::WorkflowInstanceEvent;
-use crate::core::workflow::models::{TaskDispatchConstraints, WorkflowInfo, WorkflowStatus};
+use crate::core::workflow::models::{
+    StartupWorkflowDiscovery, TaskDispatchConstraints, WorkflowInfo, WorkflowStatus,
+};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{
@@ -152,7 +154,7 @@ impl Orchestrator {
 
         let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
 
-        for info in self.list_active_workflow_info().await? {
+        for info in self.list_active_workflow_info().await?.runnable {
             let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
                 continue;
             };
@@ -178,7 +180,7 @@ impl Orchestrator {
 
     /// Requeues all active workflow instances found in storage.
     pub async fn enqueue_active_workflow_instances(&self) -> anyhow::Result<usize> {
-        let infos = self.list_active_workflow_info().await?;
+        let infos = self.list_active_workflow_info().await?.runnable;
         let count = infos.len();
 
         for info in infos {
@@ -210,33 +212,59 @@ impl Orchestrator {
         resolve_task_function_ref(self.storage.as_ref(), task).await
     }
 
-    async fn list_active_workflow_info(&self) -> anyhow::Result<Vec<WorkflowInfo>> {
+    async fn list_active_workflow_info(&self) -> anyhow::Result<StartupWorkflowDiscovery> {
         let mut cursor: Option<WorkflowInfoCursor> = None;
-        let mut infos = Vec::new();
+        let mut runnable_infos: Vec<WorkflowInfo> = Vec::new();
+        let mut blocked_infos: Vec<WorkflowInfo> = Vec::new();
 
         loop {
             let page = self
                 .storage
                 .list_workflow_info(WorkflowInfoListRequest {
-                    filters: active_workflow_filter(),
+                    filters: all_nonterminal_workflow_filter(),
                     page: WorkflowInfoPageRequest { limit: 100, cursor },
                 })
                 .await?;
-            infos.extend(page.workflows);
+
+            let runnable: Vec<WorkflowInfo> = page
+                .workflows
+                .iter()
+                .filter(|x| matches!(x.status, WorkflowStatus::Running | WorkflowStatus::Pending))
+                .map(|x| x.clone())
+                .collect();
+            let blocked: Vec<WorkflowInfo> = page
+                .workflows
+                .iter()
+                .filter(|x| {
+                    matches!(
+                        x.status,
+                        WorkflowStatus::Paused | WorkflowStatus::InputNeeded
+                    )
+                })
+                .map(|x| x.clone())
+                .collect();
+
+            runnable_infos.extend(runnable);
+            blocked_infos.extend(blocked);
             cursor = page.next_cursor;
             if cursor.is_none() {
                 break;
             }
         }
 
-        Ok(infos)
+        Ok(StartupWorkflowDiscovery {
+            runnable: runnable_infos,
+            blocked: blocked_infos,
+        })
     }
 }
 
-fn active_workflow_filter() -> Vec<WorkflowInstanceFilter> {
+fn all_nonterminal_workflow_filter() -> Vec<WorkflowInstanceFilter> {
     vec![WorkflowInstanceFilter::Statuses(vec![
         WorkflowStatus::Pending,
         WorkflowStatus::Running,
+        WorkflowStatus::Paused,
+        WorkflowStatus::InputNeeded,
     ])]
 }
 

@@ -182,3 +182,10 @@ pub struct WorkflowDef {
     pub tasks: Vec<TaskDef>,
     pub data_bindings: Vec<DataBinding>,
 }
+
+#[derive(Debug, Clone)]
+pub struct StartupWorkflowDiscovery {
+    pub runnable: Vec<WorkflowInfo>,
+    #[allow(dead_code)]
+    pub blocked: Vec<WorkflowInfo>,
+}

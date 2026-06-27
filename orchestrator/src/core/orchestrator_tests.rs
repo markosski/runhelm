@@ -830,6 +830,67 @@ async fn queue_status_lists_pending_workflows() {
 }
 
 #[tokio::test]
+async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+
+    for (id, status) in [
+        ("pending-workflow", WorkflowStatus::Pending),
+        ("running-workflow", WorkflowStatus::Running),
+        ("paused-workflow", WorkflowStatus::Paused),
+        ("input-needed-workflow", WorkflowStatus::InputNeeded),
+        ("completed-workflow", WorkflowStatus::Completed),
+        ("failed-workflow", WorkflowStatus::Failed),
+    ] {
+        let mut instance = workflow_instance(id, "workflow-1");
+        instance.status = status;
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+    }
+
+    let discovery = orchestrator.list_active_workflow_info().await.unwrap();
+    let mut runnable_ids: Vec<String> =
+        discovery.runnable.into_iter().map(|info| info.id).collect();
+    runnable_ids.sort();
+    let mut blocked_ids: Vec<String> = discovery.blocked.into_iter().map(|info| info.id).collect();
+    blocked_ids.sort();
+
+    assert_eq!(
+        runnable_ids,
+        vec![
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+    assert_eq!(
+        blocked_ids,
+        vec![
+            "input-needed-workflow".to_string(),
+            "paused-workflow".to_string(),
+        ]
+    );
+
+    let requeued = orchestrator
+        .enqueue_active_workflow_instances()
+        .await
+        .unwrap();
+    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    pending.sort();
+
+    assert_eq!(requeued, 2);
+    assert_eq!(
+        pending,
+        vec![
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn remove_and_purge_affect_pending_queue_only() {
     let orchestrator = orchestrator();
 

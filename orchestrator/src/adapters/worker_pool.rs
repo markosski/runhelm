@@ -1,9 +1,8 @@
-use crate::core::models::{ExecutionMetadata, TaskDef, TaskInstance};
+use crate::core::models::{ExecutionMetadata, TaskDef, TaskInstance, WorkspaceKey};
 use crate::core::workflow::models::{
     DispatchLease, TaskDispatchConstraints, WorkerHeartbeatState, WorkerHostId, WorkerId,
     WorkerIdentity,
 };
-use crate::core::workspace_manager::{workspace_key_for_task, workspace_path_suffix};
 use crate::ports::executor::ExecutionResult;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -21,6 +20,32 @@ const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 const HEARTBEAT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_MISSED_HEARTBEAT_THRESHOLD: u32 = 3;
+
+pub fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
+    match &task.workspace {
+        Some(workspace) => WorkspaceKey::Group {
+            workflow_inst_id: workflow_inst_id.to_string(),
+            group_name: workspace.group_name.clone(),
+        },
+        None => WorkspaceKey::Task {
+            workflow_inst_id: workflow_inst_id.to_string(),
+            task_id: task.id.clone(),
+        },
+    }
+}
+
+pub fn workspace_path_suffix(key: &WorkspaceKey) -> PathBuf {
+    match key {
+        WorkspaceKey::Task {
+            workflow_inst_id,
+            task_id,
+        } => PathBuf::from(workflow_inst_id).join(format!("taskid-{}", task_id)),
+        WorkspaceKey::Group {
+            workflow_inst_id,
+            group_name,
+        } => PathBuf::from(workflow_inst_id).join(format!("taskgroup-{}", group_name)),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkerRegistration {

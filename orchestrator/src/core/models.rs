@@ -234,6 +234,19 @@ pub fn verifier_decision_schema() -> serde_json::Value {
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkspaceKey {
+    Task {
+        workflow_inst_id: String,
+        task_id: String,
+    },
+    Group {
+        workflow_inst_id: String,
+        group_name: String,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

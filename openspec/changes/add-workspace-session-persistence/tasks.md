@@ -31,7 +31,7 @@
 
 ## 4. Workflow Resume and Human Input
 
-- [ ] 4.1 Add workflow recovery logic that discovers non-terminal workflow instances on orchestrator startup
+- [x] 4.1 Add workflow recovery logic that discovers non-terminal workflow instances on orchestrator startup
 - [ ] 4.2 Reconstruct or reload runnable startup workflow work while preserving existing workflow host pins and leaving `Paused`/`InputNeeded` workflows blocked until explicit resume
 - [ ] 4.3 Add restart recovery handling for abandoned running task attempts after in-memory dispatch leases are lost
 - [ ] 4.4 Add human-input submission API and domain events for durably recording submitted input
