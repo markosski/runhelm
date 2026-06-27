@@ -16,8 +16,8 @@
 - [x] 2.6 Update worker claim logic to dispatch only tasks whose workflow pin matches the claiming worker host
 - [x] 2.7 Prevent more than one active task dispatch per workflow instance
 - [x] 2.8 Record in-memory dispatch lease metadata in `WorkerPool` when a task is claimed by a worker
-- [ ] 2.9 Release or expire dispatch leases on task completion, worker disconnect, timeout, and late result paths
-- [ ] 2.10 Add worker pool tests for heartbeat registration, heartbeat deregistration, matching host claims, mismatched host rejection, multiple workers sharing a host, single active task per workflow instance, and pinned host loss behavior
+- [x] 2.9 Release or expire dispatch leases on task completion, worker disconnect, timeout, and late result paths
+- [x] 2.10 Add worker pool tests for heartbeat registration, heartbeat deregistration, heartbeat rejoin, matching host claims, mismatched host rejection, multiple workers sharing a host, and single active task per workflow instance
 
 ## 3. Workspace and Session Placement
 

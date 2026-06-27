@@ -3,7 +3,7 @@ use crate::core::workflow::models::{
     DispatchLease, WorkerHeartbeatState, WorkerHostId, WorkerId, WorkerIdentity,
 };
 use crate::ports::executor::ExecutionResult;
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -299,6 +299,10 @@ impl WorkerPool {
 
                 let task = {
                     let mut in_flight_tasks = self.in_flight_tasks.lock().await;
+                    if Self::is_worker_in_flight(&in_flight_tasks, worker_id) {
+                        bail!("Worker has active lease")
+                    }
+
                     let mut pending_tasks = self.pending_tasks.lock().await;
                     let Some(index) = pending_tasks.iter().position(|task| {
                         task.constraints.matches_worker(&worker)
@@ -369,6 +373,10 @@ impl WorkerPool {
         in_flight_tasks
             .iter()
             .any(|(_, lease)| lease.workflow_instance_id == pending_task.dispatch.workflow_inst_id)
+    }
+
+    fn is_worker_in_flight(leases: &HashMap<String, DispatchLease>, worker_id: &str) -> bool {
+        leases.values().any(|lease| lease.worker_id.0 == worker_id)
     }
 
     pub async fn complete_task_result(
@@ -660,6 +668,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deregistered_worker_rejoins_by_heartbeat() {
+        let pool = heartbeat_test_pool();
+        pool.tick_worker_heartbeat(test_registration_for_host("worker-1", "host-a"))
+            .await;
+
+        time::sleep(Duration::from_millis(35)).await;
+        pool.update_worker_liveness().await;
+        assert!(!pool.workers.read().await.contains_key("worker-1"));
+
+        pool.tick_worker_heartbeat(test_registration_for_host("worker-1", "host-a"))
+            .await;
+
+        let workers = pool.workers.read().await;
+        let worker = workers.get("worker-1").unwrap();
+        assert_eq!(worker.identity.worker_id, WorkerId::new("worker-1"));
+        assert_eq!(worker.identity.host_id, WorkerHostId::new("host-a"));
+        assert!(!worker.heartbeat.missed_heartbeat);
+    }
+
+    #[tokio::test]
     async fn select_eligible_host_returns_registered_non_suspicious_host() {
         let pool = WorkerPool::new();
         pool.register_worker(test_registration_for_host("worker-z", "host-z"))
@@ -728,6 +756,101 @@ mod tests {
         assert_eq!(
             unwrap_success(execution.await.unwrap().unwrap()),
             json!({"worker": "worker-1"})
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_with_active_lease_cannot_claim_another_task() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration("worker-1")).await;
+
+        let first_task = test_task("task-1");
+        let first_pool = pool.clone();
+        let first_execution = tokio::spawn(async move {
+            first_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &first_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints::default(),
+                )
+                .await
+        });
+
+        let first_claim = pool
+            .claim_task("worker-1", Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let second_task = test_task("task-2");
+
+        // Clonig again so that when clone is moved we can still operate on the original pool, internals of the pools are behind Arcs
+        let second_pool = pool.clone();
+        let second_execution = tokio::spawn(async move {
+            second_pool
+                .enqueue_task(
+                    "workflow-2",
+                    &second_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints::default(),
+                )
+                .await
+        });
+
+        wait_for_pending_tasks(&pool, 1).await;
+
+        let error = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("active lease"));
+
+        pool.complete_task_result(
+            "worker-1",
+            TaskResult {
+                task_id: first_claim.task_id,
+                result: WorkerExecutionResult::Success {
+                    output: json!({"task": "first"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        let second_claim = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second_claim.workflow_inst_id, "workflow-2");
+        assert_eq!(second_claim.task.id, "task-2");
+
+        pool.complete_task_result(
+            "worker-1",
+            TaskResult {
+                task_id: second_claim.task_id,
+                result: WorkerExecutionResult::Success {
+                    output: json!({"task": "second"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            unwrap_success(first_execution.await.unwrap().unwrap()),
+            json!({"task": "first"})
+        );
+        assert_eq!(
+            unwrap_success(second_execution.await.unwrap().unwrap()),
+            json!({"task": "second"})
         );
     }
 
@@ -914,6 +1037,69 @@ mod tests {
 
         assert_eq!(claimed.workflow_inst_id, "workflow-1");
         execution.abort();
+    }
+
+    #[tokio::test]
+    async fn multiple_workers_sharing_host_can_claim_pinned_workflows() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-1", "host-a"))
+            .await;
+        pool.register_worker(test_registration_for_host("worker-2", "host-a"))
+            .await;
+
+        let task_a = test_task("task-a");
+        let first_pool = pool.clone();
+        let first_execution = tokio::spawn(async move {
+            first_pool
+                .enqueue_task(
+                    "workflow-a",
+                    &task_a,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        let task_b = test_task("task-b");
+        let second_pool = pool.clone();
+        let second_execution = tokio::spawn(async move {
+            second_pool
+                .enqueue_task(
+                    "workflow-b",
+                    &task_b,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    test_workspace_path(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        wait_for_pending_tasks(&pool, 2).await;
+
+        let first_claim = pool
+            .claim_task("worker-1", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+        let second_claim = pool
+            .claim_task("worker-2", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(first_claim.workflow_inst_id, "workflow-a");
+        assert_eq!(second_claim.workflow_inst_id, "workflow-b");
+        first_execution.abort();
+        second_execution.abort();
     }
 
     #[tokio::test]

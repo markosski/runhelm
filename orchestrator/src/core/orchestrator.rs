@@ -110,7 +110,7 @@ impl Orchestrator {
     }
 
     /// Continuously consumes queued workflow instances and runs up to `max_concurrent_workflows`.
-    pub async fn run_scheduler(self: Arc<Self>, max_concurrent_workflows: usize) {
+    pub async fn run_workflow_queue(self: Arc<Self>, max_concurrent_workflows: usize) {
         let max_concurrent_workflows = max_concurrent_workflows.max(1);
         let permits = Arc::new(Semaphore::new(max_concurrent_workflows));
         info!(max_concurrent_workflows, "workflow scheduler started");

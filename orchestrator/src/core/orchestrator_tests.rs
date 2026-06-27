@@ -396,7 +396,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
         queue,
         Arc::new(test_workspace_manager("orchestrator-concurrency")),
     ));
-    let scheduler = tokio::spawn(orchestrator.clone().run_scheduler(2));
+    let scheduler = tokio::spawn(orchestrator.clone().run_workflow_queue(2));
 
     for id in ["workflow-1", "workflow-2", "workflow-3"] {
         storage

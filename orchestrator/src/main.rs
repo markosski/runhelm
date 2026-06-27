@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(
         orchestrator
             .clone()
-            .run_scheduler(max_concurrent_workflows()),
+            .run_workflow_queue(max_concurrent_workflows()),
     );
 
     // Setup API (Interface Layer)
