@@ -21,11 +21,11 @@
 
 ## 3. Workspace and Session Placement
 
-- [ ] 3.1 Refactor workspace key derivation so the orchestrator can dispatch logical workspace metadata without requiring an orchestrator-local path
-- [ ] 3.2 Add workflow pin lookup before dispatching tasks for every workflow instance
-- [ ] 3.3 Update task dispatch payloads to include logical workspace metadata and the selected workflow pin host
-- [ ] 3.4 Move worker-task workspace materialization to the executing worker side using the worker-local workspace root
-- [ ] 3.5 Add `.timestamp` touch behavior when the worker creates or resolves a local workspace
+- [x] 3.1 Refactor workspace key derivation so the orchestrator can dispatch logical workspace metadata without requiring an orchestrator-local path
+- [x] 3.2 Add workflow pin lookup before dispatching tasks for every workflow instance
+- [x] 3.3 Update task dispatch payloads to include logical workspace metadata and the selected workflow pin host
+- [x] 3.4 Move worker-task workspace materialization to the executing worker side using the worker-local workspace root
+- [x] 3.5 Add `.timestamp` touch behavior when the worker creates or resolves a local workspace
 - [ ] 3.6 Make host-local reusable Agent sessions respect the workflow pin
 - [ ] 3.7 Add tests for shared workspace workflow pin reuse across tasks, paused workflow pin retention, and Agent continuation behavior under a workflow pin
 

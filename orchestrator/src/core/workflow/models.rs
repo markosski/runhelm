@@ -30,6 +30,20 @@ pub struct WorkerIdentity {
     pub host_id: WorkerHostId,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskDispatchConstraints {
+    pub pinned_host_id: Option<WorkerHostId>,
+}
+
+impl TaskDispatchConstraints {
+    pub fn matches_worker(&self, worker: &WorkerIdentity) -> bool {
+        match &self.pinned_host_id {
+            Some(host_id) => host_id == &worker.host_id,
+            None => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct WorkerHeartbeatState {

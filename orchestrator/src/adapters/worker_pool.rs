@@ -1,12 +1,14 @@
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskInstance};
 use crate::core::workflow::models::{
-    DispatchLease, WorkerHeartbeatState, WorkerHostId, WorkerId, WorkerIdentity,
+    DispatchLease, TaskDispatchConstraints, WorkerHeartbeatState, WorkerHostId, WorkerId,
+    WorkerIdentity,
 };
+use crate::core::workspace_manager::{workspace_key_for_task, workspace_path_suffix};
 use crate::ports::executor::ExecutionResult;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -46,25 +48,11 @@ pub struct TaskDispatch {
     pub workflow_inst_id: String,
     pub task_id: String,
     pub task: TaskDef,
-    pub workspace_path: PathBuf,
+    pub workspace_path_suffix: PathBuf,
     #[serde(default)]
     pub inputs: Vec<serde_json::Value>,
     #[serde(default)]
     pub execution_metadata: ExecutionMetadata,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TaskDispatchConstraints {
-    pub pinned_host_id: Option<WorkerHostId>,
-}
-
-impl TaskDispatchConstraints {
-    fn matches_worker(&self, worker: &WorkerIdentity) -> bool {
-        match &self.pinned_host_id {
-            Some(host_id) => host_id == &worker.host_id,
-            None => true,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,7 +231,6 @@ impl WorkerPool {
         inputs: &[serde_json::Value],
         timeout: Duration,
         execution_metadata: ExecutionMetadata,
-        workspace_path: &Path,
         constraints: TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let task_id = format!(
@@ -255,12 +242,15 @@ impl WorkerPool {
         let (result_tx, result_rx) = oneshot::channel();
         let (claimed_tx, claimed_rx) = oneshot::channel();
 
+        let workspace_key = workspace_key_for_task(workflow_inst_id, task);
+        let workspace_path_suffix = workspace_path_suffix(&workspace_key);
+
         self.pending_tasks.lock().await.push_back(PendingTask {
             dispatch: TaskDispatch {
                 workflow_inst_id: workflow_inst_id.to_string(),
                 task_id: task_id.clone(),
                 task: task.clone(),
-                workspace_path: workspace_path.to_path_buf(),
+                workspace_path_suffix,
                 inputs: inputs.to_vec(),
                 execution_metadata,
             },
@@ -541,10 +531,6 @@ mod tests {
     use crate::core::models::{TaskDef, TaskTypeDef};
     use serde_json::json;
 
-    fn test_workspace_path() -> &'static Path {
-        Path::new("/tmp/runhelm-test-workspace")
-    }
-
     fn test_registration(worker_id: &str) -> WorkerRegistration {
         test_registration_for_host(worker_id, "test-host")
     }
@@ -727,7 +713,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints::default(),
                 )
                 .await
@@ -774,7 +759,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints::default(),
                 )
                 .await
@@ -798,7 +782,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints::default(),
                 )
                 .await
@@ -869,7 +852,6 @@ mod tests {
                     &[],
                     Duration::from_millis(10),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints::default(),
                 )
                 .await
@@ -917,7 +899,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints::default(),
                 )
                 .await
@@ -935,12 +916,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claimed_task_dispatch_includes_workspace_path() {
+    async fn claimed_task_dispatch_includes_logical_workspace_metadata() {
         let pool = WorkerPool::new();
         pool.register_worker(test_registration("worker-1")).await;
 
         let task = test_task("task-1");
-        let workspace_path = Path::new("/workspaces/workflow-1/taskid-task-1");
         let execution_pool = pool.clone();
         let execution = tokio::spawn(async move {
             execution_pool
@@ -950,7 +930,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    workspace_path,
                     TaskDispatchConstraints::default(),
                 )
                 .await
@@ -962,10 +941,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(claimed.workspace_path, workspace_path);
         assert_eq!(
-            serde_json::to_value(&claimed).unwrap()["workspace_path"],
-            json!("/workspaces/workflow-1/taskid-task-1")
+            serde_json::to_value(&claimed).unwrap()["workspace_path_suffix"],
+            json!("123/taskid-task-1")
         );
 
         execution.abort();
@@ -984,7 +962,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1021,7 +998,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1057,7 +1033,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1075,7 +1050,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1121,7 +1095,6 @@ mod tests {
                         generation_index: 3,
                         loop_context: None,
                     },
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1168,7 +1141,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1205,7 +1177,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1221,7 +1192,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-b")),
                     },
@@ -1260,7 +1230,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1284,7 +1253,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1302,7 +1270,6 @@ mod tests {
                     &[],
                     Duration::from_secs(5),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
                     },
@@ -1394,7 +1361,6 @@ mod tests {
                     &[],
                     Duration::from_millis(10),
                     ExecutionMetadata::default(),
-                    test_workspace_path(),
                     TaskDispatchConstraints::default(),
                 )
                 .await

@@ -7,11 +7,10 @@ use crate::core::models::{
 };
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
-    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowDef,
-    WorkflowInstance, WorkflowStatus,
+    TaskDispatchConstraints, VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
+    WorkflowDef, WorkflowInstance, WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
-use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +23,6 @@ mod tests;
 pub struct WorkflowEngine {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
-    workspace_manager: Arc<WorkspaceManager>,
 }
 
 #[derive(Default)]
@@ -46,13 +44,8 @@ impl WorkflowEngine {
     pub fn new(
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
-        workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
-        Self {
-            storage,
-            executor,
-            workspace_manager,
-        }
+        Self { storage, executor }
     }
 
     /// Returns a lightweight status snapshot of a workflow instance.
@@ -230,11 +223,6 @@ impl WorkflowEngine {
                     .find(|t| t.id == task_instance.task_def_id)
                     .unwrap();
 
-                // Ensure workspace is available and mark it as recently used before execution.
-                let workspace_path = self
-                    .workspace_manager
-                    .create_or_time_stamp_workspace(&workflow_instance.id, &task_def)?;
-
                 let resolved_inputs = self
                     .resolve_inputs(
                         &workflow_instance,
@@ -279,6 +267,9 @@ impl WorkflowEngine {
 
                 let metadata =
                     self.execution_metadata(&workflow_instance, &workflow_def, &task_instance);
+                let dispatch = TaskDispatchConstraints {
+                    pinned_host_id: workflow_instance.pinned_worker_host.clone(),
+                };
 
                 let execution_result =
                     match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
@@ -289,7 +280,7 @@ impl WorkflowEngine {
                                     &resolved_task_def,
                                     &inputs,
                                     &metadata,
-                                    &workspace_path,
+                                    &dispatch,
                                 )
                                 .await
                         }

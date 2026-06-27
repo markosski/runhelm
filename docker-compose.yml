@@ -6,9 +6,6 @@ services:
       - "0.0.0.0:3000:3000"
     environment:
       RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
-      RUNHELM_WORKSPACE_ROOT: /workspaces
-    volumes:
-      - runhelm-workspaces:/workspaces
     read_only: true
     tmpfs:
       - /tmp
@@ -29,6 +26,7 @@ services:
     environment:
       RUNHELM_ORCHESTRATOR_HTTP_URL: http://orchestrator:3001
       RUNHELM_WORKER_HOST_ID: compose-local-host
+      RUNHELM_WORKSPACE_ROOT: /workspaces
     volumes:
       - ${HOME}/.runhelm:/home/runhelm/.runhelm:ro
       - ${RUNHELM_SKILLS_DIR:-${HOME}/.runhelm/skills}:/home/runhelm/.pi/agent/skills:ro

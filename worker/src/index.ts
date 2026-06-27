@@ -2,10 +2,11 @@ import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
 import { FileCredentialsAdapter, defaultCredentialsFilePath } from './adapters/FileCredentialsAdapter.js';
 import { FileSessionStore } from './adapters/FileSessionStore.js';
-import type { TaskExecutionPayload } from './core/models/TaskDef.js';
+import type { TaskDispatchPayload, TaskExecutionPayload } from './core/models/TaskDef.js';
 import type { CredentialsPort } from './core/ports/CredentialsPort.js';
 import type { SessionStore } from './core/ports/SessionStore.js';
 import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
+import { materializeTaskWorkspace } from './core/WorkspaceManager.js';
 
 import * as os from 'os';
 import { logger } from './utils/logger.js';
@@ -32,7 +33,7 @@ type NoTaskMessage = {
     type: 'no_task';
 };
 
-type TaskDispatchMessage = TaskExecutionPayload & {
+type TaskDispatchMessage = TaskDispatchPayload & {
     type: 'task_dispatch';
     task_id: string;
 };
@@ -333,7 +334,9 @@ async function runWorker(
 
         logger.info({ taskId: message.task_id }, "Claimed task dispatch");
         // TODO: consider adding a timeout for task execution and implement a heartbeat mechanism to let the orchestrator know the worker is still alive and working on the task, especially for long-running tasks
-        const result = await processTask(message, executorFactory, credentialsAdapter, sessionStore, ajv);
+        const result = await materializeTaskWorkspace(message)
+            .then((payload) => processTask(payload, executorFactory, credentialsAdapter, sessionStore, ajv))
+            .catch((error) => ({ kind: 'failure' as const, reason: describeError(error) }));
         await postTaskResultUntilAck(baseUrl, message.task_id, result);
         logger.info({ taskId: message.task_id, resultKind: result.kind }, "Task result acknowledged");
     }

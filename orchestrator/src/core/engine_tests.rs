@@ -3,69 +3,24 @@ use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::core::models::*;
 use crate::core::workflow::models::DataBinding;
-use crate::core::workspace_manager::WorkspaceManagerConfig;
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use async_trait::async_trait;
 use serde_json::Number;
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn make_engine() -> WorkflowEngine {
     WorkflowEngine::new(
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
-        Arc::new(test_workspace_manager("engine-default")),
     )
 }
 
 fn make_engine_with_executor(executor: Arc<dyn ExecutorPort + Send + Sync>) -> WorkflowEngine {
-    WorkflowEngine::new(
-        Arc::new(MemoryStorage::new()),
-        executor,
-        Arc::new(test_workspace_manager("engine-executor")),
-    )
-}
-
-fn make_engine_with_executor_and_workspace_root(
-    executor: Arc<dyn ExecutorPort + Send + Sync>,
-    workspace_root: PathBuf,
-) -> WorkflowEngine {
-    WorkflowEngine::new(
-        Arc::new(MemoryStorage::new()),
-        executor,
-        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
-            root: workspace_root,
-            ttl: Duration::from_secs(3600),
-            vacuum_interval: Duration::from_secs(60),
-        })),
-    )
-}
-
-fn temp_workspace_root(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-
-    std::env::temp_dir().join(format!(
-        "runhelm-{}-{}-{}",
-        test_name,
-        std::process::id(),
-        nanos
-    ))
-}
-
-fn test_workspace_manager(test_name: &str) -> WorkspaceManager {
-    WorkspaceManager::new(WorkspaceManagerConfig {
-        root: temp_workspace_root(test_name),
-        ttl: Duration::from_secs(3600),
-        vacuum_interval: Duration::from_secs(60),
-    })
+    WorkflowEngine::new(Arc::new(MemoryStorage::new()), executor)
 }
 
 struct ContinueThenCompleteExecutor;
@@ -78,7 +33,7 @@ impl ExecutorPort for ContinueThenCompleteExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
-        _workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             let generation = metadata
@@ -109,7 +64,7 @@ impl ExecutorPort for CompleteVerifierExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
@@ -129,7 +84,7 @@ impl ExecutorPort for AlwaysContinueVerifierExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({
@@ -147,7 +102,6 @@ struct RecordedExecution {
     workflow_inst_id: String,
     task_id: String,
     generation_index: u32,
-    workspace_path: PathBuf,
     reuse_session: Option<bool>,
     feedback_count: usize,
 }
@@ -176,7 +130,7 @@ impl ExecutorPort for RecordingContinueExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
-        workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let reuse_session = match &task.kind {
             TaskTypeDef::Agent { reuse_session, .. } => Some(*reuse_session),
@@ -186,7 +140,6 @@ impl ExecutorPort for RecordingContinueExecutor {
             workflow_inst_id: workflow_inst_id.to_string(),
             task_id: task.id.clone(),
             generation_index: metadata.generation_index,
-            workspace_path: workspace_path.to_path_buf(),
             reuse_session,
             feedback_count: metadata
                 .loop_context
@@ -817,9 +770,7 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
 #[tokio::test]
 async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
     let executor = Arc::new(RecordingContinueExecutor::new());
-    let workspace_root = temp_workspace_root("engine-rerun-workspace");
-    let engine =
-        make_engine_with_executor_and_workspace_root(executor.clone(), workspace_root.clone());
+    let engine = make_engine_with_executor(executor.clone());
     let def = WorkflowDef {
         id: "def-agent-session-identity".to_string(),
         tasks: vec![
@@ -851,7 +802,6 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
             workflow_inst_id: instance_id.clone(),
             task_id: "task-a".to_string(),
             generation_index: 1,
-            workspace_path: agent_records[0].workspace_path.clone(),
             reuse_session: Some(true),
             feedback_count: 0,
         }
@@ -862,49 +812,9 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
             workflow_inst_id: instance_id.clone(),
             task_id: "task-a".to_string(),
             generation_index: 2,
-            workspace_path: agent_records[0].workspace_path.clone(),
             reuse_session: Some(true),
             feedback_count: 1,
         }
-    );
-    assert_eq!(
-        agent_records[0].workspace_path,
-        agent_records[1].workspace_path
-    );
-    assert_eq!(
-        agent_records[0].workspace_path,
-        workspace_root.join(&instance_id).join("taskid-task-a")
-    );
-}
-
-#[tokio::test]
-async fn test_group_workspace_dispatch_uses_group_path_instead_of_private_task_path() {
-    let executor = Arc::new(RecordingContinueExecutor::new());
-    let workspace_root = temp_workspace_root("engine-group-workspace-dispatch");
-    let engine =
-        make_engine_with_executor_and_workspace_root(executor.clone(), workspace_root.clone());
-    let mut grouped_task = task_def("clone-repo", json!({ "type": "object" }));
-    grouped_task.workspace = Some(Workspace {
-        group_name: "repo".to_string(),
-    });
-    let def = WorkflowDef {
-        id: "def-group-workspace-dispatch".to_string(),
-        tasks: vec![grouped_task],
-        data_bindings: vec![],
-    };
-
-    let instance_id = setup(&engine, def).await;
-    engine
-        .run_workflow_instance(instance_id.clone())
-        .await
-        .unwrap();
-
-    let records = executor.records();
-
-    assert_eq!(records.len(), 1);
-    assert_eq!(
-        records[0].workspace_path,
-        workspace_root.join(&instance_id).join("taskgroup-repo")
     );
 }
 

@@ -58,8 +58,13 @@ export interface ExecutionMetadata {
 export interface TaskExecutionPayload {
     workflow_inst_id: string;
     task: TaskDef;
+    workspace_path_suffix?: string;
     workspace_path: string;
     inputs: any[];
     execution_metadata?: ExecutionMetadata;
     input_provided?: string;
 }
+
+export type TaskDispatchPayload = Omit<TaskExecutionPayload, 'workspace_path' | 'workspace_path_suffix'> & {
+    workspace_path_suffix: string;
+};

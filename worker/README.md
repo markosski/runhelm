@@ -339,10 +339,14 @@ Task response:
 {
   "type": "task_dispatch",
   "task_id": "summarize_user-0",
+  "workflow_inst_id": "workflow-1",
   "task": {},
+  "workspace_path_suffix": "workflow-1/taskid-summarize_user",
   "inputs": []
 }
 ```
+
+The worker resolves `workspace_path_suffix` under its own `RUNHELM_WORKSPACE_ROOT`, creates the directory, updates `.timestamp`, and passes that worker-local absolute path to the task executor.
 
 Empty response:
 
@@ -523,6 +527,7 @@ kind:
 | --- | --- | --- |
 | `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3001` | Worker API base URL used for worker registration, task claiming, and task completion. |
 | `RUNHELM_WORKER_HOST_ID` | required | Stable host identity sent during registration. Use the same value for workers that share durable workspace and session roots. |
+| `RUNHELM_WORKSPACE_ROOT` | `$HOME/.cache/runhelm/workspaces` | Root directory where dispatched `workspace_path_suffix` values are materialized before task execution. The Docker Compose worker sets this to `/workspaces`. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
 | `RUNHELM_TASK_TIMEOUT_SECS` | `300` | Orchestrator fallback timeout for tasks that do not set `timeout_secs`. |

@@ -10,17 +10,14 @@ use crate::core::models::{
 };
 use crate::core::workflow::models::{DataBinding, WorkerHostId, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
-use crate::core::workspace_manager::WorkspaceManagerConfig;
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, sleep};
 
 fn orchestrator() -> Orchestrator {
@@ -28,7 +25,6 @@ fn orchestrator() -> Orchestrator {
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
         Arc::new(MemoryWorkflowQueue::new(10)),
-        Arc::new(test_workspace_manager("orchestrator-default")),
     )
 }
 
@@ -39,33 +35,10 @@ fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionServi
             storage.clone(),
             Arc::new(FakeExecutor::new()),
             Arc::new(MemoryWorkflowQueue::new(10)),
-            Arc::new(test_workspace_manager("orchestrator-services")),
         ),
         WorkflowService::new(storage.clone()),
         FunctionService::new(storage),
     )
-}
-
-fn temp_root(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-
-    std::env::temp_dir().join(format!(
-        "runhelm-{}-{}-{}",
-        test_name,
-        std::process::id(),
-        nanos
-    ))
-}
-
-fn test_workspace_manager(test_name: &str) -> WorkspaceManager {
-    WorkspaceManager::new(WorkspaceManagerConfig {
-        root: temp_root(test_name),
-        ttl: Duration::from_secs(3600),
-        vacuum_interval: Duration::from_secs(60),
-    })
 }
 
 struct CountingExecutor {
@@ -96,7 +69,7 @@ impl ExecutorPort for CountingExecutor {
         _task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -110,7 +83,6 @@ impl ExecutorPort for CountingExecutor {
 struct RecordedIsolatedExecution {
     workflow_inst_id: String,
     task_id: String,
-    workspace_path: PathBuf,
 }
 
 struct RecordingIsolatedExecutor {
@@ -137,7 +109,7 @@ impl ExecutorPort for RecordingIsolatedExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         self.records
             .lock()
@@ -145,7 +117,6 @@ impl ExecutorPort for RecordingIsolatedExecutor {
             .push(RecordedIsolatedExecution {
                 workflow_inst_id: workflow_inst_id.to_string(),
                 task_id: task.id.clone(),
-                workspace_path: workspace_path.to_path_buf(),
             });
         Ok(ExecutionResult::Success(json!({})))
     }
@@ -294,11 +265,6 @@ async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
         storage,
         executor.clone(),
         Arc::new(MemoryWorkflowQueue::new(10)),
-        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
-            root: temp_root("isolated-id"),
-            ttl: Duration::from_secs(3600),
-            vacuum_interval: Duration::from_secs(60),
-        })),
     );
 
     workflow_service
@@ -320,46 +286,6 @@ async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
             .starts_with("isolated-workflow1-taska-")
     );
     assert_ne!(records[0].workflow_inst_id, "123");
-}
-
-#[tokio::test]
-async fn execute_workflow_task_isolated_creates_workspace_for_isolated_execution() {
-    let storage = Arc::new(MemoryStorage::new());
-    let executor = Arc::new(RecordingIsolatedExecutor::new());
-    let workflow_service = WorkflowService::new(storage.clone());
-    let workspace_root = temp_root("isolated-workspace");
-    let orchestrator = Orchestrator::new(
-        storage,
-        executor.clone(),
-        Arc::new(MemoryWorkflowQueue::new(10)),
-        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
-            root: workspace_root.clone(),
-            ttl: Duration::from_secs(3600),
-            vacuum_interval: Duration::from_secs(60),
-        })),
-    );
-
-    workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
-        .await
-        .unwrap();
-
-    orchestrator
-        .execute_workflow_task_isolated("workflow1", "taska", &[])
-        .await
-        .unwrap();
-
-    let records = executor.records();
-    let record = records.first().unwrap();
-    assert!(record.workspace_path.is_dir());
-    assert!(record.workspace_path.join(".timestamp").is_file());
-    assert!(record.workspace_path.starts_with(&workspace_root));
-    assert_eq!(
-        record.workspace_path,
-        workspace_root
-            .join(&record.workflow_inst_id)
-            .join("taskid-taska")
-    );
 }
 
 #[tokio::test]
@@ -390,12 +316,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
     let storage = Arc::new(MemoryStorage::new());
     let executor = Arc::new(CountingExecutor::new(Duration::from_millis(50)));
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Arc::new(Orchestrator::new(
-        storage.clone(),
-        executor.clone(),
-        queue,
-        Arc::new(test_workspace_manager("orchestrator-concurrency")),
-    ));
+    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue));
     let scheduler = tokio::spawn(orchestrator.clone().run_workflow_queue(2));
 
     for id in ["workflow-1", "workflow-2", "workflow-3"] {
@@ -886,12 +807,7 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
 async fn queue_status_lists_pending_workflows() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(
-        storage.clone(),
-        Arc::new(FakeExecutor::new()),
-        queue,
-        Arc::new(test_workspace_manager("orchestrator-queue-status")),
-    );
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
 
     let mut running = workflow_instance("running-workflow", "workflow-1");
     running.status = WorkflowStatus::Running;

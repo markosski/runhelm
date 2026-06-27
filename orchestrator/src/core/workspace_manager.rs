@@ -15,6 +15,7 @@ const DEFAULT_WORKSPACE_TTL_SECS: u64 = 900;
 const DEFAULT_WORKSPACE_VACUUM_INTERVAL_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkspaceKey {
     Task {
         workflow_inst_id: String,
@@ -54,8 +55,7 @@ impl WorkspaceManager {
     }
 
     pub fn ensure_workspace(&self, workflow_inst_id: &str, task: &TaskDef) -> Result<PathBuf> {
-        let key = workspace_key_for_task(workflow_inst_id, task);
-        let full_path = workspace_path(&self.config.root, &key);
+        let full_path = self.workspace_path_for_task(workflow_inst_id, task);
         if full_path.is_dir() {
             Ok(full_path)
         } else {
@@ -75,6 +75,11 @@ impl WorkspaceManager {
         fs::write(file_path, unix_timestamp()?.to_string())?;
 
         Ok(workspace_path)
+    }
+
+    pub fn workspace_path_for_task(&self, workflow_inst_id: &str, task: &TaskDef) -> PathBuf {
+        let key = workspace_key_for_task(workflow_inst_id, task);
+        workspace_path(&self.config.root, &key)
     }
 
     pub fn vacuum(&self) -> Result<()> {
@@ -184,7 +189,7 @@ fn default_workspace_root(home: String) -> PathBuf {
         .join("workspaces")
 }
 
-fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
+pub fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
     match &task.workspace {
         Some(workspace) => WorkspaceKey::Group {
             workflow_inst_id: workflow_inst_id.to_string(),
@@ -197,23 +202,21 @@ fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKe
     }
 }
 
-pub fn workspace_path(root: &Path, key: &WorkspaceKey) -> PathBuf {
+pub fn workspace_path_suffix(key: &WorkspaceKey) -> PathBuf {
     match key {
         WorkspaceKey::Task {
             workflow_inst_id,
             task_id,
-        } => root
-            .join(workflow_inst_id)
-            .join(format!("taskid-{}", task_id))
-            .to_path_buf(),
+        } => PathBuf::from(workflow_inst_id).join(format!("taskid-{}", task_id)),
         WorkspaceKey::Group {
             workflow_inst_id,
             group_name,
-        } => root
-            .join(workflow_inst_id)
-            .join(format!("taskgroup-{}", group_name))
-            .to_path_buf(),
+        } => PathBuf::from(workflow_inst_id).join(format!("taskgroup-{}", group_name)),
     }
+}
+
+pub fn workspace_path(root: &Path, key: &WorkspaceKey) -> PathBuf {
+    root.join(workspace_path_suffix(key))
 }
 
 pub fn start_workspace_vacuum_task(workspace_manager: Arc<WorkspaceManager>) -> JoinHandle<()> {
@@ -248,7 +251,7 @@ mod tests {
         models::{FunctionTaskDef, TaskDef, TaskTypeDef, Workspace},
         workspace_manager::{
             WorkspaceKey, WorkspaceManager, WorkspaceManagerConfig, workspace_key_for_task,
-            workspace_path, workspace_root_from_values,
+            workspace_path, workspace_path_suffix, workspace_root_from_values,
         },
     };
     use serde_json::json;
@@ -346,6 +349,36 @@ mod tests {
         let given = workspace_path(Path::new("/root/workspace"), &workspace_key);
 
         assert_eq!(expected.to_string(), given.to_str().to_owned().unwrap());
+    }
+
+    #[test]
+    fn workspace_path_suffix_for_private_task_is_root_relative() {
+        let workspace_key = WorkspaceKey::Task {
+            workflow_inst_id: "1234".to_string(),
+            task_id: "123".to_owned(),
+        };
+
+        assert_eq!(
+            PathBuf::from("1234").join("taskid-123"),
+            workspace_path_suffix(&workspace_key)
+        );
+    }
+
+    #[test]
+    fn workspace_key_serializes_as_logical_dispatch_metadata() {
+        let workspace_key = WorkspaceKey::Group {
+            workflow_inst_id: "workflow1".to_string(),
+            group_name: "repo".to_string(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&workspace_key).unwrap(),
+            json!({
+                "kind": "group",
+                "workflow_inst_id": "workflow1",
+                "group_name": "repo"
+            })
+        );
     }
 
     #[test]
@@ -453,6 +486,19 @@ mod tests {
         let given = workspace_path(Path::new("/root/workspace"), &workspace_key);
 
         assert_eq!(expected.to_string(), given.to_str().to_owned().unwrap());
+    }
+
+    #[test]
+    fn workspace_path_suffix_for_group_is_root_relative() {
+        let workspace_key = WorkspaceKey::Group {
+            workflow_inst_id: "1234".to_string(),
+            group_name: "foobar".to_string(),
+        };
+
+        assert_eq!(
+            PathBuf::from("1234").join("taskgroup-foobar"),
+            workspace_path_suffix(&workspace_key)
+        );
     }
 
     #[test]

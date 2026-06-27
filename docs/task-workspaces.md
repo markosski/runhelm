@@ -1,6 +1,6 @@
 # Task Workspaces
 
-RunHelm passes each task execution one selected workspace path. The path is prepared before executor code runs and points to the task's private workspace or to its declared workspace group. When a task declares `workspace.group_name`, that group workspace replaces the task's default private workspace.
+RunHelm selects one workspace for each task execution. The selection is a RunHelm-owned workspace key and root-relative path suffix; the executing host prepends its configured workspace root to produce the concrete path used by task code. When a task declares `workspace.group_name`, that group workspace replaces the task's default private workspace.
 
 ## Workflow YAML
 
@@ -84,34 +84,34 @@ As with Function tasks, the prompt provides task guidance. Strict enforcement th
 
 ## Docker Compose Workspace Root
 
-The Docker Compose deployment mounts the shared `runhelm-workspaces` volume at `/workspaces` in both the orchestrator and worker containers. The orchestrator uses `RUNHELM_WORKSPACE_ROOT=/workspaces`, so selected task workspace paths are created under that mounted root before they are sent to workers.
+The Docker Compose deployment mounts the `runhelm-workspaces` volume at `/workspaces` in worker containers. Workers use `RUNHELM_WORKSPACE_ROOT=/workspaces`, so the root-relative workspace suffix resolves under the worker-local mounted root.
 
-Docker-backed dispatch passes the selected workspace path through to the worker task payload unchanged.
+Docker-backed dispatch sends the selected workspace suffix to the worker. The worker resolves the suffix under its own `RUNHELM_WORKSPACE_ROOT`, creates or touches the directory, and passes the resulting absolute path to task code.
 
 The worker container is reused across tasks, so Docker cannot remount only one selected workspace subdirectory per task dispatch. Runtime writable locations such as `/tmp` and `/home/runhelm/.cache` remain available for executor internals, while task file work is directed to the selected path under `/workspaces`.
 
 ## Fake Executor
 
-The fake executor is used for orchestrator tests and local non-side-effect execution paths. It receives the same selected workspace path through the executor contract, but it does not expose a filesystem API to user task code.
+The fake executor is used for orchestrator tests and local non-side-effect execution paths. It does not materialize a selected workspace or expose a filesystem API to user task code.
 
 ## Workspace Root And Layout
 
-The orchestrator resolves workspace directories under `RUNHELM_WORKSPACE_ROOT` when that environment variable is set. In Docker Compose, this is `/workspaces`, backed by the named `runhelm-workspaces` volume and mounted into both orchestrator and worker containers.
+The selected workspace suffix is deterministic and root-relative. The executing host resolves it under `RUNHELM_WORKSPACE_ROOT` when that environment variable is set. In Docker Compose, the worker root is `/workspaces`, backed by the named `runhelm-workspaces` volume and mounted into worker containers.
 
 When `RUNHELM_WORKSPACE_ROOT` is not set, local runs use the default workspace root under the user's cache directory. The exact default is a local development/runtime detail; set `RUNHELM_WORKSPACE_ROOT` when deployments need a predictable path.
 
-Workspace paths are deterministic under the configured root:
+Workspace suffixes are deterministic:
 
 ```text
-<workspace-root>/<workflow-instance-id>/taskid-<task-id>
-<workspace-root>/<workflow-instance-id>/taskgroup-<group-name>
+<workflow-instance-id>/taskid-<task-id>
+<workflow-instance-id>/taskgroup-<group-name>
 ```
 
-Examples:
+Concrete paths are built by prepending the worker-local workspace root:
 
 ```text
-/workspaces/inst-1/taskid-draft-report
-/workspaces/inst-1/taskgroup-repo
+<workspace-root>/inst-1/taskid-draft-report
+<workspace-root>/inst-1/taskgroup-repo
 ```
 
 Later attempts for the same logical task reuse the same `taskid-<task-id>` path. Tasks that declare the same `workspace.group_name` within one workflow instance reuse the same `taskgroup-<group-name>` path.
@@ -150,9 +150,9 @@ If no worker is currently registered for the pinned host, RunHelm should wait ra
 
 ## Cleanup
 
-`WorkspaceManager` removes expired RunHelm-owned workspace directories under the configured workspace root. Cleanup relies on the workspace `.timestamp` marker and only targets the RunHelm workspace layout, not arbitrary paths returned by task code.
+`WorkspaceManager` contains the cleanup logic for expired RunHelm-owned workspace directories under a configured workspace root. Cleanup relies on the workspace `.timestamp` marker and only targets the RunHelm workspace layout, not arbitrary paths returned by task code.
 
-The orchestrator starts a background TTL monitor that wakes on `RUNHELM_WORKSPACE_VACUUM_INTERVAL_SECS` and removes workspace directories whose timestamp is older than `RUNHELM_WORKSPACE_TTL_SECS`. The default TTL is 900 seconds, and the default vacuum interval is 60 seconds.
+Worker-local cleanup is not yet wired into the worker runtime. The cleanup policy for pinned, paused, and terminal workflow instances is tracked by the remaining cleanup tasks in this change.
 
 ## File Access Scope
 
@@ -170,6 +170,6 @@ Current local file access surfaces:
 | Agent extension tools | Pi extension tools can be loaded from configured extension paths or packages and may perform filesystem work according to extension implementation. | Guidance-only unless a future RunHelm-owned tool wrapper validates paths before invoking the extension. |
 | Agent skills | Skills are loaded from Pi resource directories and require the `read` tool so the Agent can load `SKILL.md` content. | Guidance-only. Skill loading is separate from selected task workspace access. |
 | Agent session store | RunHelm persists Agent conversation sessions under the configured session/cache location. | Enforceable by RunHelm-owned code, but this is worker runtime state rather than task artifact workspace state. |
-| Docker Compose worker container | The reused worker container sees the mounted workspace root and receives one selected `workspace_path` per task dispatch. Runtime paths such as `/tmp` and `/home/runhelm/.cache` remain writable for executor internals. | Root-level deployment containment only. The worker container is not remounted per task, so selected-workspace-only access is not enforced. |
+| Docker Compose worker container | The reused worker container sees the mounted workspace root and receives one selected workspace suffix per task dispatch. Runtime paths such as `/tmp` and `/home/runhelm/.cache` remain writable for executor internals. | Root-level deployment containment only. The worker container is not remounted per task, so selected-workspace-only access is not enforced. |
 
 The practical contract for this change is: RunHelm selects and exposes exactly one intended task workspace path. It does not claim selected-workspace-only read/write enforcement for arbitrary task code. Future strict containment should be designed around an owned file access boundary, such as validated file tools, per-task containers, or another sandbox.

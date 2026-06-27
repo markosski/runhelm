@@ -3,9 +3,8 @@ use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::workflow::events::WorkflowInstanceEvent;
-use crate::core::workflow::models::{WorkflowInfo, WorkflowStatus};
+use crate::core::workflow::models::{TaskDispatchConstraints, WorkflowInfo, WorkflowStatus};
 use crate::core::workflow::state_manager::WorkflowStateManager;
-use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{
     StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPageRequest,
@@ -28,7 +27,6 @@ pub struct Orchestrator {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
-    workspace_manager: Arc<WorkspaceManager>,
 }
 
 impl Orchestrator {
@@ -36,17 +34,14 @@ impl Orchestrator {
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
         workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
-        workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
-        let engine =
-            WorkflowEngine::new(storage.clone(), executor.clone(), workspace_manager.clone());
+        let engine = WorkflowEngine::new(storage.clone(), executor.clone());
 
         Self {
             engine,
             storage,
             executor,
             workflow_queue,
-            workspace_manager,
         }
     }
 
@@ -200,16 +195,13 @@ impl Orchestrator {
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
         let task = self.resolve_task_function_ref(task).await?;
-        let workspace_path = self
-            .workspace_manager
-            .create_or_time_stamp_workspace(&isolated_execution_id, &task)?;
         self.executor
             .execute(
                 &isolated_execution_id,
                 &task,
                 inputs,
                 &ExecutionMetadata::default(),
-                &workspace_path,
+                &TaskDispatchConstraints::default(),
             )
             .await
     }
