@@ -3,11 +3,18 @@
 ### Requirement: Durable Workflow Resume State
 The system SHALL persist enough workflow and scheduling state to resume non-terminal workflow instances after orchestrator restart without losing any workflow-instance host pin.
 
-#### Scenario: Pending workflow is recovered after restart
+#### Scenario: Runnable workflow is recovered after restart
 - **WHEN** the orchestrator starts after a previous process exited
 - **AND** a workflow instance snapshot is `Pending` or `Running`
 - **THEN** the orchestrator reconstructs or reloads runnable workflow work for that instance
 - **THEN** any persisted workflow-instance host pin remains in force
+
+#### Scenario: Blocked non-terminal workflow is discovered but not auto-requeued
+- **WHEN** the orchestrator starts after a previous process exited
+- **AND** a workflow instance snapshot is `Paused` or `InputNeeded`
+- **THEN** the orchestrator discovers the workflow instance as non-terminal
+- **THEN** any persisted workflow-instance host pin remains in force
+- **THEN** the orchestrator does not enqueue new task execution for that instance until an explicit resume action occurs
 
 #### Scenario: Terminal workflow is not requeued
 - **WHEN** the orchestrator starts after a previous process exited

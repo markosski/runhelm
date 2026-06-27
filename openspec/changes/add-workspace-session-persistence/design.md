@@ -117,6 +117,14 @@ Rationale: pause/resume should preserve continuity. Human input is a workflow ev
 
 Alternative considered: treat resumed attempts as fresh executions with no affinity. That would break shared workspace and Agent session continuity.
 
+### Startup Discovery Separates Unfinished From Runnable
+
+On orchestrator startup, durable workflow state should be scanned for non-terminal workflow instances so the process can recover its view of unfinished work without losing workflow pins. Non-terminal includes `Pending`, `Running`, `Paused`, and `InputNeeded`.
+
+Only runnable states should be auto-enqueued during startup recovery. `Pending` and `Running` workflow instances may be requeued or reconciled immediately. `Paused` and `InputNeeded` workflow instances are discovered and preserved, but they are not scheduled again until an explicit resume action occurs. For `InputNeeded`, the resume action is the human-input submission API, which records the input durably before making the workflow eligible to continue.
+
+Rationale: `InputNeeded` is a workflow pause. Restarting the orchestrator should not re-execute a task that is waiting for human input, but it must preserve the workflow instance, task lineage, and host pin so a later resume can continue on the correct host.
+
 ### Cleanup Consults Durable Workflow State
 
 Workspace cleanup should not delete state for workflows that are `Pending`, `Running`, or `InputNeeded`. Cleanup can remove host-local workspaces only after the owning workflow is terminal and the retention window has elapsed, or after an explicit administrative deletion.
