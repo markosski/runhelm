@@ -528,7 +528,7 @@ pub fn start_worker_heartbeat_monitor(worker_pool: WorkerPool) -> JoinHandle<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::{TaskDef, TaskTypeDef};
+    use crate::core::models::{TaskDef, TaskTypeDef, Workspace};
     use serde_json::json;
 
     fn test_registration(worker_id: &str) -> WorkerRegistration {
@@ -947,6 +947,106 @@ mod tests {
         );
 
         execution.abort();
+    }
+
+    #[tokio::test]
+    async fn shared_workspace_tasks_reuse_suffix_and_workflow_pin() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-a", "host-a"))
+            .await;
+        pool.register_worker(test_registration_for_host("worker-b", "host-b"))
+            .await;
+
+        let mut first_task = test_task("first");
+        first_task.workspace = Some(Workspace {
+            group_name: "repo".to_string(),
+        });
+        let first_pool = pool.clone();
+        let first_execution = tokio::spawn(async move {
+            first_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &first_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        let mut second_task = test_task("second");
+        second_task.workspace = Some(Workspace {
+            group_name: "repo".to_string(),
+        });
+        let second_pool = pool.clone();
+        let second_execution = tokio::spawn(async move {
+            second_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &second_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        wait_for_pending_tasks(&pool, 2).await;
+
+        {
+            let pending_tasks = pool.pending_tasks.lock().await;
+            assert!(pending_tasks.iter().all(|task| {
+                task.dispatch.workspace_path_suffix == PathBuf::from("workflow-1/taskgroup-repo")
+                    && task.constraints.pinned_host_id == Some(WorkerHostId::new("host-a"))
+            }));
+        }
+
+        let mismatched_claim = pool
+            .claim_task("worker-b", Duration::from_millis(10))
+            .await
+            .unwrap();
+        assert!(mismatched_claim.is_none());
+
+        let first_claim = pool
+            .claim_task("worker-a", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first_claim.workspace_path_suffix,
+            PathBuf::from("workflow-1/taskgroup-repo")
+        );
+
+        pool.complete_task_result(
+            "worker-a",
+            TaskResult {
+                task_id: first_claim.task_id,
+                result: WorkerExecutionResult::Success {
+                    output: json!({"task": "first"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        let second_claim = pool
+            .claim_task("worker-a", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            second_claim.workspace_path_suffix,
+            PathBuf::from("workflow-1/taskgroup-repo")
+        );
+
+        first_execution.abort();
+        second_execution.abort();
     }
 
     #[tokio::test]

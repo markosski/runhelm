@@ -26,8 +26,8 @@
 - [x] 3.3 Update task dispatch payloads to include logical workspace metadata and the selected workflow pin host
 - [x] 3.4 Move worker-task workspace materialization to the executing worker side using the worker-local workspace root
 - [x] 3.5 Add `.timestamp` touch behavior when the worker creates or resolves a local workspace
-- [ ] 3.6 Make host-local reusable Agent sessions respect the workflow pin
-- [ ] 3.7 Add tests for shared workspace workflow pin reuse across tasks, paused workflow pin retention, and Agent continuation behavior under a workflow pin
+- [x] 3.6 Make host-local reusable Agent sessions respect the workflow pin
+- [x] 3.7 Add tests for shared workspace workflow pin reuse across tasks, paused workflow pin retention, and Agent continuation behavior under a workflow pin
 
 ## 4. Workflow Resume and Human Input
 

@@ -2,7 +2,7 @@ use super::*;
 use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::core::models::*;
-use crate::core::workflow::models::DataBinding;
+use crate::core::workflow::models::{DataBinding, TaskDispatchConstraints, WorkerHostId};
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use async_trait::async_trait;
@@ -102,6 +102,7 @@ struct RecordedExecution {
     workflow_inst_id: String,
     task_id: String,
     generation_index: u32,
+    pinned_host_id: Option<WorkerHostId>,
     reuse_session: Option<bool>,
     feedback_count: usize,
 }
@@ -130,7 +131,7 @@ impl ExecutorPort for RecordingContinueExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
-        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
+        dispatch: &TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let reuse_session = match &task.kind {
             TaskTypeDef::Agent { reuse_session, .. } => Some(*reuse_session),
@@ -140,6 +141,7 @@ impl ExecutorPort for RecordingContinueExecutor {
             workflow_inst_id: workflow_inst_id.to_string(),
             task_id: task.id.clone(),
             generation_index: metadata.generation_index,
+            pinned_host_id: dispatch.pinned_host_id.clone(),
             reuse_session,
             feedback_count: metadata
                 .loop_context
@@ -159,6 +161,24 @@ impl ExecutorPort for RecordingContinueExecutor {
         }
 
         Ok(ExecutionResult::Success(json!({ "ok": true })))
+    }
+}
+
+struct InputNeededExecutor;
+
+#[async_trait]
+impl ExecutorPort for InputNeededExecutor {
+    async fn execute(
+        &self,
+        _workflow_inst_id: &str,
+        _task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _dispatch: &TaskDispatchConstraints,
+    ) -> anyhow::Result<ExecutionResult> {
+        Ok(ExecutionResult::InputNeeded(
+            "Need human input before continuing.".to_string(),
+        ))
     }
 }
 
@@ -222,12 +242,20 @@ fn pending_task_instance(task_def_id: &str) -> TaskInstance {
 }
 
 async fn setup(engine: &WorkflowEngine, def: WorkflowDef) -> String {
+    setup_with_pin(engine, def, None).await
+}
+
+async fn setup_with_pin(
+    engine: &WorkflowEngine,
+    def: WorkflowDef,
+    pinned_worker_host: Option<WorkerHostId>,
+) -> String {
     let instance_id = "inst-1".to_string();
     let instance = WorkflowInstance {
         id: instance_id.clone(),
         workflow_def_id: def.id.clone(),
         status: WorkflowStatus::Pending,
-        pinned_worker_host: None,
+        pinned_worker_host,
         tasks: HashMap::new(),
         verifier_states: HashMap::new(),
     };
@@ -412,6 +440,37 @@ fn test_workspace_group_tasks_still_wait_for_data_binding() {
             generation: 1,
         }]
     );
+}
+
+#[tokio::test]
+async fn test_input_needed_workflow_retains_pinned_host() {
+    let engine = make_engine_with_executor(Arc::new(InputNeededExecutor));
+    let def = WorkflowDef {
+        id: "def-input-needed-pin-retention".to_string(),
+        tasks: vec![agent_task("ask-user", true)],
+        data_bindings: vec![],
+    };
+    let pinned_host = WorkerHostId::new("host-a");
+    let instance_id = setup_with_pin(&engine, def, Some(pinned_host.clone())).await;
+
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(instance.status, WorkflowStatus::InputNeeded);
+    assert_eq!(instance.pinned_worker_host, Some(pinned_host));
+    assert!(matches!(
+        instance.tasks["ask-user[1]"].status,
+        TaskStatus::InputNeeded { .. }
+    ));
 }
 
 #[test]
@@ -783,7 +842,8 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
         }],
     };
 
-    let instance_id = setup(&engine, def).await;
+    let pinned_host = WorkerHostId::new("host-a");
+    let instance_id = setup_with_pin(&engine, def, Some(pinned_host.clone())).await;
     engine
         .run_workflow_instance(instance_id.clone())
         .await
@@ -802,6 +862,7 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
             workflow_inst_id: instance_id.clone(),
             task_id: "task-a".to_string(),
             generation_index: 1,
+            pinned_host_id: Some(pinned_host.clone()),
             reuse_session: Some(true),
             feedback_count: 0,
         }
@@ -812,6 +873,7 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
             workflow_inst_id: instance_id.clone(),
             task_id: "task-a".to_string(),
             generation_index: 2,
+            pinned_host_id: Some(pinned_host),
             reuse_session: Some(true),
             feedback_count: 1,
         }
