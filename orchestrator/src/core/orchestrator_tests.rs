@@ -891,6 +891,77 @@ async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
 }
 
 #[tokio::test]
+async fn startup_recovery_preserves_workflow_pins_when_reloading_runnable_work() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let pinned_host = WorkerHostId::new("host-a");
+
+    for (id, status) in [
+        ("pending-workflow", WorkflowStatus::Pending),
+        ("running-workflow", WorkflowStatus::Running),
+        ("paused-workflow", WorkflowStatus::Paused),
+        ("input-needed-workflow", WorkflowStatus::InputNeeded),
+    ] {
+        let mut instance = workflow_instance(id, "workflow-1");
+        instance.status = status;
+        instance.pinned_worker_host = Some(pinned_host.clone());
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(orchestrator.synchronize_startup_tasks().await.unwrap(), 1);
+    assert_eq!(
+        orchestrator
+            .enqueue_active_workflow_instances()
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("running-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+
+    for id in [
+        "pending-workflow",
+        "running-workflow",
+        "paused-workflow",
+        "input-needed-workflow",
+    ] {
+        let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
+        assert_eq!(instance.pinned_worker_host, Some(pinned_host.clone()));
+    }
+
+    assert_eq!(
+        storage
+            .get_workflow_instance("running-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+
+    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    pending.sort();
+    assert_eq!(
+        pending,
+        vec![
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn remove_and_purge_affect_pending_queue_only() {
     let orchestrator = orchestrator();
 
