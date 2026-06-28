@@ -356,7 +356,7 @@ pub async fn complete_worker_task(
     Path(task_id): Path<String>,
     Json(result): Json<WorkerExecutionResult>,
 ) -> Result<Json<Value>, StatusCode> {
-    let worker_id = state.worker_pool.worker_for_task(&task_id).await;
+    let worker_id = state.worker_pool.worker_for_active_dispatch(&task_id).await;
 
     if let Some(worker_id) = worker_id {
         state

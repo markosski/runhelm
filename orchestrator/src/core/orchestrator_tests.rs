@@ -5,8 +5,8 @@ use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::api::models::WorkflowQueueStatus;
 use crate::core::function_service::FunctionService;
 use crate::core::models::{
-    ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskStatus, TaskTypeDef, Workspace,
-    verifier_decision_schema,
+    ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskInstance, TaskSatisfactionStatus,
+    TaskStatus, TaskTypeDef, Workspace, verifier_decision_schema,
 };
 use crate::core::workflow::models::{DataBinding, WorkerHostId, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
@@ -958,6 +958,67 @@ async fn startup_recovery_preserves_workflow_pins_when_reloading_runnable_work()
             "pending-workflow".to_string(),
             "running-workflow".to_string(),
         ]
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_requeues_abandoned_running_task_attempts() {
+    // Seed durable storage as it would look after a crash: the workflow and one
+    // task attempt were Running, but the in-memory dispatch lease is gone.
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let pinned_host = WorkerHostId::new("host-a");
+    let task_attempt_id = TaskInstance::make_task_attempt_id("taska", 1);
+
+    let mut instance = workflow_instance("running-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Running;
+    instance.pinned_worker_host = Some(pinned_host.clone());
+    instance.tasks.insert(
+        task_attempt_id.clone(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Running,
+            satisfaction_status: TaskSatisfactionStatus::Pending,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    // Startup recovery should treat the lost in-memory lease as abandoned,
+    // move runnable work back to Pending, and enqueue the workflow again.
+    assert_eq!(orchestrator.synchronize_startup_tasks().await.unwrap(), 1);
+    assert_eq!(
+        orchestrator
+            .enqueue_active_workflow_instances()
+            .await
+            .unwrap(),
+        1
+    );
+
+    // The workflow pin remains durable, while the running workflow and task
+    // attempt are made eligible for redispatch.
+    let recovered = storage
+        .get_workflow_instance("running-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.status, WorkflowStatus::Pending);
+    assert_eq!(recovered.pinned_worker_host, Some(pinned_host));
+    assert_eq!(
+        recovered.tasks.get(&task_attempt_id).unwrap().status,
+        TaskStatus::Pending
+    );
+    assert_eq!(
+        orchestrator.get_queue_status().await.unwrap().pending,
+        vec!["running-workflow".to_string()]
     );
 }
 

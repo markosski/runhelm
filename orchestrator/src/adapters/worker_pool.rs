@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -20,6 +20,7 @@ const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 const HEARTBEAT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_MISSED_HEARTBEAT_THRESHOLD: u32 = 3;
+static NEXT_WORKER_POOL_NAMESPACE_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn workspace_key_for_task(workflow_inst_id: &str, task: &TaskDef) -> WorkspaceKey {
     match &task.workspace {
@@ -154,6 +155,9 @@ pub struct WorkerPool {
     in_flight_tasks: Arc<Mutex<HashMap<String, DispatchLease>>>,
     // Map of task IDs to the oneshot sender waiting for their result
     result_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<WorkerExecutionResult>>>>,
+    // Process-local namespace so dispatch IDs from a fresh WorkerPool do not
+    // collide with abandoned pre-restart worker results.
+    dispatch_namespace: Arc<String>,
     // Atomic counter for generating unique task dispatch IDs
     next_dispatch_id: Arc<AtomicU64>,
     // Notify workers when a new task is available for claiming
@@ -185,6 +189,7 @@ impl WorkerPool {
             pending_tasks: Arc::new(Mutex::new(VecDeque::new())),
             in_flight_tasks: Arc::new(Mutex::new(HashMap::new())),
             result_waiters: Arc::new(Mutex::new(HashMap::new())),
+            dispatch_namespace: Arc::new(new_dispatch_namespace()),
             next_dispatch_id: Arc::new(AtomicU64::new(0)),
             task_available: Arc::new(Notify::new()),
             heartbeat_interval,
@@ -259,8 +264,9 @@ impl WorkerPool {
         constraints: TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let task_id = format!(
-            "{}-{}",
+            "{}-{}-{}",
             task.id,
+            self.dispatch_namespace,
             self.next_dispatch_id.fetch_add(1, Ordering::Relaxed)
         );
 
@@ -413,7 +419,9 @@ impl WorkerPool {
         Ok(())
     }
 
-    pub async fn worker_for_task(&self, task_id: &str) -> Option<String> {
+    /// Returns the worker that currently owns an active dispatch lease for the
+    /// given worker-facing dispatch ID, if that dispatch is still in flight.
+    pub async fn worker_for_active_dispatch(&self, task_id: &str) -> Option<String> {
         self.in_flight_tasks
             .lock()
             .await
@@ -528,6 +536,15 @@ fn epoch_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn new_dispatch_namespace() -> String {
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let sequence = NEXT_WORKER_POOL_NAMESPACE_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{now_nanos:x}-{sequence:x}", std::process::id())
 }
 
 pub fn start_task_timeout_monitor(worker_pool: WorkerPool) -> JoinHandle<()> {
@@ -1251,6 +1268,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_pre_restart_dispatch_result_does_not_complete_recovered_dispatch() {
+        // Simulate the pre-restart worker pool claiming a dispatch whose worker
+        // may keep running after the orchestrator process exits.
+        let old_pool = WorkerPool::new();
+        old_pool
+            .register_worker(test_registration_for_host("old-worker", "host-a"))
+            .await;
+
+        let task = test_task("task-1");
+        let old_execution_pool = old_pool.clone();
+        let old_task = task.clone();
+        let old_execution = tokio::spawn(async move {
+            old_execution_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &old_task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        // Capture the old dispatch ID as the stale completion key a pre-restart
+        // worker would later post back to the restarted orchestrator.
+        let old_claim = old_pool
+            .claim_task("old-worker", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+        let stale_task_id = old_claim.task_id;
+
+        // Stop the old workflow-side waiter while keeping stale_task_id as the
+        // result key an already-running pre-restart worker would still hold.
+        old_execution.abort();
+
+        // Simulate a restarted orchestrator with a fresh WorkerPool recovering
+        // the same logical workflow task on the same pinned host.
+        let recovered_pool = WorkerPool::new();
+        recovered_pool
+            .register_worker(test_registration_for_host("new-worker", "host-a"))
+            .await;
+
+        let recovered_execution_pool = recovered_pool.clone();
+        let recovered_execution = tokio::spawn(async move {
+            recovered_execution_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+
+        let recovered_claim = recovered_pool
+            .claim_task("new-worker", Duration::from_millis(10))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The fresh pool's dispatch namespace must keep the recovered dispatch
+        // distinct from the stale pre-restart dispatch ID.
+        assert_ne!(stale_task_id, recovered_claim.task_id);
+
+        // A stale completion should be treated as late/untracked and must not
+        // wake the recovered dispatch waiter.
+        recovered_pool
+            .complete_task_result(
+                "old-worker",
+                TaskResult {
+                    task_id: stale_task_id,
+                    result: WorkerExecutionResult::Success {
+                        output: json!({"source": "stale"}),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recovered_pool
+                .worker_for_active_dispatch(&recovered_claim.task_id)
+                .await,
+            Some("new-worker".to_string())
+        );
+
+        // The recovered dispatch should still complete only when its own
+        // current dispatch ID reports a result.
+        recovered_pool
+            .complete_task_result(
+                "new-worker",
+                TaskResult {
+                    task_id: recovered_claim.task_id,
+                    result: WorkerExecutionResult::Success {
+                        output: json!({"source": "recovered"}),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            unwrap_success(recovered_execution.await.unwrap().unwrap()),
+            json!({"source": "recovered"})
+        );
+    }
+
+    #[tokio::test]
     async fn mismatched_host_does_not_claim_pinned_task() {
         let pool = WorkerPool::new();
         pool.register_worker(test_registration_for_host("worker-1", "host-b"))
@@ -1504,7 +1637,7 @@ mod tests {
             unwrap_failure(execution.await.unwrap().unwrap()),
             format!("task {} timed out after 10ms", claimed.task_id)
         );
-        assert_eq!(pool.worker_for_task(&claimed.task_id).await, None);
+        assert_eq!(pool.worker_for_active_dispatch(&claimed.task_id).await, None);
     }
 
     #[tokio::test]
