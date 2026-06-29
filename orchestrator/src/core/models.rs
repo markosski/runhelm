@@ -153,15 +153,26 @@ pub struct VerifierAttemptMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskInstance {
+    /// Logical task definition ID this attempt executes.
     pub task_def_id: String,
+    /// Current lifecycle state for this concrete attempt.
     pub status: TaskStatus,
+    /// Whether this attempt is eligible as a satisfied source for downstream data binding.
     #[serde(default)]
     pub satisfaction_status: TaskSatisfactionStatus,
+    /// Raw human response that caused this continuation attempt, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_input: Option<serde_json::Value>,
+    /// Resolved upstream input values passed to this attempt when it runs.
     pub input_data: Vec<serde_json::Value>,
+    /// Records which upstream task generations produced `input_data`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_mapping: Vec<TaskInputMapping>,
+    /// Structured output recorded after successful execution.
     pub output_data: Option<serde_json::Value>,
+    /// Concrete attempt generation for the logical task, starting at 1.
     pub generation_index: u32,
+    /// Verifier result metadata when this attempt is a verifier task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifier_metadata: Option<VerifierAttemptMetadata>,
 }
@@ -192,12 +203,17 @@ fn default_generation_index() -> u32 {
     1
 }
 
+/// Transient context passed to the executor for one concrete task attempt.
+/// Durable workflow state remains on `TaskInstance`; this model carries the
+/// attempt details the worker needs while executing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionMetadata {
     #[serde(default = "default_generation_index")]
     pub generation_index: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<LoopExecutionContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_input_provided: Option<String>,
 }
 
 impl Default for ExecutionMetadata {
@@ -205,6 +221,7 @@ impl Default for ExecutionMetadata {
         Self {
             generation_index: default_generation_index(),
             loop_context: None,
+            human_input_provided: None,
         }
     }
 }

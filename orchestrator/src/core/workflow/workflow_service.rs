@@ -1,6 +1,6 @@
 use crate::api::models::{WorkflowEvents, WorkflowList};
 use crate::core::models::{
-    TaskDef, TaskInstance, TaskStatus, VerifierControlConfig, verifier_decision_schema,
+    TaskDef, TaskInstance, TaskStatus, TaskTypeDef, VerifierControlConfig, verifier_decision_schema,
 };
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus};
@@ -125,6 +125,74 @@ impl WorkflowService {
             workflow_instance_id: workflow_instance_id.to_string(),
             events,
         }))
+    }
+
+    pub async fn submit_human_input(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+        submitted_input: serde_json::Value,
+    ) -> anyhow::Result<String> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        if instance.status != WorkflowStatus::InputNeeded {
+            anyhow::bail!("workflow instance {workflow_instance_id} is not waiting for input");
+        }
+
+        let task_attempt_id = resolve_task_attempt_id(&instance, task_id, None)?;
+        let task = instance
+            .tasks
+            .get(&task_attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
+
+        if !matches!(task.status, TaskStatus::InputNeeded { .. }) {
+            anyhow::bail!("task {task_id} is not waiting for input");
+        }
+
+        let task_def_id = task.task_def_id.clone();
+        let next_generation = task.generation_index + 1;
+
+        let Some(workflow_def) = self
+            .storage
+            .get_workflow_def(&instance.workflow_def_id)
+            .await?
+        else {
+            anyhow::bail!("workflow definition {} not found", instance.workflow_def_id);
+        };
+
+        let task_def = workflow_def
+            .tasks
+            .iter()
+            .find(|task_def| task_def.id == task_def_id)
+            .ok_or_else(|| anyhow::anyhow!("task definition {task_def_id} not found"))?;
+        if !matches!(task_def.kind, TaskTypeDef::Agent { .. }) {
+            anyhow::bail!("task {task_id} is not an Agent task");
+        }
+
+        let next_task_attempt_id =
+            TaskInstance::make_task_attempt_id(&task_def_id, next_generation);
+
+        // This could happen if request was submitted more than once
+        if instance.tasks.contains_key(&next_task_attempt_id) {
+            anyhow::bail!("task {task_id} already has a materialized continuation attempt");
+        }
+
+        WorkflowStateManager::new(Arc::clone(&self.storage))
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::HumanInputSubmitted {
+                    task_attempt_id: task_attempt_id.clone(),
+                    continuation_task_attempt_id: next_task_attempt_id.clone(),
+                    submitted_input,
+                }],
+            )
+            .await?;
+
+        Ok(next_task_attempt_id)
     }
 
     pub async fn get_task_result(
@@ -626,6 +694,28 @@ mod tests {
         }
     }
 
+    fn agent_task_def(task_id: &str) -> TaskDef {
+        TaskDef {
+            id: task_id.to_string(),
+            kind: TaskTypeDef::Agent {
+                model_id: "test/model".to_string(),
+                provider_url: "".to_string(),
+                prompt: "continue".to_string(),
+                tools: vec![],
+                skills: vec![],
+                ask: true,
+                schema_failure_retry_times: 0.into(),
+                reuse_session: true,
+            },
+            control: None,
+            timeout_secs: None,
+            input_schemas: vec![],
+            output_schema: Some(json!({ "type": "object" })),
+            workspace: None,
+            required_credentials: vec![],
+        }
+    }
+
     #[tokio::test]
     async fn create_workflow_def_allows_overwrite_before_instances_exist() {
         let storage = Arc::new(MemoryStorage::new());
@@ -807,5 +897,117 @@ mod tests {
         let events = service.list_workflow_events("missing").await.unwrap();
 
         assert!(events.is_none());
+    }
+
+    #[tokio::test]
+    async fn submit_human_input_records_durable_event() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow1".to_string(),
+                tasks: vec![agent_task_def("taska")],
+                data_bindings: vec![],
+            })
+            .await
+            .unwrap();
+        let instance = WorkflowInstance {
+            id: "input-workflow".to_string(),
+            workflow_def_id: "workflow1".to_string(),
+            status: WorkflowStatus::InputNeeded,
+            pinned_worker_host: Some(WorkerHostId::new("test-host")),
+            tasks: HashMap::from([(
+                "taska[1]".to_string(),
+                TaskInstance {
+                    task_def_id: "taska".to_string(),
+                    status: TaskStatus::InputNeeded {
+                        description: "need input".to_string(),
+                    },
+                    satisfaction_status: Default::default(),
+                    human_input: None,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 1,
+                    verifier_metadata: None,
+                },
+            )]),
+            verifier_states: HashMap::new(),
+        };
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+
+        let task_attempt_id = service
+            .submit_human_input("input-workflow", "taska", json!({"answer": "continue"}))
+            .await
+            .unwrap();
+
+        assert_eq!(task_attempt_id, "taska[2]");
+        let saved = storage
+            .get_workflow_instance("input-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(
+            saved.pinned_worker_host,
+            Some(WorkerHostId::new("test-host"))
+        );
+        assert!(matches!(
+            saved.tasks["taska[1]"].status,
+            TaskStatus::InputNeeded { .. }
+        ));
+        assert_eq!(saved.tasks["taska[2]"].task_def_id, "taska");
+        assert_eq!(saved.tasks["taska[2]"].status, TaskStatus::Pending);
+        assert_eq!(saved.tasks["taska[2]"].generation_index, 2);
+        assert_eq!(
+            saved.tasks["taska[2]"].human_input,
+            Some(json!({"answer": "continue"}))
+        );
+
+        let events = storage
+            .get_workflow_instance_events("input-workflow")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::HumanInputSubmitted {
+                task_attempt_id,
+                continuation_task_attempt_id,
+                submitted_input
+            } if task_attempt_id == "taska[1]"
+                && continuation_task_attempt_id == "taska[2]"
+                && submitted_input == &json!({"answer": "continue"})
+        ));
+    }
+
+    #[tokio::test]
+    async fn submit_human_input_rejects_non_waiting_workflow() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "running-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Running,
+                    pinned_worker_host: None,
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let error = service
+            .submit_human_input("running-workflow", "taska", json!({"answer": "continue"}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not waiting for input"));
     }
 }

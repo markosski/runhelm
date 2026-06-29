@@ -105,6 +105,7 @@ struct RecordedExecution {
     pinned_host_id: Option<WorkerHostId>,
     reuse_session: Option<bool>,
     feedback_count: usize,
+    human_input_provided: Option<String>,
 }
 
 struct RecordingContinueExecutor {
@@ -148,6 +149,7 @@ impl ExecutorPort for RecordingContinueExecutor {
                 .as_ref()
                 .map(|context| context.feedback_history.len())
                 .unwrap_or(0),
+            human_input_provided: metadata.human_input_provided.clone(),
         });
 
         if task_verifier(task).is_some() {
@@ -179,6 +181,45 @@ impl ExecutorPort for InputNeededExecutor {
         Ok(ExecutionResult::InputNeeded(
             "Need human input before continuing.".to_string(),
         ))
+    }
+}
+
+struct InputNeededForTaskExecutor {
+    input_needed_task_id: String,
+    calls: StdMutex<Vec<String>>,
+}
+
+impl InputNeededForTaskExecutor {
+    fn new(input_needed_task_id: &str) -> Self {
+        Self {
+            input_needed_task_id: input_needed_task_id.to_string(),
+            calls: StdMutex::new(vec![]),
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ExecutorPort for InputNeededForTaskExecutor {
+    async fn execute(
+        &self,
+        _workflow_inst_id: &str,
+        task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _dispatch: &TaskDispatchConstraints,
+    ) -> anyhow::Result<ExecutionResult> {
+        self.calls.lock().unwrap().push(task.id.clone());
+        if task.id == self.input_needed_task_id {
+            return Ok(ExecutionResult::InputNeeded(
+                "Need human input before continuing.".to_string(),
+            ));
+        }
+
+        Ok(ExecutionResult::Success(json!({ "ok": true })))
     }
 }
 
@@ -233,6 +274,7 @@ fn pending_task_instance(task_def_id: &str) -> TaskInstance {
         task_def_id: task_def_id.to_string(),
         status: TaskStatus::Pending,
         satisfaction_status: TaskSatisfactionStatus::Pending,
+        human_input: None,
         input_data: vec![],
         input_mapping: vec![],
         output_data: None,
@@ -473,6 +515,44 @@ async fn test_input_needed_workflow_retains_pinned_host() {
     ));
 }
 
+#[tokio::test]
+async fn test_input_needed_stops_current_engine_pass() {
+    let executor = Arc::new(InputNeededForTaskExecutor::new("ask-user"));
+    let engine = make_engine_with_executor(executor.clone());
+    let def = WorkflowDef {
+        id: "def-input-needed-stops-pass".to_string(),
+        tasks: vec![
+            agent_task("ask-user", true),
+            task_def("independent-work", json!({ "type": "object" })),
+        ],
+        data_bindings: vec![],
+    };
+    let instance_id = setup(&engine, def).await;
+
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    let instance = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(instance.status, WorkflowStatus::InputNeeded);
+    assert!(matches!(
+        instance.tasks["ask-user[1]"].status,
+        TaskStatus::InputNeeded { .. }
+    ));
+    assert_eq!(
+        instance.tasks["independent-work[1]"].status,
+        TaskStatus::Pending
+    );
+    assert_eq!(executor.calls(), vec!["ask-user".to_string()]);
+}
+
 #[test]
 fn test_verifier_without_rerun_from_task_id_self_reruns_only() {
     let engine = make_engine();
@@ -543,6 +623,7 @@ fn test_loop_execution_metadata_includes_feedback_history() {
         task_def_id: "task-a".to_string(),
         status: TaskStatus::Pending,
         satisfaction_status: TaskSatisfactionStatus::Pending,
+        human_input: None,
         input_data: vec![],
         input_mapping: vec![],
         output_data: None,
@@ -561,6 +642,7 @@ fn test_loop_execution_metadata_includes_feedback_history() {
                     task_def_id: "task-a".to_string(),
                     status: TaskStatus::Completed,
                     satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: Some(json!({ "draft": "first" })),
@@ -622,6 +704,7 @@ fn test_execution_metadata_includes_task_instance_generation_index() {
         task_def_id: "task-a".to_string(),
         status: TaskStatus::Pending,
         satisfaction_status: TaskSatisfactionStatus::Pending,
+        human_input: None,
         input_data: vec![],
         input_mapping: vec![],
         output_data: None,
@@ -865,6 +948,7 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
             pinned_host_id: Some(pinned_host.clone()),
             reuse_session: Some(true),
             feedback_count: 0,
+            human_input_provided: None,
         }
     );
     assert_eq!(
@@ -876,8 +960,99 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
             pinned_host_id: Some(pinned_host),
             reuse_session: Some(true),
             feedback_count: 1,
+            human_input_provided: None,
         }
     );
+}
+
+#[tokio::test]
+async fn test_human_input_continuation_dispatches_same_logical_agent_identity() {
+    let executor = Arc::new(RecordingContinueExecutor::new());
+    let engine = make_engine_with_executor(executor.clone());
+    let def = WorkflowDef {
+        id: "def-human-input-continuation".to_string(),
+        tasks: vec![agent_task("task-a", true)],
+        data_bindings: vec![],
+    };
+    let pinned_host = WorkerHostId::new("host-a");
+    let instance_id = "inst-human-input-continuation".to_string();
+    let instance = WorkflowInstance {
+        id: instance_id.clone(),
+        workflow_def_id: def.id.clone(),
+        status: WorkflowStatus::Pending,
+        pinned_worker_host: Some(pinned_host.clone()),
+        tasks: HashMap::from([
+            (
+                "task-a[1]".to_string(),
+                TaskInstance {
+                    task_def_id: "task-a".to_string(),
+                    status: TaskStatus::InputNeeded {
+                        description: "need clarification".to_string(),
+                    },
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 1,
+                    verifier_metadata: None,
+                },
+            ),
+            (
+                "task-a[2]".to_string(),
+                TaskInstance {
+                    task_def_id: "task-a".to_string(),
+                    status: TaskStatus::Pending,
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: Some(json!("The customer prefers a concise answer.")),
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 2,
+                    verifier_metadata: None,
+                },
+            ),
+        ]),
+        verifier_states: HashMap::new(),
+    };
+    engine.storage.save_workflow_def(def).await.unwrap();
+    engine
+        .storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    engine
+        .run_workflow_instance(instance_id.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        executor.records(),
+        vec![RecordedExecution {
+            workflow_inst_id: instance_id.clone(),
+            task_id: "task-a".to_string(),
+            generation_index: 2,
+            pinned_host_id: Some(pinned_host),
+            reuse_session: Some(true),
+            feedback_count: 0,
+            human_input_provided: Some("The customer prefers a concise answer.".to_string()),
+        }]
+    );
+
+    let saved = engine
+        .storage
+        .get_workflow_instance(&instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, WorkflowStatus::Completed);
+    assert!(matches!(
+        saved.tasks["task-a[1]"].status,
+        TaskStatus::InputNeeded { .. }
+    ));
+    assert_eq!(saved.tasks["task-a[2]"].status, TaskStatus::Completed);
+    assert_eq!(saved.tasks["task-a[2]"].generation_index, 2);
 }
 
 #[test]
@@ -910,6 +1085,7 @@ fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
                         description: "need clarification".to_string(),
                     },
                     satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: None,
@@ -923,6 +1099,7 @@ fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
                     task_def_id: "task-b".to_string(),
                     status: TaskStatus::Completed,
                     satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: Some(json!({ "value": "after-human-input" })),
@@ -936,6 +1113,7 @@ fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
                     task_def_id: "verify".to_string(),
                     status: TaskStatus::Pending,
                     satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: None,
@@ -1009,6 +1187,7 @@ fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
                     task_def_id: "task-b".to_string(),
                     status: TaskStatus::Completed,
                     satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: Some(json!({ "value": "rejected" })),
@@ -1022,6 +1201,7 @@ fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
                     task_def_id: "task-b".to_string(),
                     status: TaskStatus::Pending,
                     satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: None,
@@ -1035,6 +1215,7 @@ fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
                     task_def_id: "verify".to_string(),
                     status: TaskStatus::Pending,
                     satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: None,
@@ -1297,6 +1478,7 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
                 task_def_id: "verify".to_string(),
                 status: TaskStatus::Completed,
                 satisfaction_status: TaskSatisfactionStatus::Pending,
+                human_input: None,
                 input_data: vec![],
                 input_mapping: vec![],
                 output_data: None,

@@ -68,6 +68,12 @@ pub enum WorkflowInstanceEvent {
         selected_generation: Option<u32>,
         exit_reason: Option<String>,
     },
+    /// Records user input submitted for a task attempt waiting in InputNeeded.
+    HumanInputSubmitted {
+        task_attempt_id: String,
+        continuation_task_attempt_id: String,
+        submitted_input: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +174,44 @@ pub fn apply_workflow_instance_event(
             state.selected_generation = *selected_generation;
             state.exit_reason = exit_reason.clone();
         }
+        WorkflowInstanceEvent::HumanInputSubmitted {
+            task_attempt_id,
+            continuation_task_attempt_id,
+            submitted_input,
+        } => {
+            let (task_def_id, continuation_generation) = {
+                let task = task_mut(instance, task_attempt_id)?;
+                if !matches!(task.status, TaskStatus::InputNeeded { .. }) {
+                    anyhow::bail!("task attempt {task_attempt_id} is not waiting for input");
+                }
+                (task.task_def_id.clone(), task.generation_index + 1)
+            };
+            let expected_continuation_task_attempt_id =
+                TaskInstance::make_task_attempt_id(&task_def_id, continuation_generation);
+            if *continuation_task_attempt_id != expected_continuation_task_attempt_id {
+                anyhow::bail!(
+                    "human input continuation for {task_attempt_id} must be {expected_continuation_task_attempt_id}"
+                );
+            }
+            let continuation = TaskInstance {
+                task_def_id,
+                status: TaskStatus::Pending,
+                satisfaction_status: TaskSatisfactionStatus::Pending,
+                human_input: Some(submitted_input.clone()),
+                input_data: vec![],
+                input_mapping: vec![],
+                output_data: None,
+                generation_index: continuation_generation,
+                verifier_metadata: None,
+            };
+            if instance.tasks.contains_key(continuation_task_attempt_id) {
+                anyhow::bail!("task attempt {continuation_task_attempt_id} already exists");
+            }
+            instance
+                .tasks
+                .insert(continuation_task_attempt_id.clone(), continuation);
+            instance.status = WorkflowStatus::Pending;
+        }
     }
 
     Ok(())
@@ -236,6 +280,7 @@ mod tests {
             task_def_id: "task-a".to_string(),
             status: TaskStatus::Pending,
             satisfaction_status: TaskSatisfactionStatus::Pending,
+            human_input: None,
             input_data: vec![],
             input_mapping: vec![],
             output_data: None,
@@ -361,5 +406,43 @@ mod tests {
 
         assert_eq!(instance.status, WorkflowStatus::Pending);
         assert_eq!(instance.tasks["task-a[1]"].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn reducer_materializes_human_input_continuation() {
+        let mut instance = instance();
+        instance.status = WorkflowStatus::InputNeeded;
+        instance.tasks.insert(
+            "task-a[1]".to_string(),
+            TaskInstance {
+                status: TaskStatus::InputNeeded {
+                    description: "need input".to_string(),
+                },
+                ..task()
+            },
+        );
+
+        apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::HumanInputSubmitted {
+                task_attempt_id: "task-a[1]".to_string(),
+                continuation_task_attempt_id: "task-a[2]".to_string(),
+                submitted_input: serde_json::json!({"answer": "ship it"}),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(instance.status, WorkflowStatus::Pending);
+        assert!(matches!(
+            instance.tasks["task-a[1]"].status,
+            TaskStatus::InputNeeded { .. }
+        ));
+        assert_eq!(instance.tasks["task-a[2]"].task_def_id, "task-a");
+        assert_eq!(instance.tasks["task-a[2]"].status, TaskStatus::Pending);
+        assert_eq!(instance.tasks["task-a[2]"].generation_index, 2);
+        assert_eq!(
+            instance.tasks["task-a[2]"].human_input,
+            Some(serde_json::json!({"answer": "ship it"}))
+        );
     }
 }

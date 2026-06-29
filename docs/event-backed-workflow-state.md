@@ -27,3 +27,6 @@ The public API exposes workflow events separately from the current-state workflo
 - `GET /workflows/{id}` returns the current workflow status snapshot view.
 - `GET /workflows` returns a bounded page of `WorkflowInfo` list entries with workflow identity, lifecycle timestamps when available, current state, task counts, and a `next_cursor` when more results are available.
 - `GET /workflows/{id}/events` returns timestamped `WorkflowEventRecord` entries for audit and debugging.
+- `POST /workflows/{id}/tasks/{task_id}/human-input` with `{ "input": ... }` records a `HumanInputSubmitted` domain event for a workflow and task attempt that are currently waiting in `InputNeeded`; the workflow reducer derives the continuation attempt for the same logical task and moves the workflow back to `Pending` so it can be queued to continue.
+
+Short term, `InputNeeded` is workflow-blocking: when any task asks for human input, the current engine pass stops after recording that task state. Independent branches that could otherwise run remain pending until submitted human input queues a fresh pass. This avoids stale snapshot commits while RunHelm does not yet have per-workflow scheduling dedupe or optimistic workflow-event concurrency.

@@ -24,7 +24,7 @@ For a continuation attempt with a loaded session, the worker appends only the cu
 
 For a continuation attempt where no session can be loaded, the worker creates a fresh replacement session and rebuilds enough context from structured workflow data: the task prompt, upstream inputs, previous output or prior feedback history when available, and the current human response or verifier feedback.
 
-This change prepares the worker-side session handling needed for human-input-created continuation attempts. The public human-input submission API and full end-to-end resume flow are completed separately.
+The public human-input submission API durably records submitted input as workflow history and materializes the next attempt for the same logical Agent task. For reusable sessions, the worker receives that submitted response as the current event and appends it to the existing Agent session.
 
 ## Missing Session Recovery
 

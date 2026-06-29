@@ -980,6 +980,7 @@ async fn startup_recovery_requeues_abandoned_running_task_attempts() {
             task_def_id: "taska".to_string(),
             status: TaskStatus::Running,
             satisfaction_status: TaskSatisfactionStatus::Pending,
+            human_input: None,
             input_data: vec![],
             input_mapping: vec![],
             output_data: None,

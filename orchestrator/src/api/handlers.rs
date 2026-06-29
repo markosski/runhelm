@@ -180,6 +180,56 @@ pub async fn get_workflow_events(
 }
 
 #[derive(Deserialize)]
+pub struct SubmitHumanInputRequest {
+    input: Value,
+}
+
+pub async fn submit_human_input(
+    State(state): State<AppState>,
+    Path((workflow_instance_id, task_id)): Path<(String, String)>,
+    Json(payload): Json<SubmitHumanInputRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    match state
+        .workflow_service
+        .submit_human_input(&workflow_instance_id, &task_id, payload.input)
+        .await
+    {
+        Ok(task_attempt_id) => {
+            state
+                .orchestrator
+                .enqueue_workflow_instance(workflow_instance_id.clone())
+                .await
+                .map_err(|error| {
+                    tracing::error!(%workflow_instance_id, %task_id, %error, "failed to enqueue workflow after human input submission");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+
+            Ok(Json(json!({
+                "status": "queued",
+                "workflow_instance_id": workflow_instance_id,
+                "task_attempt_id": task_attempt_id,
+            })))
+        }
+        Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
+        Err(error) if error.to_string().contains("not waiting for input") => {
+            Err(StatusCode::CONFLICT)
+        }
+        Err(error) if error.to_string().contains("not an Agent task") => Err(StatusCode::CONFLICT),
+        Err(error)
+            if error
+                .to_string()
+                .contains("already has a materialized continuation") =>
+        {
+            Err(StatusCode::CONFLICT)
+        }
+        Err(error) => {
+            tracing::error!(%workflow_instance_id, %task_id, %error, "human input submission failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(Deserialize)]
 pub struct WorkflowListQuery {
     status: Option<String>,
     limit: Option<usize>,

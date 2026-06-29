@@ -141,6 +141,7 @@ impl WorkflowEngine {
                         task_def_id: task_def.id.clone(),
                         status: TaskStatus::Pending,
                         satisfaction_status: TaskSatisfactionStatus::Pending,
+                        human_input: None,
                         input_data: vec![], // Empty until upstream dependencies propagate data
                         input_mapping: vec![],
                         output_data: None,
@@ -198,6 +199,7 @@ impl WorkflowEngine {
                     }
                 }
             }
+            tasks_to_run.sort();
 
             for task_attempt_id in tasks_to_run {
                 workflow_instance = state_manager
@@ -291,8 +293,10 @@ impl WorkflowEngine {
                     Ok(result) => {
                         let output = match result {
                             ExecutionResult::Success(output) => output,
+                            // TODO: Consider reducing granularity of those events
+                            // i.e. InputNeeded should issue TaskReturnedInputNeeded this should perform all needed internal mutations to task and workflow, statuses etc.
                             ExecutionResult::InputNeeded(description) => {
-                                workflow_instance = state_manager
+                                state_manager
                                     .commit_events_for_instance(
                                         workflow_instance,
                                         vec![
@@ -314,7 +318,7 @@ impl WorkflowEngine {
                                         ],
                                     )
                                     .await?;
-                                continue;
+                                return Ok(());
                             }
                             ExecutionResult::Failure(reason) => {
                                 state_manager
@@ -500,16 +504,16 @@ impl WorkflowEngine {
             }
         }
 
-        let all_completed = workflow_instance
-            .tasks
-            .values()
-            .all(|t| t.status == TaskStatus::Completed)
-            && workflow_instance.verifier_states.values().all(|state| {
-                matches!(
-                    state.status,
-                    VerifierStateStatus::Accepted | VerifierStateStatus::ExhaustedAccepted
-                )
-            });
+        let all_completed = workflow_def.tasks.iter().all(|task_def| {
+            self.latest_materialized_attempt_id(&workflow_instance, &task_def.id)
+                .and_then(|task_attempt_id| workflow_instance.tasks.get(&task_attempt_id))
+                .is_some_and(|task| task.status == TaskStatus::Completed)
+        }) && workflow_instance.verifier_states.values().all(|state| {
+            matches!(
+                state.status,
+                VerifierStateStatus::Accepted | VerifierStateStatus::ExhaustedAccepted
+            )
+        });
         if all_completed {
             state_manager
                 .commit_events_for_instance(
@@ -692,6 +696,7 @@ impl WorkflowEngine {
                     task_def_id: task_def_id.clone(),
                     status: TaskStatus::Pending,
                     satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: None,
@@ -853,6 +858,10 @@ impl WorkflowEngine {
         ExecutionMetadata {
             generation_index: task_instance.generation_index,
             loop_context,
+            human_input_provided: task_instance
+                .human_input
+                .as_ref()
+                .map(format_human_input_for_execution),
         }
     }
 
@@ -1208,6 +1217,12 @@ fn validate_inputs(
     }
 
     Ok(())
+}
+
+fn format_human_input_for_execution(input: &serde_json::Value) -> String {
+    input.as_str().map(str::to_string).unwrap_or_else(|| {
+        serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string())
+    })
 }
 
 fn verifier_rerun_start_task_id(

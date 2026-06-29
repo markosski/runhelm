@@ -79,6 +79,12 @@ pub struct TaskDispatch {
     pub inputs: Vec<serde_json::Value>,
     #[serde(default)]
     pub execution_metadata: ExecutionMetadata,
+    #[serde(
+        default,
+        rename = "input_provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub human_input_provided: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +289,7 @@ impl WorkerPool {
                 task: task.clone(),
                 workspace_path_suffix,
                 inputs: inputs.to_vec(),
+                human_input_provided: execution_metadata.human_input_provided.clone(),
                 execution_metadata,
             },
             constraints,
@@ -1236,6 +1243,7 @@ mod tests {
                     ExecutionMetadata {
                         generation_index: 3,
                         loop_context: None,
+                        human_input_provided: None,
                     },
                     TaskDispatchConstraints {
                         pinned_host_id: Some(WorkerHostId::new("host-a")),
@@ -1637,7 +1645,10 @@ mod tests {
             unwrap_failure(execution.await.unwrap().unwrap()),
             format!("task {} timed out after 10ms", claimed.task_id)
         );
-        assert_eq!(pool.worker_for_active_dispatch(&claimed.task_id).await, None);
+        assert_eq!(
+            pool.worker_for_active_dispatch(&claimed.task_id).await,
+            None
+        );
     }
 
     #[tokio::test]

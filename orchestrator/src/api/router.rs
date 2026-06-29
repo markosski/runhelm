@@ -65,6 +65,10 @@ pub fn create_public_router(
             get(handlers::get_task_result_generation),
         )
         .route(
+            "/workflows/{workflow_instance_id}/tasks/{task_id}/human-input",
+            post(handlers::submit_human_input),
+        )
+        .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
         )
@@ -96,4 +100,29 @@ pub fn create_worker_router(
         )
         .fallback(handlers::not_found)
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::fake_executor::FakeExecutor;
+    use crate::adapters::memory_storage::MemoryStorage;
+    use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+
+    #[test]
+    fn public_router_accepts_human_input_route_shape() {
+        let storage = Arc::new(MemoryStorage::new());
+        let orchestrator = Arc::new(Orchestrator::new(
+            storage.clone(),
+            Arc::new(FakeExecutor::new()),
+            Arc::new(MemoryWorkflowQueue::new(10)),
+        ));
+
+        let _router = create_public_router(
+            orchestrator,
+            Arc::new(WorkflowService::new(storage.clone())),
+            Arc::new(FunctionService::new(storage)),
+            WorkerPool::new(),
+        );
+    }
 }
