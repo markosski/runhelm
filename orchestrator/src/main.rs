@@ -5,7 +5,8 @@ mod ports;
 
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::info;
+use tokio::time::{self, Duration};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::adapters::docker_executor::DockerExecutor;
@@ -54,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
         worker_pool.clone(),
     );
     let worker_app = router::create_worker_router(
-        orchestrator,
+        orchestrator.clone(),
         workflow_service,
         function_service,
         worker_pool.clone(),
@@ -69,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Worker API listening on {}", worker_listener.local_addr()?);
 
     let _ = worker_pool::start_task_timeout_monitor(worker_pool.clone());
-    let _ = worker_pool::start_worker_heartbeat_monitor(worker_pool.clone());
+    let _ = start_pinned_host_loss_monitor(orchestrator.clone(), worker_pool.clone());
 
     tokio::try_join!(
         axum::serve(public_listener, public_app),
@@ -101,4 +102,32 @@ fn resolve_public_http_addr() -> String {
 
 fn resolve_worker_http_addr() -> String {
     std::env::var("RUNHELM_WORKER_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string())
+}
+
+fn start_pinned_host_loss_monitor(
+    orchestrator: Arc<Orchestrator>,
+    worker_pool: WorkerPool,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = time::interval(Duration::from_millis(100));
+        loop {
+            ticker.tick().await;
+            let lost_hosts = worker_pool.update_worker_liveness().await;
+            if lost_hosts.is_empty() {
+                continue;
+            }
+
+            match orchestrator
+                .fail_workflows_pinned_to_lost_hosts(&lost_hosts)
+                .await
+            {
+                Ok(failed) => {
+                    info!(failed, lost_hosts = ?lost_hosts, "Pinned host loss reconciliation complete");
+                }
+                Err(error) => {
+                    error!(%error, lost_hosts = ?lost_hosts, "Pinned host loss reconciliation failed");
+                }
+            }
+        }
+    })
 }

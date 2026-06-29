@@ -36,7 +36,7 @@
 - [x] 4.3 Add restart recovery handling for abandoned running task attempts after in-memory dispatch leases are lost
 - [x] 4.4 Add human-input submission API and domain events for durably recording submitted input
 - [x] 4.5 Materialize or resume human-input continuation attempts with preserved workflow instance ID, logical task ID, and generation lineage
-- [ ] 4.6 Mark a pinned workflow instance failed when its pinned host is declared lost after heartbeat policy
+- [x] 4.6 Mark a pinned workflow instance failed when its pinned host is declared lost after heartbeat policy
 - [ ] 4.7 Add default retry behavior that preserves the existing workflow pin
 - [ ] 4.8 Add force retry behavior that explicitly reassigns the workflow instance to a new registered host and records that local context may be lost
 - [ ] 4.9 Add workflow engine/API tests for restart recovery, terminal workflow non-requeue, human-input resume, pinned host loss failure, default retry on same host, force retry reassignment, and user-visible retry/give-up state

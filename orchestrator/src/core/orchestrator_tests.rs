@@ -1024,6 +1024,116 @@ async fn startup_recovery_requeues_abandoned_running_task_attempts() {
 }
 
 #[tokio::test]
+async fn lost_pinned_host_marks_nonterminal_workflows_failed() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let lost_host = WorkerHostId::new("host-a");
+    let other_host = WorkerHostId::new("host-b");
+
+    for (id, status, pinned_host) in [
+        (
+            "pending-workflow",
+            WorkflowStatus::Pending,
+            Some(lost_host.clone()),
+        ),
+        (
+            "running-workflow",
+            WorkflowStatus::Running,
+            Some(lost_host.clone()),
+        ),
+        (
+            "paused-workflow",
+            WorkflowStatus::Paused,
+            Some(lost_host.clone()),
+        ),
+        (
+            "input-needed-workflow",
+            WorkflowStatus::InputNeeded,
+            Some(lost_host.clone()),
+        ),
+        (
+            "completed-workflow",
+            WorkflowStatus::Completed,
+            Some(lost_host.clone()),
+        ),
+        (
+            "already-failed-workflow",
+            WorkflowStatus::Failed,
+            Some(lost_host.clone()),
+        ),
+        (
+            "other-host-workflow",
+            WorkflowStatus::Pending,
+            Some(other_host.clone()),
+        ),
+        ("unpinned-workflow", WorkflowStatus::Pending, None),
+    ] {
+        let mut instance = workflow_instance(id, "workflow-1");
+        instance.status = status;
+        instance.pinned_worker_host = pinned_host;
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+    }
+
+    let failed = orchestrator
+        .fail_workflows_pinned_to_lost_hosts(std::slice::from_ref(&lost_host))
+        .await
+        .unwrap();
+
+    assert_eq!(failed, 4);
+    for id in [
+        "pending-workflow",
+        "running-workflow",
+        "paused-workflow",
+        "input-needed-workflow",
+    ] {
+        let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
+        assert_eq!(instance.status, WorkflowStatus::Failed);
+        assert_eq!(instance.pinned_worker_host, Some(lost_host.clone()));
+    }
+
+    assert_eq!(
+        storage
+            .get_workflow_instance("completed-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Completed
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("already-failed-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Failed
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("other-host-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("unpinned-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+}
+
+#[tokio::test]
 async fn remove_and_purge_affect_pending_queue_only() {
     let orchestrator = orchestrator();
 

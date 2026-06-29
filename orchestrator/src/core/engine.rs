@@ -109,6 +109,13 @@ impl WorkflowEngine {
             None => anyhow::bail!("Workflow instance not found"),
         };
 
+        if matches!(
+            workflow_instance.status,
+            WorkflowStatus::Completed | WorkflowStatus::Failed
+        ) {
+            return Ok(());
+        }
+
         let workflow_def = match self
             .storage
             .get_workflow_def(&workflow_instance.workflow_def_id)

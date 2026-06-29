@@ -4,7 +4,7 @@ use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
-    StartupWorkflowDiscovery, TaskDispatchConstraints, WorkflowInfo, WorkflowStatus,
+    StartupWorkflowDiscovery, TaskDispatchConstraints, WorkerHostId, WorkflowInfo, WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::executor::ExecutorPort;
@@ -13,10 +13,11 @@ use crate::ports::storage::{
     WorkflowInstanceFilter,
 };
 use crate::ports::workflow_queue::WorkflowQueuePort;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[cfg(test)]
 #[path = "orchestrator_tests.rs"]
@@ -190,6 +191,53 @@ impl Orchestrator {
         Ok(count)
     }
 
+    /// Fails non-terminal workflow instances pinned to hosts that heartbeat
+    /// policy has declared lost. The existing pin remains on the snapshot so
+    /// later retry behavior can decide whether to preserve or reassign it.
+    pub async fn fail_workflows_pinned_to_lost_hosts(
+        &self,
+        lost_hosts: &[WorkerHostId],
+    ) -> anyhow::Result<usize> {
+        if lost_hosts.is_empty() {
+            return Ok(0);
+        }
+
+        let lost_hosts = lost_hosts.iter().cloned().collect::<HashSet<_>>();
+        let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
+        let active = self.list_active_workflow_info().await?;
+        let mut failed = 0;
+
+        for info in active.runnable.into_iter().chain(active.blocked) {
+            let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
+                continue;
+            };
+            let Some(pinned_host) = &instance.pinned_worker_host else {
+                continue;
+            };
+            if is_terminal_workflow_status(&instance.status) || !lost_hosts.contains(pinned_host) {
+                continue;
+            }
+            let pinned_host_id = pinned_host.0.clone();
+
+            state_manager
+                .commit_events_for_instance(
+                    instance,
+                    vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                        status: WorkflowStatus::Failed,
+                    }],
+                )
+                .await?;
+            failed += 1;
+            warn!(
+                workflow_instance_id = %info.id,
+                pinned_host_id = %pinned_host_id,
+                "marked workflow failed because pinned host was declared lost"
+            );
+        }
+
+        Ok(failed)
+    }
+
     async fn execute_task_isolated_with_id(
         &self,
         isolated_execution_id: String,
@@ -266,6 +314,10 @@ fn all_nonterminal_workflow_filter() -> Vec<WorkflowInstanceFilter> {
         WorkflowStatus::Paused,
         WorkflowStatus::InputNeeded,
     ])]
+}
+
+fn is_terminal_workflow_status(status: &WorkflowStatus) -> bool {
+    matches!(status, WorkflowStatus::Completed | WorkflowStatus::Failed)
 }
 
 fn isolated_workflow_task_execution_id(

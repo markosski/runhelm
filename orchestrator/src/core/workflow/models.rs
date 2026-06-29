@@ -95,6 +95,7 @@ pub struct WorkflowInstance {
     pub id: String,
     pub workflow_def_id: String,
     pub status: WorkflowStatus,
+    // TODO: make this non Optional if possible
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_worker_host: Option<WorkerHostId>,
     // Keyed by task_attempt_id, e.g. "task-a[2]".

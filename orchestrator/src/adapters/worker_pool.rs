@@ -6,7 +6,7 @@ use crate::core::workflow::models::{
 use crate::ports::executor::ExecutionResult;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +17,6 @@ use tokio::time;
 use tracing::{debug, warn};
 
 const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
-const HEARTBEAT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_MISSED_HEARTBEAT_THRESHOLD: u32 = 3;
 static NEXT_WORKER_POOL_NAMESPACE_ID: AtomicU64 = AtomicU64::new(0);
@@ -436,18 +435,74 @@ impl WorkerPool {
             .map(|lease| lease.worker_id.0.clone())
     }
 
-    async fn update_worker_liveness(&self) {
+    // Identify dead worker hosts, return host ids in result
+    pub async fn update_worker_liveness(&self) -> Vec<WorkerHostId> {
         let now = epoch_ms();
+        let mut deregistered_hosts = Vec::new();
         let mut workers = self.workers.write().await;
         workers.retain(|worker_id, worker| {
             if worker.heartbeat.deregister_after_epoch_ms <= now {
-                debug!(%worker_id, "deregistering worker after missed heartbeat threshold");
+                let host_id = worker.identity.host_id.clone();
+                debug!(%worker_id, host_id = %host_id.0, "deregistering worker after missed heartbeat threshold");
+                deregistered_hosts.push(host_id);
                 return false;
             }
 
             worker.heartbeat.missed_heartbeat = worker.heartbeat.next_heartbeat_due_epoch_ms <= now;
             true
         });
+
+        if deregistered_hosts.is_empty() {
+            return vec![];
+        }
+
+        let remaining_hosts = workers
+            .values()
+            .map(|worker| worker.identity.host_id.clone())
+            .collect::<HashSet<_>>();
+        drop(workers);
+
+        let mut lost_hosts = deregistered_hosts
+            .into_iter()
+            .filter(|host_id| !remaining_hosts.contains(host_id))
+            .collect::<Vec<_>>();
+        lost_hosts.sort_by(|left, right| left.0.cmp(&right.0));
+        lost_hosts.dedup();
+
+        self.cancel_pending_tasks_for_lost_hosts(&lost_hosts).await;
+
+        lost_hosts
+    }
+
+    async fn cancel_pending_tasks_for_lost_hosts(&self, lost_hosts: &[WorkerHostId]) {
+        if lost_hosts.is_empty() {
+            return;
+        }
+
+        let lost_hosts = lost_hosts.iter().cloned().collect::<HashSet<_>>();
+        let mut pending_tasks = self.pending_tasks.lock().await;
+        let mut retained_tasks = VecDeque::with_capacity(pending_tasks.len());
+
+        while let Some(task) = pending_tasks.pop_front() {
+            let pinned_host_lost = task
+                .constraints
+                .pinned_host_id
+                .as_ref()
+                .is_some_and(|host_id| lost_hosts.contains(host_id));
+
+            if pinned_host_lost {
+                warn!(
+                    workflow_inst_id = %task.dispatch.workflow_inst_id,
+                    task_id = %task.dispatch.task_id,
+                    pinned_host_id = ?task.constraints.pinned_host_id,
+                    "cancelling pending task dispatch because pinned host was declared lost"
+                );
+            } else {
+                retained_tasks.push_back(task);
+            }
+        }
+
+        *pending_tasks = retained_tasks;
     }
 
     async fn complete_timed_out_tasks(&self) {
@@ -560,16 +615,6 @@ pub fn start_task_timeout_monitor(worker_pool: WorkerPool) -> JoinHandle<()> {
         loop {
             ticker.tick().await;
             worker_pool.complete_timed_out_tasks().await;
-        }
-    })
-}
-
-pub fn start_worker_heartbeat_monitor(worker_pool: WorkerPool) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = time::interval(HEARTBEAT_MONITOR_INTERVAL);
-        loop {
-            ticker.tick().await;
-            worker_pool.update_worker_liveness().await;
         }
     })
 }
@@ -697,9 +742,61 @@ mod tests {
             .await;
 
         time::sleep(Duration::from_millis(35)).await;
-        pool.update_worker_liveness().await;
+        let lost_hosts = pool.update_worker_liveness().await;
 
         assert!(!pool.workers.read().await.contains_key("worker-1"));
+        assert_eq!(lost_hosts, vec![WorkerHostId::new("test-host")]);
+    }
+
+    #[tokio::test]
+    async fn deregistering_one_worker_does_not_lose_host_with_remaining_registration() {
+        let pool = heartbeat_test_pool();
+        pool.tick_worker_heartbeat(test_registration_for_host("worker-1", "host-a"))
+            .await;
+        time::sleep(Duration::from_millis(20)).await;
+        pool.tick_worker_heartbeat(test_registration_for_host("worker-2", "host-a"))
+            .await;
+
+        time::sleep(Duration::from_millis(15)).await;
+        let lost_hosts = pool.update_worker_liveness().await;
+
+        let workers = pool.workers.read().await;
+        assert!(!workers.contains_key("worker-1"));
+        assert!(workers.contains_key("worker-2"));
+        assert!(lost_hosts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lost_host_cancels_pending_dispatches_pinned_to_that_host() {
+        let pool = heartbeat_test_pool();
+        pool.tick_worker_heartbeat(test_registration_for_host("worker-1", "host-a"))
+            .await;
+
+        let task = test_task("task-1");
+        let execution_pool = pool.clone();
+        let execution = tokio::spawn(async move {
+            execution_pool
+                .enqueue_task(
+                    "workflow-1",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    ExecutionMetadata::default(),
+                    TaskDispatchConstraints {
+                        pinned_host_id: Some(WorkerHostId::new("host-a")),
+                    },
+                )
+                .await
+        });
+        wait_for_pending_tasks(&pool, 1).await;
+
+        time::sleep(Duration::from_millis(35)).await;
+        let lost_hosts = pool.update_worker_liveness().await;
+
+        assert_eq!(lost_hosts, vec![WorkerHostId::new("host-a")]);
+        assert!(pool.pending_tasks.lock().await.is_empty());
+        let error = execution.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("cancelled before claim"));
     }
 
     #[tokio::test]
