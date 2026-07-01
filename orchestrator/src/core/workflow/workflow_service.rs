@@ -195,6 +195,43 @@ impl WorkflowService {
         Ok(next_task_attempt_id)
     }
 
+    pub async fn retry_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<String> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        if instance.status != WorkflowStatus::Failed {
+            anyhow::bail!("workflow instance {workflow_instance_id} is not failed");
+        }
+
+        let task_attempt_id = resolve_task_attempt_id(&instance, task_id, None)?;
+        let task = instance
+            .tasks
+            .get(&task_attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
+
+        if task.status != TaskStatus::Failed {
+            anyhow::bail!("task {task_id} is not failed");
+        }
+
+        WorkflowStateManager::new(Arc::clone(&self.storage))
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::TaskRetryRequested {
+                    task_attempt_id: task_attempt_id.clone(),
+                }],
+            )
+            .await?;
+
+        Ok(task_attempt_id)
+    }
+
     pub async fn get_task_result(
         &self,
         workflow_instance_id: &str,
@@ -667,7 +704,7 @@ fn validate_non_overlapping_verifier_slices(def: &WorkflowDef) -> anyhow::Result
 mod tests {
     use super::*;
     use crate::adapters::memory_storage::MemoryStorage;
-    use crate::core::models::{FunctionTaskDef, TaskTypeDef};
+    use crate::core::models::{FunctionTaskDef, TaskSatisfactionStatus, TaskTypeDef};
     use serde_json::json;
 
     fn workflow_def(id: &str) -> WorkflowDef {
@@ -1009,5 +1046,114 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("not waiting for input"));
+    }
+
+    #[tokio::test]
+    async fn retry_task_records_durable_event_and_preserves_pin() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        let instance = WorkflowInstance {
+            id: "failed-workflow".to_string(),
+            workflow_def_id: "workflow1".to_string(),
+            status: WorkflowStatus::Failed,
+            pinned_worker_host: Some(WorkerHostId::new("test-host")),
+            tasks: HashMap::from([
+                (
+                    "taska[1]".to_string(),
+                    TaskInstance {
+                        task_def_id: "taska".to_string(),
+                        status: TaskStatus::Failed,
+                        satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                        human_input: None,
+                        input_data: vec![json!({"input": true})],
+                        input_mapping: vec![],
+                        output_data: Some(json!({"stale": true})),
+                        generation_index: 1,
+                        verifier_metadata: None,
+                    },
+                ),
+                (
+                    "taskb[1]".to_string(),
+                    TaskInstance {
+                        task_def_id: "taskb".to_string(),
+                        status: TaskStatus::Completed,
+                        satisfaction_status: TaskSatisfactionStatus::Satisfied,
+                        human_input: None,
+                        input_data: vec![],
+                        input_mapping: vec![],
+                        output_data: Some(json!({"ok": true})),
+                        generation_index: 1,
+                        verifier_metadata: None,
+                    },
+                ),
+            ]),
+            verifier_states: HashMap::new(),
+        };
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+
+        let task_attempt_id = service
+            .retry_task("failed-workflow", "taska")
+            .await
+            .unwrap();
+
+        assert_eq!(task_attempt_id, "taska[1]");
+        let saved = storage
+            .get_workflow_instance("failed-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(
+            saved.pinned_worker_host,
+            Some(WorkerHostId::new("test-host"))
+        );
+        assert_eq!(saved.tasks["taska[1]"].status, TaskStatus::Pending);
+        assert_eq!(
+            saved.tasks["taska[1]"].satisfaction_status,
+            TaskSatisfactionStatus::Pending
+        );
+        assert_eq!(saved.tasks["taska[1]"].output_data, None);
+        assert_eq!(saved.tasks["taskb[1]"].status, TaskStatus::Completed);
+
+        let events = storage
+            .get_workflow_instance_events("failed-workflow")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::TaskRetryRequested { task_attempt_id }
+                if task_attempt_id == "taska[1]"
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_task_rejects_non_failed_workflow() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "pending-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Pending,
+                    pinned_worker_host: Some(WorkerHostId::new("test-host")),
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let error = service
+            .retry_task("pending-workflow", "taska")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("is not failed"));
     }
 }

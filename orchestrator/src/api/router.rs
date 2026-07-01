@@ -69,6 +69,10 @@ pub fn create_public_router(
             post(handlers::submit_human_input),
         )
         .route(
+            "/workflows/{workflow_instance_id}/tasks/{task_id}/retry",
+            post(handlers::retry_task),
+        )
+        .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
         )
@@ -110,7 +114,7 @@ mod tests {
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 
     #[test]
-    fn public_router_accepts_human_input_route_shape() {
+    fn public_router_accepts_task_action_route_shapes() {
         let storage = Arc::new(MemoryStorage::new());
         let orchestrator = Arc::new(Orchestrator::new(
             storage.clone(),

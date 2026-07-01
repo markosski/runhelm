@@ -74,6 +74,8 @@ pub enum WorkflowInstanceEvent {
         continuation_task_attempt_id: String,
         submitted_input: serde_json::Value,
     },
+    /// Requests a failed task attempt to run again without changing workflow placement.
+    TaskRetryRequested { task_attempt_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +214,22 @@ pub fn apply_workflow_instance_event(
                 .insert(continuation_task_attempt_id.clone(), continuation);
             instance.status = WorkflowStatus::Pending;
         }
+        WorkflowInstanceEvent::TaskRetryRequested { task_attempt_id } => {
+            if instance.status != WorkflowStatus::Failed {
+                anyhow::bail!("workflow instance is not failed");
+            }
+
+            let task = task_mut(instance, task_attempt_id)?;
+            if task.status != TaskStatus::Failed {
+                anyhow::bail!("task attempt {task_attempt_id} is not failed");
+            }
+
+            task.status = TaskStatus::Pending;
+            task.satisfaction_status = TaskSatisfactionStatus::Pending;
+            task.output_data = None;
+            task.verifier_metadata = None;
+            instance.status = WorkflowStatus::Pending;
+        }
     }
 
     Ok(())
@@ -262,6 +280,7 @@ fn verifier_state_mut<'a>(
 mod tests {
     use super::*;
     use crate::core::models::TaskSatisfactionStatus;
+    use crate::core::workflow::models::WorkerHostId;
     use std::collections::HashMap;
 
     fn instance() -> WorkflowInstance {
@@ -444,5 +463,67 @@ mod tests {
             instance.tasks["task-a[2]"].human_input,
             Some(serde_json::json!({"answer": "ship it"}))
         );
+    }
+
+    #[test]
+    fn reducer_applies_task_retry_request() {
+        let mut instance = instance();
+        instance.status = WorkflowStatus::Failed;
+        instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+        instance.tasks.insert(
+            "task-a[1]".to_string(),
+            TaskInstance {
+                status: TaskStatus::Failed,
+                satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                input_data: vec![serde_json::json!({"input": true})],
+                output_data: Some(serde_json::json!({"stale": true})),
+                verifier_metadata: Some(VerifierAttemptMetadata {
+                    status: crate::core::models::VerifierAttemptStatus::Invalid,
+                    decision: None,
+                    feedback: None,
+                    verifier_output: Some(serde_json::json!({"bad": true})),
+                    exit_reason: Some("invalid".to_string()),
+                }),
+                ..task()
+            },
+        );
+
+        apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::TaskRetryRequested {
+                task_attempt_id: "task-a[1]".to_string(),
+            },
+        )
+        .unwrap();
+
+        let task = &instance.tasks["task-a[1]"];
+        assert_eq!(instance.status, WorkflowStatus::Pending);
+        assert_eq!(
+            instance.pinned_worker_host,
+            Some(WorkerHostId::new("host-a"))
+        );
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.satisfaction_status, TaskSatisfactionStatus::Pending);
+        assert_eq!(task.output_data, None);
+        assert_eq!(task.verifier_metadata, None);
+    }
+
+    #[test]
+    fn reducer_rejects_retry_for_non_failed_task() {
+        let mut instance = instance();
+        instance.status = WorkflowStatus::Failed;
+        instance
+            .tasks
+            .insert("task-a[1]".to_string(), TaskInstance { ..task() });
+
+        let error = apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::TaskRetryRequested {
+                task_attempt_id: "task-a[1]".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("is not failed"));
     }
 }
