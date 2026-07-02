@@ -490,6 +490,8 @@ Use `tools: []` to disable tools, `tools: ["_all_"]` to allow every tool availab
 
 Agent tools include RunHelm built-ins, Pi coding-agent built-ins, and Pi-compatible extension tools. The Pi built-in tool names are `read`, `bash`, `edit`, and `write`.
 
+Set `ask: true` and include `ask_user` in `tools` when an Agent may pause for human input. See `worker/examples/example_human_input_workflow.yaml` for a minimal workflow that enters `InputNeeded`, then continues after `POST /workflows/{workflow_instance_id}/tasks/{task_id}/human-input`.
+
 Use `skills: []` to expose no skills, or list exact skill names such as `["ticket-triage"]`. Skills do not support `"_all_"`.
 
 The worker uses Pi's resource loader, so TypeScript extensions and skills are supported. Extension and skill packages are runtime resources, not worker application dependencies. They must already be installed in the worker image or mounted into the worker environment before startup. The default Docker Compose deployment mounts `${RUNHELM_SKILLS_DIR:-${HOME}/.runhelm/skills}` into `/home/runhelm/.pi/agent/skills` as read-only. If a mounted skill and an installed package skill have the same name, the mounted skill takes priority.

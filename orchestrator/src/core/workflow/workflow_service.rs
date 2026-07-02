@@ -437,8 +437,13 @@ fn task_result_for_instance(
             input: task.input_data.clone(),
             metadata,
         },
-        TaskStatus::Running | TaskStatus::InputNeeded { .. } => TaskResult::Running {
+        TaskStatus::Running => TaskResult::Running {
             input: task.input_data.clone(),
+            metadata,
+        },
+        TaskStatus::InputNeeded { description } => TaskResult::InputNeeded {
+            input: task.input_data.clone(),
+            description: description.clone(),
             metadata,
         },
     }
@@ -988,6 +993,75 @@ mod tests {
         let events = service.list_workflow_events("missing").await.unwrap();
 
         assert!(events.is_none());
+    }
+
+    #[tokio::test]
+    async fn input_needed_task_result_is_not_reported_as_running() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow1".to_string(),
+                tasks: vec![agent_task_def("taska")],
+                data_bindings: vec![],
+            })
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "input-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::InputNeeded,
+                    pinned_worker_host: Some(WorkerHostId::new("test-host")),
+                    tasks: HashMap::from([(
+                        "taska[1]".to_string(),
+                        TaskInstance {
+                            task_def_id: "taska".to_string(),
+                            status: TaskStatus::InputNeeded {
+                                description: "Which release channel?".to_string(),
+                            },
+                            satisfaction_status: TaskSatisfactionStatus::Pending,
+                            human_input: None,
+                            input_data: vec![],
+                            input_mapping: vec![],
+                            output_data: None,
+                            generation_index: 1,
+                            verifier_metadata: None,
+                        },
+                    )]),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .get_task_result("input-workflow", "taska")
+            .await
+            .unwrap();
+        match result {
+            TaskResult::InputNeeded {
+                input,
+                description,
+                metadata: Some(metadata),
+            } => {
+                assert_eq!(input, Vec::<serde_json::Value>::new());
+                assert_eq!(description, "Which release channel?");
+                assert_eq!(metadata.task_attempt_id, "taska[1]");
+                assert_eq!(metadata.generation_index, 1);
+            }
+            result => panic!("expected input-needed result, got {result:?}"),
+        }
+
+        let tasks = service.list_task_results("input-workflow").await.unwrap();
+        let serialized = serde_json::to_value(&tasks[0]).unwrap();
+        assert_eq!(serialized["result"]["status"], "input_needed");
+        assert_eq!(
+            serialized["result"]["description"],
+            "Which release channel?"
+        );
     }
 
     #[tokio::test]

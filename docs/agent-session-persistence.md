@@ -26,6 +26,8 @@ For a continuation attempt where no session can be loaded, the worker creates a 
 
 The public human-input submission API durably records submitted input as workflow history and materializes the next attempt for the same logical Agent task. For reusable sessions, the worker receives that submitted response as the current event and appends it to the existing Agent session.
 
+`worker/examples/example_human_input_workflow.yaml` shows a minimal Agent workflow that enables `ask: true`, approves the `ask_user` tool, enters `InputNeeded`, and then returns JSON after the submitted human response is injected into the continuation attempt.
+
 ## Missing Session Recovery
 
 Session stores return `null` for missing sessions and throw typed `SessionStoreError` values for unreadable sessions. Agent executors log the session key and attempt number for both cases, then continue with a fresh session.
