@@ -101,11 +101,11 @@ For the first implementation, worker registration is still required before accep
 
 Future option: once task result payloads carry durable dispatch identity and lease matching is fully wired, the orchestrator may persist dispatch leases and accept a result from an unregistered worker only when a durable lease matches the dispatch, worker, host, workflow instance, task attempt, and non-expired or grace-period policy.
 
-### Retry Defaults To Same Host, Force Can Reassign
+### Retry Defaults To Same Host, Force Can Reassign When Needed
 
-Retries for failed pinned workflow instances default to the existing `pinned_host_id`. A force retry option may explicitly clear the prior pin and assign the workflow instance to a new registered host. Force retry is allowed to lose host-local workspace and Agent session context; the user chooses it when they decide that loss is acceptable.
+Retries for failed pinned workflow instances default to the existing `pinned_host_id`. A force retry option is a stronger retry that first uses the existing pinned host when that host is still eligible; if the existing host is unavailable, force retry may assign the workflow instance to another registered host. Reassignment is allowed to lose host-local workspace and Agent session context; the user chooses it when they decide that loss is acceptable.
 
-Rationale: the safe default preserves context and avoids accidental migration. The force path provides an escape hatch when the original host is gone and the user prefers a best-effort rerun over abandoning the instance.
+Rationale: the safe default preserves context and avoids accidental migration. The force path behaves the same as default retry while the original host is alive, and provides an escape hatch when the original host is gone and the user prefers a best-effort rerun over abandoning the instance.
 
 ### Human-Input Resume Reuses Existing Placement
 

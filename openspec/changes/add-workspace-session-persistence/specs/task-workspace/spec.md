@@ -96,10 +96,6 @@ The system SHALL support configurable workspace TTL cleanup while preserving wor
 - **WHEN** a RunHelm-owned workspace belongs to a workflow instance in `Pending`, `Running`, or `InputNeeded`
 - **THEN** workspace cleanup MUST NOT remove that workspace only because its timestamp is older than the configured TTL
 
-#### Scenario: Cleanup monitor runs periodically
-- **WHEN** the workspace TTL monitor is enabled
-- **THEN** it wakes on a configured interval and attempts to clean expired eligible workspaces
-
-#### Scenario: TTL monitor is implemented last
-- **WHEN** implementing the task workspace capability
-- **THEN** workspace creation and executor payload propagation are completed before the TTL monitor is added
+#### Scenario: Caller-driven cleanup checks eligibility
+- **WHEN** workspace TTL cleanup is requested
+- **THEN** workspace cleanup checks workflow ownership and timestamp eligibility before removing any workspace

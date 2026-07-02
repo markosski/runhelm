@@ -87,16 +87,23 @@ The system SHALL mark a pinned workflow instance as failed when the pinned host 
 - **THEN** the user must decide whether to give up on that workflow instance, retry on the same host, or force retry on a new host
 
 ### Requirement: Pinned Workflow Retry
-The system SHALL preserve host pins for ordinary retries and SHALL allow explicit force retry to reassign a workflow instance to a new host.
+The system SHALL preserve host pins for ordinary retries and SHALL allow explicit force retry to use another eligible host when the existing pinned host is unavailable.
 
 #### Scenario: Default retry uses same host
 - **WHEN** a failed pinned workflow instance is retried without force
 - **THEN** the retry keeps the existing workflow host pin
 
-#### Scenario: Force retry reassigns host
+#### Scenario: Force retry keeps available existing host
 - **WHEN** a failed pinned workflow instance is retried with force
+- **AND** the existing pinned host has an eligible registered worker
+- **THEN** the retry keeps the existing workflow host pin
+- **THEN** the workflow does not record host-local workspace or Agent session context loss
+
+#### Scenario: Force retry reassigns unavailable host
+- **WHEN** a failed pinned workflow instance is retried with force
+- **AND** the existing pinned host has no eligible registered worker
 - **AND** at least one eligible worker is registered
-- **THEN** the system assigns a new host ID from eligible registered workers
+- **THEN** the system assigns a host ID from eligible registered workers
 - **THEN** the workflow records that host-local workspace and Agent session context may be lost
 
 #### Scenario: Force retry has no eligible host
