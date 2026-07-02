@@ -43,11 +43,11 @@
 
 ## 5. Cleanup, Documentation, and Compatibility
 
-- [ ] 5.1 Update workspace cleanup so TTL deletion skips workspaces owned by `Pending`, `Running`, or `InputNeeded` workflow instances
-- [ ] 5.2 Allow cleanup of expired workspaces only for terminal workflow instances or explicit administrative deletion
-- [ ] 5.3 Document required `RUNHELM_WORKER_HOST_ID` configuration, first-claim workflow pinning, and single-host compatibility behavior
-- [ ] 5.4 Update `docs/` with remote-worker workflow pinning, heartbeat liveness, Agent session behavior under pins, pause/resume, pinned-host failure, default retry, force retry reassignment, lease recovery, and cleanup behavior
-- [ ] 5.5 Document that workers missing `RUNHELM_WORKER_HOST_ID` fail startup or registration instead of falling back to auto-detected identity
+- [x] 5.1 Update workspace cleanup so TTL deletion skips workspaces owned by `Pending`, `Running`, or `InputNeeded` workflow instances
+- [x] 5.2 Allow cleanup of expired workspaces only for terminal workflow instances or explicit administrative deletion
+- [x] 5.3 Document required `RUNHELM_WORKER_HOST_ID` configuration, first-claim workflow pinning, and single-host compatibility behavior
+- [x] 5.4 Update `docs/` with remote-worker workflow pinning, heartbeat liveness, Agent session behavior under pins, pause/resume, pinned-host failure, default retry, force retry reassignment, lease recovery, and cleanup behavior
+- [x] 5.5 Document that workers missing `RUNHELM_WORKER_HOST_ID` fail startup or registration instead of falling back to auto-detected identity
 
 ## 6. Validation
 

@@ -70,9 +70,9 @@ Blob-backed implementations should add concurrency protection, such as ETags, ge
 
 ## Remote Worker Pinning
 
-The OpenSpec change `add-workspace-session-persistence` defines the planned interaction between Agent sessions and remote worker placement. Workers must be configured with `RUNHELM_WORKER_HOST_ID`; RunHelm does not auto-detect this identity. The value should identify the durable execution state domain that owns the workspace and session roots, not the worker container or process.
+The OpenSpec change `add-workspace-session-persistence` defines the planned interaction between Agent sessions and remote worker placement. Workers must be configured with `RUNHELM_WORKER_HOST_ID`; RunHelm does not auto-detect this identity. A worker that starts or registers without a non-empty value fails with a host identity configuration error. The value should identify the durable execution state domain that owns the workspace and session roots, not the worker container or process.
 
-Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution, and reusable Agent sessions in that workflow instance continue on the pinned host. This keeps host-local session files and workspace files aligned. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots.
+Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution, and reusable Agent sessions in that workflow instance continue on the pinned host. This keeps host-local session files and workspace files aligned. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots. A single-host deployment remains compatible by configuring every worker that shares those roots with the same host ID.
 
 RunHelm records the workflow `pinned_host_id` on the workflow instance snapshot, separately from task results and Agent transcripts. Dispatch leases record the worker process currently executing an attempt. This keeps Agent session placement out of workflow output data while still giving restart and retry code a durable scheduling source of truth.
 

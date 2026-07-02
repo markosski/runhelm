@@ -126,11 +126,11 @@ If a task needs files produced by another task in the same workspace group, the 
 
 ## Remote Worker Pinning
 
-The OpenSpec change `add-workspace-session-persistence` defines the planned remote-worker behavior for workspace continuity. Workers must be configured with `RUNHELM_WORKER_HOST_ID`; RunHelm does not auto-detect this identity. The value should identify the durable execution state domain that owns the workspace and session roots, not the worker container or process.
+Workers must be configured with `RUNHELM_WORKER_HOST_ID`; RunHelm does not auto-detect this identity. A worker that starts or registers without a non-empty `RUNHELM_WORKER_HOST_ID` fails with a host identity configuration error. The value should identify the durable execution state domain that owns the workspace and session roots, not the worker container or process.
 
 Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution. The public workflow trigger path selects a currently eligible registered host and stores it on the workflow instance snapshot. If the workflow definition exists but no eligible worker host is registered, the trigger is rejected as unavailable rather than creating an unpinned queued instance.
 
-After the pin is established, every task in that workflow instance must execute on workers registered with the same host identifier. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots; any of those workers can execute work for the pinned workflow.
+After the first-claim pin is established, every task in that workflow instance must execute on workers registered with the same host identifier. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots; any of those workers can execute work for the pinned workflow. A single-host deployment remains compatible by configuring every worker process that shares the same workspace and session roots with the same host ID.
 
 The in-memory worker registry keeps worker process identity and host identity together as a single worker identity. The worker process ID identifies the live worker that claims or completes a dispatch, while the host ID is the placement identity used for workflow pin matching.
 
@@ -152,7 +152,9 @@ If no worker is currently registered for the pinned host, RunHelm should wait ra
 
 `WorkspaceManager` contains the cleanup logic for expired RunHelm-owned workspace directories under a configured workspace root. Cleanup relies on the workspace `.timestamp` marker and only targets the RunHelm workspace layout, not arbitrary paths returned by task code.
 
-Worker-local cleanup is not yet wired into the worker runtime. The cleanup policy for pinned, paused, and terminal workflow instances is tracked by the remaining cleanup tasks in this change.
+TTL cleanup must be given workflow status information for the workflow-instance directory it is considering. Expired workspaces are removed only when the owning workflow instance is terminal: `Completed` or `Failed`. Workspaces for `Pending`, `Running`, `InputNeeded`, `Paused`, or unknown workflow instances are retained even when their `.timestamp` is older than the TTL. This protects active work, human-input waits, and paused workflows whose response time may exceed local disk cleanup TTLs.
+
+Explicit administrative deletion is separate from TTL cleanup. Admin deletion removes the requested validated RunHelm workspace suffix directly, even if the owning workflow is still active, so callers should reserve it for operator-confirmed cleanup.
 
 ## File Access Scope
 
