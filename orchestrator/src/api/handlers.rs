@@ -494,3 +494,231 @@ fn parse_workflow_status(status: &str) -> Result<WorkflowStatus, StatusCode> {
         _ => Err(StatusCode::BAD_REQUEST),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::fake_executor::FakeExecutor;
+    use crate::adapters::memory_storage::MemoryStorage;
+    use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+    use crate::adapters::worker_pool::WorkerPool;
+    use crate::api::router::AppState;
+    use crate::core::function_service::FunctionService;
+    use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
+    use crate::core::orchestrator::Orchestrator;
+    use crate::core::workflow::models::{
+        WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus,
+    };
+    use crate::core::workflow::workflow_service::WorkflowService;
+    use crate::ports::storage::StoragePort;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn failed_task() -> TaskInstance {
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: Some(json!({"stale": true})),
+            generation_index: 1,
+            verifier_metadata: None,
+        }
+    }
+
+    fn input_needed_task() -> TaskInstance {
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::InputNeeded {
+                description: "need approval".to_string(),
+            },
+            satisfaction_status: TaskSatisfactionStatus::Pending,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        }
+    }
+
+    fn workflow_instance(
+        id: &str,
+        status: WorkflowStatus,
+        pinned_worker_host: Option<WorkerHostId>,
+        task: TaskInstance,
+    ) -> WorkflowInstance {
+        WorkflowInstance {
+            id: id.to_string(),
+            workflow_def_id: "workflow-1".to_string(),
+            status,
+            pinned_worker_host,
+            tasks: HashMap::from([("taska[1]".to_string(), task)]),
+            verifier_states: HashMap::new(),
+        }
+    }
+
+    fn app_state(storage: Arc<MemoryStorage>, worker_pool: WorkerPool) -> AppState {
+        AppState {
+            orchestrator: Arc::new(Orchestrator::new(
+                storage.clone(),
+                Arc::new(FakeExecutor::new()),
+                Arc::new(MemoryWorkflowQueue::new(10)),
+            )),
+            workflow_service: Arc::new(WorkflowService::new(storage.clone())),
+            function_service: Arc::new(FunctionService::new(storage)),
+            worker_pool,
+        }
+    }
+
+    async fn save_failed_workflow(storage: &Arc<MemoryStorage>) {
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                workflow_instance(
+                    "failed-workflow",
+                    WorkflowStatus::Failed,
+                    Some(WorkerHostId::new("host-a")),
+                    failed_task(),
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retry_task_api_returns_queued_state_and_preserves_pin() {
+        let storage = Arc::new(MemoryStorage::new());
+        save_failed_workflow(&storage).await;
+        let state = app_state(storage.clone(), WorkerPool::new());
+
+        let Json(response) = retry_task(
+            State(state.clone()),
+            Path(("failed-workflow".to_string(), "taska".to_string())),
+            Query(RetryTaskQuery { force: None }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["workflow_instance_id"], "failed-workflow");
+        assert_eq!(response["task_attempt_id"], "taska[1]");
+        assert_eq!(response["pinned_host_id"], "host-a");
+        assert_eq!(response["local_context_may_be_lost"], false);
+
+        let saved = storage
+            .get_workflow_instance("failed-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-a")));
+    }
+
+    #[tokio::test]
+    async fn force_retry_task_api_without_capacity_leaves_workflow_in_failed_state() {
+        let storage = Arc::new(MemoryStorage::new());
+        save_failed_workflow(&storage).await;
+        let state = app_state(storage.clone(), WorkerPool::new());
+
+        let error = retry_task(
+            State(state.clone()),
+            Path(("failed-workflow".to_string(), "taska".to_string())),
+            Query(RetryTaskQuery { force: Some(true) }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, StatusCode::SERVICE_UNAVAILABLE);
+
+        let Json(status) = get_workflow_instance(State(state), Path("failed-workflow".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(status["status"], "Failed");
+        assert_eq!(status["tasks"][0]["status"], "Failed");
+
+        let saved = storage
+            .get_workflow_instance("failed-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Failed);
+        assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-a")));
+    }
+
+    #[tokio::test]
+    async fn submit_human_input_api_materializes_continuation_and_queues_workflow() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage.clone(), WorkerPool::new());
+        state
+            .workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow-1".to_string(),
+                tasks: vec![crate::core::models::TaskDef {
+                    id: "taska".to_string(),
+                    kind: TaskTypeDef::Agent {
+                        model_id: "model".to_string(),
+                        provider_url: "provider".to_string(),
+                        prompt: "prompt".to_string(),
+                        tools: vec![],
+                        skills: vec![],
+                        ask: true,
+                        schema_failure_retry_times: 0.into(),
+                        reuse_session: true,
+                    },
+                    control: None,
+                    timeout_secs: None,
+                    input_schemas: vec![],
+                    output_schema: None,
+                    workspace: None,
+                    required_credentials: vec![],
+                }],
+                data_bindings: vec![],
+            })
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                workflow_instance(
+                    "input-needed-workflow",
+                    WorkflowStatus::InputNeeded,
+                    Some(WorkerHostId::new("host-a")),
+                    input_needed_task(),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let Json(response) = submit_human_input(
+            State(state.clone()),
+            Path(("input-needed-workflow".to_string(), "taska".to_string())),
+            Json(SubmitHumanInputRequest {
+                input: json!({"approved": true}),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["task_attempt_id"], "taska[2]");
+
+        let saved = storage
+            .get_workflow_instance("input-needed-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-a")));
+        assert_eq!(
+            saved.tasks["taska[2]"].human_input,
+            Some(json!({"approved": true}))
+        );
+        assert_eq!(
+            state.orchestrator.get_queue_status().await.unwrap().pending,
+            vec!["input-needed-workflow".to_string()]
+        );
+    }
+}

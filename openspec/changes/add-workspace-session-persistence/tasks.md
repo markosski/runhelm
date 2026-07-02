@@ -39,7 +39,7 @@
 - [x] 4.6 Mark a pinned workflow instance failed when its pinned host is declared lost after heartbeat policy
 - [x] 4.7 Add default retry behavior that preserves the existing workflow pin
 - [x] 4.8 Add force retry behavior that explicitly reassigns the workflow instance to a new registered host and records that local context may be lost
-- [ ] 4.9 Add workflow engine/API tests for restart recovery, terminal workflow non-requeue, human-input resume, pinned host loss failure, default retry on same host, force retry reassignment, and user-visible retry/give-up state
+- [x] 4.9 Add workflow engine/API tests for restart recovery, terminal workflow non-requeue, human-input resume, pinned host loss failure, default retry on same host, force retry reassignment, and user-visible retry/give-up state
 
 ## 5. Cleanup, Documentation, and Compatibility
 
