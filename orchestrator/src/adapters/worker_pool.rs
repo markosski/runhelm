@@ -246,6 +246,31 @@ impl WorkerPool {
 
     pub async fn select_eligible_host(&self) -> Option<WorkerHostId> {
         self.update_worker_liveness().await;
+        self.eligible_hosts().await.into_iter().next()
+    }
+
+    // we should not be seeing current_host as None, that would indicate some suspicious bug
+    // however since current runtime model allows to create task instance as Option,
+    // in this case it is reasonable to support Optional argument here
+    pub async fn select_force_retry_host(
+        &self,
+        current_host: Option<&WorkerHostId>,
+    ) -> Option<WorkerHostId> {
+        self.update_worker_liveness().await;
+        let eligible_hosts = self.eligible_hosts().await;
+
+        if let Some(current_host) = current_host {
+            if eligible_hosts.contains(current_host) {
+                return Some(current_host.clone());
+            }
+        }
+
+        eligible_hosts
+            .into_iter()
+            .find(|host_id| Some(host_id) != current_host)
+    }
+
+    async fn eligible_hosts(&self) -> Vec<WorkerHostId> {
         let workers = self.workers.read().await;
         let mut host_ids = workers
             .values()
@@ -254,7 +279,7 @@ impl WorkerPool {
             .collect::<Vec<_>>();
         host_ids.sort_by(|left, right| left.0.cmp(&right.0));
         host_ids.dedup();
-        host_ids.into_iter().next()
+        host_ids
     }
 
     /// Enqueues a task and waits until it reaches a terminal worker result.
@@ -842,6 +867,52 @@ mod tests {
         time::sleep(Duration::from_millis(15)).await;
 
         assert_eq!(pool.select_eligible_host().await, None);
+    }
+
+    #[tokio::test]
+    async fn force_retry_host_keeps_existing_host_when_it_is_eligible() {
+        let pool = WorkerPool::new();
+        pool.register_worker(test_registration_for_host("worker-1", "host-b"))
+            .await;
+        pool.register_worker(test_registration_for_host("worker-2", "host-a"))
+            .await;
+
+        assert_eq!(
+            pool.select_force_retry_host(Some(&WorkerHostId::new("host-b")))
+                .await,
+            Some(WorkerHostId::new("host-b"))
+        );
+    }
+
+    #[tokio::test]
+    async fn force_retry_host_reassigns_when_existing_host_is_not_eligible() {
+        let pool = heartbeat_test_pool();
+        pool.register_worker(test_registration_for_host("worker-1", "host-a"))
+            .await;
+        time::sleep(Duration::from_millis(15)).await;
+        pool.register_worker(test_registration_for_host("worker-2", "host-b"))
+            .await;
+
+        assert_eq!(
+            pool.select_force_retry_host(Some(&WorkerHostId::new("host-a")))
+                .await,
+            Some(WorkerHostId::new("host-b"))
+        );
+    }
+
+    #[tokio::test]
+    async fn force_retry_host_returns_none_when_no_host_is_eligible() {
+        let pool = heartbeat_test_pool();
+        pool.register_worker(test_registration_for_host("worker-1", "host-a"))
+            .await;
+
+        time::sleep(Duration::from_millis(15)).await;
+
+        assert_eq!(
+            pool.select_force_retry_host(Some(&WorkerHostId::new("host-a")))
+                .await,
+            None
+        );
     }
 
     #[tokio::test]

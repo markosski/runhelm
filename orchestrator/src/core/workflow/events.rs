@@ -2,8 +2,8 @@ use crate::core::models::{
     TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata,
 };
 use crate::core::workflow::models::{
-    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowInstance,
-    WorkflowStatus,
+    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkerHostId,
+    WorkflowInstance, WorkflowStatus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +76,13 @@ pub enum WorkflowInstanceEvent {
     },
     /// Requests a failed task attempt to run again without changing workflow placement.
     TaskRetryRequested { task_attempt_id: String },
+    /// Requests a failed task attempt to run again, allowing workflow placement reassignment.
+    TaskForceRetryRequested {
+        task_attempt_id: String,
+        previous_host_id: Option<WorkerHostId>,
+        target_host_id: WorkerHostId,
+        local_context_may_be_lost: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,20 +222,24 @@ pub fn apply_workflow_instance_event(
             instance.status = WorkflowStatus::Pending;
         }
         WorkflowInstanceEvent::TaskRetryRequested { task_attempt_id } => {
-            if instance.status != WorkflowStatus::Failed {
-                anyhow::bail!("workflow instance is not failed");
+            reset_failed_task_for_retry(instance, task_attempt_id)?;
+        }
+        WorkflowInstanceEvent::TaskForceRetryRequested {
+            task_attempt_id,
+            previous_host_id,
+            target_host_id,
+            local_context_may_be_lost,
+        } => {
+            if &instance.pinned_worker_host != previous_host_id {
+                anyhow::bail!("force retry previous host does not match workflow pin");
+            }
+            let expected_context_may_be_lost = previous_host_id.as_ref() != Some(target_host_id);
+            if *local_context_may_be_lost != expected_context_may_be_lost {
+                anyhow::bail!("force retry local context loss flag does not match host change");
             }
 
-            let task = task_mut(instance, task_attempt_id)?;
-            if task.status != TaskStatus::Failed {
-                anyhow::bail!("task attempt {task_attempt_id} is not failed");
-            }
-
-            task.status = TaskStatus::Pending;
-            task.satisfaction_status = TaskSatisfactionStatus::Pending;
-            task.output_data = None;
-            task.verifier_metadata = None;
-            instance.status = WorkflowStatus::Pending;
+            reset_failed_task_for_retry(instance, task_attempt_id)?;
+            instance.pinned_worker_host = Some(target_host_id.clone());
         }
     }
 
@@ -266,6 +277,30 @@ fn task_mut<'a>(
         .ok_or_else(|| anyhow::anyhow!("task attempt {task_attempt_id} not found"))
 }
 
+fn reset_failed_task_for_retry(
+    instance: &mut WorkflowInstance,
+    task_attempt_id: &str,
+) -> anyhow::Result<()> {
+    if instance.status != WorkflowStatus::Failed {
+        anyhow::bail!("workflow instance is not failed");
+    }
+
+    {
+        let task = task_mut(instance, task_attempt_id)?;
+        if task.status != TaskStatus::Failed {
+            anyhow::bail!("task attempt {task_attempt_id} is not failed");
+        }
+
+        task.status = TaskStatus::Pending;
+        task.satisfaction_status = TaskSatisfactionStatus::Pending;
+        task.output_data = None;
+        task.verifier_metadata = None;
+    }
+
+    instance.status = WorkflowStatus::Pending;
+    Ok(())
+}
+
 fn verifier_state_mut<'a>(
     instance: &'a mut WorkflowInstance,
     verifier_task_id: &str,
@@ -280,7 +315,6 @@ fn verifier_state_mut<'a>(
 mod tests {
     use super::*;
     use crate::core::models::TaskSatisfactionStatus;
-    use crate::core::workflow::models::WorkerHostId;
     use std::collections::HashMap;
 
     fn instance() -> WorkflowInstance {
@@ -525,5 +559,104 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("is not failed"));
+    }
+
+    #[test]
+    fn reducer_applies_force_retry_request_with_same_host() {
+        let mut instance = instance();
+        instance.status = WorkflowStatus::Failed;
+        instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+        instance.tasks.insert(
+            "task-a[1]".to_string(),
+            TaskInstance {
+                status: TaskStatus::Failed,
+                satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                output_data: Some(serde_json::json!({"stale": true})),
+                ..task()
+            },
+        );
+
+        apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::TaskForceRetryRequested {
+                task_attempt_id: "task-a[1]".to_string(),
+                previous_host_id: Some(WorkerHostId::new("host-a")),
+                target_host_id: WorkerHostId::new("host-a"),
+                local_context_may_be_lost: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(instance.status, WorkflowStatus::Pending);
+        assert_eq!(
+            instance.pinned_worker_host,
+            Some(WorkerHostId::new("host-a"))
+        );
+        assert_eq!(instance.tasks["task-a[1]"].status, TaskStatus::Pending);
+        assert_eq!(instance.tasks["task-a[1]"].output_data, None);
+    }
+
+    #[test]
+    fn reducer_applies_force_retry_request_with_reassigned_host() {
+        let mut instance = instance();
+        instance.status = WorkflowStatus::Failed;
+        instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+        instance.tasks.insert(
+            "task-a[1]".to_string(),
+            TaskInstance {
+                status: TaskStatus::Failed,
+                satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                ..task()
+            },
+        );
+
+        apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::TaskForceRetryRequested {
+                task_attempt_id: "task-a[1]".to_string(),
+                previous_host_id: Some(WorkerHostId::new("host-a")),
+                target_host_id: WorkerHostId::new("host-b"),
+                local_context_may_be_lost: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(instance.status, WorkflowStatus::Pending);
+        assert_eq!(
+            instance.pinned_worker_host,
+            Some(WorkerHostId::new("host-b"))
+        );
+        assert_eq!(instance.tasks["task-a[1]"].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn reducer_rejects_force_retry_with_incorrect_context_loss_flag() {
+        let mut instance = instance();
+        instance.status = WorkflowStatus::Failed;
+        instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+        instance.tasks.insert(
+            "task-a[1]".to_string(),
+            TaskInstance {
+                status: TaskStatus::Failed,
+                ..task()
+            },
+        );
+
+        let error = apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::TaskForceRetryRequested {
+                task_attempt_id: "task-a[1]".to_string(),
+                previous_host_id: Some(WorkerHostId::new("host-a")),
+                target_host_id: WorkerHostId::new("host-b"),
+                local_context_may_be_lost: false,
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("local context loss flag does not match")
+        );
     }
 }

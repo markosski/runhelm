@@ -232,35 +232,43 @@ pub async fn submit_human_input(
 pub async fn retry_task(
     State(state): State<AppState>,
     Path((workflow_instance_id, task_id)): Path<(String, String)>,
+    Query(query): Query<RetryTaskQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    match state
-        .workflow_service
-        .retry_task(&workflow_instance_id, &task_id)
-        .await
-    {
-        Ok(task_attempt_id) => {
-            state
-                .orchestrator
-                .enqueue_workflow_instance(workflow_instance_id.clone())
-                .await
-                .map_err(|error| {
-                    tracing::error!(%workflow_instance_id, %task_id, %error, "failed to enqueue workflow after retry request");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
+    let result = if query.force.unwrap_or(false) {
+        state
+            .orchestrator
+            .force_retry_workflow_task(&workflow_instance_id, &task_id, &state.worker_pool)
+            .await
+    } else {
+        state
+            .orchestrator
+            .retry_workflow_task(&workflow_instance_id, &task_id)
+            .await
+    };
 
-            Ok(Json(json!({
-                "status": "queued",
-                "workflow_instance_id": workflow_instance_id,
-                "task_attempt_id": task_attempt_id,
-            })))
-        }
+    match result {
+        Ok(result) => Ok(Json(json!({
+            "status": "queued",
+            "workflow_instance_id": workflow_instance_id,
+            "task_attempt_id": result.task_attempt_id,
+            "pinned_host_id": result.pinned_host_id,
+            "local_context_may_be_lost": result.local_context_may_be_lost,
+        }))),
         Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
         Err(error) if error.to_string().contains("not failed") => Err(StatusCode::CONFLICT),
+        Err(error) if error.to_string().contains("no eligible retry host") => {
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
         Err(error) => {
             tracing::error!(%workflow_instance_id, %task_id, %error, "task retry request failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct RetryTaskQuery {
+    force: Option<bool>,
 }
 
 #[derive(Deserialize)]

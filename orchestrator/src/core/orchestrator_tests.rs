@@ -2,6 +2,7 @@ use super::*;
 use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+use crate::adapters::worker_pool::{WorkerPool, WorkerRegistration};
 use crate::api::models::WorkflowQueueStatus;
 use crate::core::function_service::FunctionService;
 use crate::core::models::{
@@ -1130,6 +1131,207 @@ async fn lost_pinned_host_marks_nonterminal_workflows_failed() {
             .unwrap()
             .status,
         WorkflowStatus::Pending
+    );
+}
+
+#[tokio::test]
+async fn retry_workflow_task_commits_retry_and_enqueues_workflow() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: Some(json!({"stale": true})),
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let result = orchestrator
+        .retry_workflow_task("failed-workflow", "taska")
+        .await
+        .unwrap();
+
+    assert_eq!(result.task_attempt_id, "taska[1]");
+    assert_eq!(result.pinned_host_id, Some(WorkerHostId::new("host-a")));
+    assert!(!result.local_context_may_be_lost);
+
+    let saved = storage
+        .get_workflow_instance("failed-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, WorkflowStatus::Pending);
+    assert_eq!(saved.tasks["taska[1]"].status, TaskStatus::Pending);
+    assert_eq!(
+        orchestrator.get_queue_status().await.unwrap().pending,
+        vec!["failed-workflow".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let worker_pool = WorkerPool::new();
+    worker_pool
+        .register_worker(WorkerRegistration {
+            worker_id: "worker-1".to_string(),
+            host_id: WorkerHostId::new("host-a"),
+        })
+        .await;
+    worker_pool
+        .register_worker(WorkerRegistration {
+            worker_id: "worker-2".to_string(),
+            host_id: WorkerHostId::new("host-b"),
+        })
+        .await;
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let result = orchestrator
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .await
+        .unwrap();
+
+    assert_eq!(result.pinned_host_id, Some(WorkerHostId::new("host-a")));
+    assert!(!result.local_context_may_be_lost);
+    let saved = storage
+        .get_workflow_instance("failed-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-a")));
+}
+
+#[tokio::test]
+async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let worker_pool = WorkerPool::new();
+    worker_pool
+        .register_worker(WorkerRegistration {
+            worker_id: "worker-1".to_string(),
+            host_id: WorkerHostId::new("host-b"),
+        })
+        .await;
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let result = orchestrator
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .await
+        .unwrap();
+
+    assert_eq!(result.pinned_host_id, Some(WorkerHostId::new("host-b")));
+    assert!(result.local_context_may_be_lost);
+    let saved = storage
+        .get_workflow_instance("failed-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-b")));
+    assert_eq!(
+        orchestrator.get_queue_status().await.unwrap().pending,
+        vec!["failed-workflow".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn force_retry_workflow_task_rejects_when_no_host_is_eligible() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let worker_pool = WorkerPool::new();
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let error = orchestrator
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("no eligible retry host"));
+    assert!(
+        orchestrator
+            .get_queue_status()
+            .await
+            .unwrap()
+            .pending
+            .is_empty()
     );
 }
 

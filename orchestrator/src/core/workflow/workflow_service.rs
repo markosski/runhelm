@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct WorkflowService {
     storage: Arc<dyn StoragePort + Send + Sync>,
+    state_manager: WorkflowStateManager,
 }
 
 pub const DEFAULT_WORKFLOW_LIST_LIMIT: usize = 50;
@@ -22,7 +23,10 @@ pub const MAX_WORKFLOW_LIST_LIMIT: usize = 100;
 
 impl WorkflowService {
     pub fn new(storage: Arc<dyn StoragePort + Send + Sync>) -> Self {
-        Self { storage }
+        Self {
+            state_manager: WorkflowStateManager::new(Arc::clone(&storage)),
+            storage,
+        }
     }
 
     pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
@@ -67,7 +71,7 @@ impl WorkflowService {
             verifier_states: HashMap::new(),
         };
 
-        WorkflowStateManager::new(Arc::clone(&self.storage))
+        self.state_manager
             .commit_events(
                 &instance_id,
                 vec![WorkflowInstanceEvent::WorkflowCreated { instance }],
@@ -181,7 +185,7 @@ impl WorkflowService {
             anyhow::bail!("task {task_id} already has a materialized continuation attempt");
         }
 
-        WorkflowStateManager::new(Arc::clone(&self.storage))
+        self.state_manager
             .commit_events_for_instance(
                 instance,
                 vec![WorkflowInstanceEvent::HumanInputSubmitted {
@@ -200,31 +204,53 @@ impl WorkflowService {
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<String> {
-        let instance = self
-            .storage
-            .get_workflow_instance(workflow_instance_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+        let (instance, task_attempt_id) = self
+            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .await?;
 
-        if instance.status != WorkflowStatus::Failed {
-            anyhow::bail!("workflow instance {workflow_instance_id} is not failed");
-        }
-
-        let task_attempt_id = resolve_task_attempt_id(&instance, task_id, None)?;
-        let task = instance
-            .tasks
-            .get(&task_attempt_id)
-            .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
-
-        if task.status != TaskStatus::Failed {
-            anyhow::bail!("task {task_id} is not failed");
-        }
-
-        WorkflowStateManager::new(Arc::clone(&self.storage))
+        self.state_manager
             .commit_events_for_instance(
                 instance,
                 vec![WorkflowInstanceEvent::TaskRetryRequested {
                     task_attempt_id: task_attempt_id.clone(),
+                }],
+            )
+            .await?;
+
+        Ok(task_attempt_id)
+    }
+
+    pub async fn load_retryable_task_pin(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<Option<WorkerHostId>> {
+        let (instance, _) = self
+            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .await?;
+        Ok(instance.pinned_worker_host)
+    }
+
+    pub async fn force_retry_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+        target_host_id: WorkerHostId,
+    ) -> anyhow::Result<String> {
+        let (instance, task_attempt_id) = self
+            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .await?;
+        let previous_host_id = instance.pinned_worker_host.clone();
+        let local_context_may_be_lost = previous_host_id.as_ref() != Some(&target_host_id);
+
+        self.state_manager
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::TaskForceRetryRequested {
+                    task_attempt_id: task_attempt_id.clone(),
+                    previous_host_id,
+                    target_host_id,
+                    local_context_may_be_lost,
                 }],
             )
             .await?;
@@ -302,6 +328,34 @@ impl WorkflowService {
                 generation,
             ),
         ))
+    }
+
+    async fn load_retryable_task_instance(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<(WorkflowInstance, String)> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        if instance.status != WorkflowStatus::Failed {
+            anyhow::bail!("workflow instance {workflow_instance_id} is not failed");
+        }
+
+        let task_attempt_id = resolve_task_attempt_id(&instance, task_id, None)?;
+        let task = instance
+            .tasks
+            .get(&task_attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
+
+        if task.status != TaskStatus::Failed {
+            anyhow::bail!("task {task_id} is not failed");
+        }
+
+        Ok((instance, task_attempt_id))
     }
 }
 
@@ -1155,5 +1209,126 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("is not failed"));
+    }
+
+    #[tokio::test]
+    async fn force_retry_task_records_reassignment_and_context_loss() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "failed-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Failed,
+                    pinned_worker_host: Some(WorkerHostId::new("host-a")),
+                    tasks: HashMap::from([(
+                        "taska[1]".to_string(),
+                        TaskInstance {
+                            task_def_id: "taska".to_string(),
+                            status: TaskStatus::Failed,
+                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                            human_input: None,
+                            input_data: vec![json!({"input": true})],
+                            input_mapping: vec![],
+                            output_data: Some(json!({"stale": true})),
+                            generation_index: 1,
+                            verifier_metadata: None,
+                        },
+                    )]),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let task_attempt_id = service
+            .force_retry_task("failed-workflow", "taska", WorkerHostId::new("host-b"))
+            .await
+            .unwrap();
+
+        assert_eq!(task_attempt_id, "taska[1]");
+        let saved = storage
+            .get_workflow_instance("failed-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-b")));
+        assert_eq!(saved.tasks["taska[1]"].status, TaskStatus::Pending);
+        assert_eq!(saved.tasks["taska[1]"].output_data, None);
+
+        let events = storage
+            .get_workflow_instance_events("failed-workflow")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::TaskForceRetryRequested {
+                task_attempt_id,
+                previous_host_id,
+                target_host_id,
+                local_context_may_be_lost,
+            } if task_attempt_id == "taska[1]"
+                && previous_host_id == &Some(WorkerHostId::new("host-a"))
+                && target_host_id == &WorkerHostId::new("host-b")
+                && *local_context_may_be_lost
+        ));
+    }
+
+    #[tokio::test]
+    async fn force_retry_task_records_same_host_without_context_loss() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "failed-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Failed,
+                    pinned_worker_host: Some(WorkerHostId::new("host-a")),
+                    tasks: HashMap::from([(
+                        "taska[1]".to_string(),
+                        TaskInstance {
+                            task_def_id: "taska".to_string(),
+                            status: TaskStatus::Failed,
+                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                            human_input: None,
+                            input_data: vec![],
+                            input_mapping: vec![],
+                            output_data: None,
+                            generation_index: 1,
+                            verifier_metadata: None,
+                        },
+                    )]),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        service
+            .force_retry_task("failed-workflow", "taska", WorkerHostId::new("host-a"))
+            .await
+            .unwrap();
+
+        let events = storage
+            .get_workflow_instance_events("failed-workflow")
+            .await
+            .unwrap();
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::TaskForceRetryRequested {
+                previous_host_id,
+                target_host_id,
+                local_context_may_be_lost,
+                ..
+            } if previous_host_id == &Some(WorkerHostId::new("host-a"))
+                && target_host_id == &WorkerHostId::new("host-a")
+                && !*local_context_may_be_lost
+        ));
     }
 }

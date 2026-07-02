@@ -1,3 +1,4 @@
+use crate::adapters::worker_pool::WorkerPool;
 use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
@@ -7,6 +8,7 @@ use crate::core::workflow::models::{
     StartupWorkflowDiscovery, TaskDispatchConstraints, WorkerHostId, WorkflowInfo, WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
+use crate::core::workflow::workflow_service::WorkflowService;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{
     StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPageRequest,
@@ -30,6 +32,13 @@ pub struct Orchestrator {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryWorkflowTaskResult {
+    pub task_attempt_id: String,
+    pub pinned_host_id: Option<WorkerHostId>,
+    pub local_context_may_be_lost: bool,
 }
 
 impl Orchestrator {
@@ -75,6 +84,62 @@ impl Orchestrator {
     /// Adds a workflow instance to the execution queue.
     pub async fn enqueue_workflow_instance(&self, instance_id: String) -> anyhow::Result<()> {
         self.workflow_queue.enqueue(instance_id).await
+    }
+
+    pub async fn retry_workflow_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<RetryWorkflowTaskResult> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        let pinned_worker_host = workflow_service
+            .load_retryable_task_pin(workflow_instance_id, task_id)
+            .await?;
+        let task_attempt_id = workflow_service
+            .retry_task(workflow_instance_id, task_id)
+            .await?;
+        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+            .await?;
+
+        Ok(RetryWorkflowTaskResult {
+            task_attempt_id,
+            pinned_host_id: pinned_worker_host,
+            local_context_may_be_lost: false,
+        })
+    }
+
+    pub async fn force_retry_workflow_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+        worker_pool: &WorkerPool,
+    ) -> anyhow::Result<RetryWorkflowTaskResult> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        let pinned_worker_host = workflow_service
+            .load_retryable_task_pin(workflow_instance_id, task_id)
+            .await?;
+
+        let Some(target_host_id) = worker_pool
+            .select_force_retry_host(pinned_worker_host.as_ref())
+            .await
+        else {
+            anyhow::bail!("no eligible retry host available");
+        };
+
+        let local_context_may_be_lost = pinned_worker_host.as_ref() != Some(&target_host_id);
+
+        let task_attempt_id = workflow_service
+            .force_retry_task(workflow_instance_id, task_id, target_host_id.clone())
+            .await?;
+
+        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+            .await?;
+
+        Ok(RetryWorkflowTaskResult {
+            task_attempt_id,
+            pinned_host_id: Some(target_host_id),
+            local_context_may_be_lost,
+        })
     }
 
     /// Returns queued and currently running workflow instance IDs.
