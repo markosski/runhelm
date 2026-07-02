@@ -51,6 +51,6 @@
 
 ## 6. Validation
 
-- [ ] 6.1 Run targeted orchestrator unit tests for storage, worker pool, workspace manager, and workflow engine changes
-- [ ] 6.2 Run full orchestrator test suite
-- [ ] 6.3 Run `openspec validate add-workspace-session-persistence --strict`
+- [x] 6.1 Run targeted orchestrator unit tests for storage, worker pool, workspace manager, and workflow engine changes
+- [x] 6.2 Run full orchestrator test suite
+- [x] 6.3 Run `openspec validate add-workspace-session-persistence --strict`
