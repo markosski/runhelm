@@ -488,7 +488,7 @@ fn parse_workflow_status(status: &str) -> Result<WorkflowStatus, StatusCode> {
         "pending" => Ok(WorkflowStatus::Pending),
         "running" => Ok(WorkflowStatus::Running),
         "paused" => Ok(WorkflowStatus::Paused),
-        "input_needed" | "input-needed" => Ok(WorkflowStatus::InputNeeded),
+        "inputneeded" | "input-needed" | "input_needed" => Ok(WorkflowStatus::InputNeeded),
         "completed" => Ok(WorkflowStatus::Completed),
         "failed" => Ok(WorkflowStatus::Failed),
         _ => Err(StatusCode::BAD_REQUEST),
@@ -720,5 +720,51 @@ mod tests {
             state.orchestrator.get_queue_status().await.unwrap().pending,
             vec!["input-needed-workflow".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn list_workflows_api_filters_by_valid_status_query() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage.clone(), WorkerPool::new());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                workflow_instance(
+                    "input-needed-workflow",
+                    WorkflowStatus::InputNeeded,
+                    None,
+                    input_needed_task(),
+                ),
+            )
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                workflow_instance(
+                    "failed-workflow",
+                    WorkflowStatus::Failed,
+                    None,
+                    failed_task(),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let Json(response) = list_workflows(
+            State(state),
+            Query(WorkflowListQuery {
+                status: Some("InputNeeded".to_string()),
+                limit: None,
+                cursor: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let workflows = response["workflows"].as_array().unwrap();
+        assert_eq!(workflows.len(), 1);
+        assert_eq!(workflows[0]["id"], "input-needed-workflow");
+        assert_eq!(workflows[0]["status"], "InputNeeded");
     }
 }

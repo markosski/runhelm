@@ -25,7 +25,7 @@ Workflow definition registration remains mutable only before execution history e
 The public API exposes workflow events separately from the current-state workflow read:
 
 - `GET /workflows/{id}` returns the current workflow status snapshot view.
-- `GET /workflows` returns a bounded page of `WorkflowInfo` list entries with workflow identity, lifecycle timestamps when available, current state, task counts, and a `next_cursor` when more results are available.
+- `GET /workflows` returns a bounded page of `WorkflowInfo` list entries with workflow identity, lifecycle timestamps when available, current state, task counts, and a `next_cursor` when more results are available. It accepts `status` to filter by one workflow status, using any status value returned by the API such as `Pending`, `Running`, `Paused`, `InputNeeded`, `Completed`, or `Failed`.
 - `GET /workflows/{id}/events` returns timestamped `WorkflowEventRecord` entries for audit and debugging.
 - `GET /workflows/{id}/tasks` and `GET /workflows/{id}/tasks/{task_id}` report task attempts waiting for human input with `status: "input_needed"` and `input_request`; they are not reported as `running`.
 - `POST /workflows/{id}/tasks/{task_id}/human-input` with `{ "input": ... }` records a `HumanInputSubmitted` domain event for a workflow and task attempt that are currently waiting in `InputNeeded`; the workflow reducer derives the continuation attempt for the same logical task and moves the workflow back to `Pending` so it can be queued to continue.
