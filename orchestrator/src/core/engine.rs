@@ -302,7 +302,7 @@ impl WorkflowEngine {
                             ExecutionResult::Success(output) => output,
                             // TODO: Consider reducing granularity of those events
                             // i.e. InputNeeded should issue TaskReturnedInputNeeded this should perform all needed internal mutations to task and workflow, statuses etc.
-                            ExecutionResult::InputNeeded(description) => {
+                            ExecutionResult::InputNeeded(input_request) => {
                                 state_manager
                                     .commit_events_for_instance(
                                         workflow_instance,
@@ -317,7 +317,7 @@ impl WorkflowEngine {
                                             },
                                             WorkflowInstanceEvent::TaskStatusChanged {
                                                 task_attempt_id: task_attempt_id.clone(),
-                                                status: TaskStatus::InputNeeded { description },
+                                                status: TaskStatus::InputNeeded { input_request },
                                             },
                                             WorkflowInstanceEvent::WorkflowStatusChanged {
                                                 status: WorkflowStatus::InputNeeded,

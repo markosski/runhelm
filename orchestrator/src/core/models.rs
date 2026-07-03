@@ -101,7 +101,7 @@ pub struct TaskDef {
 pub enum TaskStatus {
     Pending,
     Running,
-    InputNeeded { description: String },
+    InputNeeded { input_request: String },
     Completed,
     Failed,
 }

@@ -987,7 +987,7 @@ async fn test_human_input_continuation_dispatches_same_logical_agent_identity() 
                 TaskInstance {
                     task_def_id: "task-a".to_string(),
                     status: TaskStatus::InputNeeded {
-                        description: "need clarification".to_string(),
+                        input_request: "need clarification".to_string(),
                     },
                     satisfaction_status: TaskSatisfactionStatus::Pending,
                     human_input: None,
@@ -1082,7 +1082,7 @@ fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
                 TaskInstance {
                     task_def_id: "task-b".to_string(),
                     status: TaskStatus::InputNeeded {
-                        description: "need clarification".to_string(),
+                        input_request: "need clarification".to_string(),
                     },
                     satisfaction_status: TaskSatisfactionStatus::Pending,
                     human_input: None,

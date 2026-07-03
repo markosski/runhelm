@@ -161,7 +161,7 @@ Agent session keys SHALL preserve conversational continuity without replacing st
 
 #### Scenario: Waiting task reports input needed
 - **WHEN** an Agent task attempt is waiting for human input
-- **THEN** the workflow state records the `InputNeeded` status and request description independently of the Agent session transcript
+- **THEN** the workflow state records the `InputNeeded` status and input request independently of the Agent session transcript
 
 ### Requirement: Agent Session Recovery Lifecycle
 The workflow engine SHALL keep workflow attempt state independent of recoverable Agent session-load problems.

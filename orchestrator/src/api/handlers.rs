@@ -532,7 +532,7 @@ mod tests {
         TaskInstance {
             task_def_id: "taska".to_string(),
             status: TaskStatus::InputNeeded {
-                description: "need approval".to_string(),
+                input_request: "need approval".to_string(),
             },
             satisfaction_status: TaskSatisfactionStatus::Pending,
             human_input: None,

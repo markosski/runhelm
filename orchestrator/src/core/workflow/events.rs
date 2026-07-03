@@ -469,7 +469,7 @@ mod tests {
             "task-a[1]".to_string(),
             TaskInstance {
                 status: TaskStatus::InputNeeded {
-                    description: "need input".to_string(),
+                    input_request: "need input".to_string(),
                 },
                 ..task()
             },

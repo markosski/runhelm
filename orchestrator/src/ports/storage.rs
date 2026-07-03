@@ -59,7 +59,7 @@ pub enum TaskResult {
     },
     InputNeeded {
         input: Vec<serde_json::Value>,
-        description: String,
+        input_request: String,
         metadata: Option<TaskResultMetadata>,
     },
 }
@@ -154,13 +154,13 @@ impl Serialize for TaskResult {
             }
             TaskResult::InputNeeded {
                 input,
-                description,
+                input_request,
                 metadata,
             } => {
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("status", "input_needed")?;
                 map.serialize_entry("input", input)?;
-                map.serialize_entry("description", description)?;
+                map.serialize_entry("input_request", input_request)?;
                 if let Some(metadata) = metadata {
                     serialize_metadata(&mut map, metadata)?;
                 }

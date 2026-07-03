@@ -1,0 +1,46 @@
+id: human-input-agent-workflow
+
+# Single Agent task example that intentionally pauses for human input.
+# Register this workflow, start an instance, then submit the answer with:
+# POST /workflows/{workflow_instance_id}/tasks/collect-release-preference/human-input
+# body: { "input": "stable" }
+
+tasks:
+  - id: collect-release-preference
+    kind:
+      Agent:
+        model_id: "google/gemini-2.5-flash"
+        provider_url: ""
+        prompt: |
+          You are preparing a release note summary, but the release channel is
+          intentionally missing.
+
+          If there is no USER RESPONSE TO PREVIOUS INQUIRY in the current task
+          context, call the ask_user tool with this exact question:
+          "Which release channel should this summary target: stable, beta, or nightly?"
+
+          If a USER RESPONSE TO PREVIOUS INQUIRY is present, use that response
+          as the release channel and return exactly this JSON shape:
+          {
+            "response": "Release summary prepared for <channel> channel.",
+            "channel": "<channel>"
+          }
+        tools: ["ask_user"]
+        skills: []
+        ask: true
+        schema_failure_retry_times: 2
+        reuse_session: true
+    output_schema:
+      type: object
+      required:
+        - response
+        - channel
+      properties:
+        response:
+          type: string
+        channel:
+          type: string
+    required_credentials:
+      - llm_api_key
+
+data_bindings: []

@@ -441,9 +441,9 @@ fn task_result_for_instance(
             input: task.input_data.clone(),
             metadata,
         },
-        TaskStatus::InputNeeded { description } => TaskResult::InputNeeded {
+        TaskStatus::InputNeeded { input_request } => TaskResult::InputNeeded {
             input: task.input_data.clone(),
-            description: description.clone(),
+            input_request: input_request.clone(),
             metadata,
         },
     }
@@ -1020,7 +1020,7 @@ mod tests {
                         TaskInstance {
                             task_def_id: "taska".to_string(),
                             status: TaskStatus::InputNeeded {
-                                description: "Which release channel?".to_string(),
+                                input_request: "Which release channel?".to_string(),
                             },
                             satisfaction_status: TaskSatisfactionStatus::Pending,
                             human_input: None,
@@ -1044,11 +1044,11 @@ mod tests {
         match result {
             TaskResult::InputNeeded {
                 input,
-                description,
+                input_request,
                 metadata: Some(metadata),
             } => {
                 assert_eq!(input, Vec::<serde_json::Value>::new());
-                assert_eq!(description, "Which release channel?");
+                assert_eq!(input_request, "Which release channel?");
                 assert_eq!(metadata.task_attempt_id, "taska[1]");
                 assert_eq!(metadata.generation_index, 1);
             }
@@ -1059,9 +1059,10 @@ mod tests {
         let serialized = serde_json::to_value(&tasks[0]).unwrap();
         assert_eq!(serialized["result"]["status"], "input_needed");
         assert_eq!(
-            serialized["result"]["description"],
+            serialized["result"]["input_request"],
             "Which release channel?"
         );
+        assert!(serialized["result"]["description"].is_null());
     }
 
     #[tokio::test]
@@ -1086,7 +1087,7 @@ mod tests {
                 TaskInstance {
                     task_def_id: "taska".to_string(),
                     status: TaskStatus::InputNeeded {
-                        description: "need input".to_string(),
+                        input_request: "need input".to_string(),
                     },
                     satisfaction_status: Default::default(),
                     human_input: None,
