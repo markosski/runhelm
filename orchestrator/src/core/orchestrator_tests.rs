@@ -178,6 +178,7 @@ fn workflow_instance(id: &str, workflow_def_id: &str) -> WorkflowInstance {
     WorkflowInstance {
         id: id.to_string(),
         workflow_def_id: workflow_def_id.to_string(),
+        version: 0,
         status: WorkflowStatus::Pending,
         pinned_worker_host: None,
         tasks: HashMap::new(),
@@ -332,7 +333,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(vec![], workflow_instance(id, id))
+            .save_workflow_instance(0, vec![], workflow_instance(id, id))
             .await
             .unwrap();
         orchestrator
@@ -813,7 +814,7 @@ async fn queue_status_lists_pending_workflows() {
     let mut running = workflow_instance("running-workflow", "workflow-1");
     running.status = WorkflowStatus::Running;
     storage
-        .commit_workflow_instance_events(vec![], running)
+        .save_workflow_instance(0, vec![], running)
         .await
         .unwrap();
 
@@ -847,7 +848,7 @@ async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
         let mut instance = workflow_instance(id, "workflow-1");
         instance.status = status;
         storage
-            .commit_workflow_instance_events(vec![], instance)
+            .save_workflow_instance(0, vec![], instance)
             .await
             .unwrap();
     }
@@ -899,7 +900,7 @@ async fn pause_and_resume_workflow_update_status_and_queue() {
     let mut instance = workflow_instance("workflow-1", "workflow-def");
     instance.status = WorkflowStatus::Pending;
     storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
     orchestrator
@@ -965,7 +966,7 @@ async fn bulk_pause_and_resume_update_queue_for_matching_workflows() {
         let mut instance = workflow_instance(id, "workflow-def");
         instance.status = status;
         storage
-            .commit_workflow_instance_events(vec![], instance)
+            .save_workflow_instance(0, vec![], instance)
             .await
             .unwrap();
     }
@@ -1041,7 +1042,7 @@ async fn startup_recovery_preserves_workflow_pins_when_reloading_runnable_work()
         instance.status = status;
         instance.pinned_worker_host = Some(pinned_host.clone());
         storage
-            .commit_workflow_instance_events(vec![], instance)
+            .save_workflow_instance(0, vec![], instance)
             .await
             .unwrap();
     }
@@ -1123,7 +1124,7 @@ async fn startup_recovery_requeues_abandoned_running_task_attempts() {
         },
     );
     storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
 
@@ -1207,7 +1208,7 @@ async fn lost_pinned_host_marks_nonterminal_workflows_failed() {
         instance.status = status;
         instance.pinned_worker_host = pinned_host;
         storage
-            .commit_workflow_instance_events(vec![], instance)
+            .save_workflow_instance(0, vec![], instance)
             .await
             .unwrap();
     }
@@ -1290,7 +1291,7 @@ async fn retry_workflow_task_commits_retry_and_enqueues_workflow() {
         },
     );
     storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
 
@@ -1352,7 +1353,7 @@ async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
         },
     );
     storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
 
@@ -1401,7 +1402,7 @@ async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable()
         },
     );
     storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
 
@@ -1448,7 +1449,7 @@ async fn force_retry_workflow_task_rejects_when_no_host_is_eligible() {
         },
     );
     storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
 

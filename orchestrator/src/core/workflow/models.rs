@@ -94,6 +94,8 @@ pub enum WorkflowStatus {
 pub struct WorkflowInstance {
     pub id: String,
     pub workflow_def_id: String,
+    #[serde(default)]
+    pub version: u64,
     pub status: WorkflowStatus,
     // TODO: make this non Optional if possible
     #[serde(default, skip_serializing_if = "Option::is_none")]
