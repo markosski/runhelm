@@ -1,9 +1,4 @@
-# Capability: task-workspace
-
-## Purpose
-Defines default per-task workflow-run workspace directories, explicit shared workspace group override behavior, workspace lifecycle management, and selected workspace path guidance semantics.
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Workflow Host Pinning
 The system SHALL pin every workflow instance to one worker host when the workflow instance is created for execution.
@@ -22,6 +17,8 @@ The system SHALL pin every workflow instance to one worker host when the workflo
 - **AND** a host pin exists for the workflow instance
 - **THEN** the host pin remains available for resumed execution
 
+## MODIFIED Requirements
+
 ### Requirement: Default Logical Task Workspace
 The system SHALL provide one selected workspace directory for each task execution. By default, the selected workspace SHALL be a private logical-task workspace scoped to the workflow instance and logical task ID on the workflow instance's pinned host.
 
@@ -36,22 +33,6 @@ The system SHALL provide one selected workspace directory for each task executio
 #### Scenario: Different task gets different workspace
 - **WHEN** two task definitions in the same workflow instance do not declare the same `workspace.group_name`
 - **THEN** each task uses a different selected workspace path
-
-### Requirement: Workspace Group Override
-The system SHALL allow a task to declare `workspace.group_name` to replace its default private workspace with a workflow-instance-scoped shared workspace group.
-
-#### Scenario: Task declares workspace group
-- **WHEN** a task declares `workspace.group_name: "repo"`
-- **THEN** the task execution uses the selected workspace derived from the workflow instance id and group `repo`
-- **THEN** the task does not receive its default private workspace path
-
-#### Scenario: Multiple tasks declare same workspace group
-- **WHEN** multiple tasks in the same workflow instance declare the same `workspace.group_name`
-- **THEN** those tasks use the same selected workspace path for that group
-
-#### Scenario: Task receives one workspace
-- **WHEN** a task execution is dispatched
-- **THEN** the task receives exactly one selected workspace path
 
 ### Requirement: Worker-Local Workspace Directories
 The system SHALL create workspace directories under the executing worker's configured worker-local workspace root using RunHelm-owned path construction.
@@ -118,14 +99,3 @@ The system SHALL support configurable workspace TTL cleanup while preserving wor
 #### Scenario: Caller-driven cleanup checks eligibility
 - **WHEN** workspace TTL cleanup is requested
 - **THEN** workspace cleanup checks workflow ownership and timestamp eligibility before removing any workspace
-
-### Requirement: Workspace Access Guidance
-The system SHALL provide the selected workspace path as the intended location for task file work without claiming strict task-code filesystem isolation in the initial implementation.
-
-#### Scenario: Selected workspace path is provided
-- **WHEN** a task execution is dispatched
-- **THEN** the task receives one selected workspace path for task file work
-
-#### Scenario: Strict containment is deferred
-- **WHEN** arbitrary task code, Agent behavior, or a reused worker container can access the local filesystem
-- **THEN** the initial implementation does not guarantee reads and writes are limited to the selected workspace path

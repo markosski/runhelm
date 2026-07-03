@@ -4,4 +4,3 @@ pub mod models;
 pub mod orchestrator;
 pub mod util;
 pub mod workflow;
-pub mod workspace_manager;

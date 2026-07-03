@@ -2,10 +2,11 @@ import { Ajv } from 'ajv';
 import { ExecutorFactory } from './adapters/executors/ExecutorFactory.js';
 import { FileCredentialsAdapter, defaultCredentialsFilePath } from './adapters/FileCredentialsAdapter.js';
 import { FileSessionStore } from './adapters/FileSessionStore.js';
-import type { TaskExecutionPayload } from './core/models/TaskDef.js';
+import type { TaskDispatchPayload, TaskExecutionPayload } from './core/models/TaskDef.js';
 import type { CredentialsPort } from './core/ports/CredentialsPort.js';
 import type { SessionStore } from './core/ports/SessionStore.js';
 import type { TaskExecutionResult } from './core/ports/TaskExecutor.js';
+import { materializeTaskWorkspace } from './core/WorkspaceManager.js';
 
 import * as os from 'os';
 import { logger } from './utils/logger.js';
@@ -16,21 +17,23 @@ const DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS = 1_000;
 const DEFAULT_RESULT_ACK_RETRY_DELAY_MS = 1_000;
 const DEFAULT_RESULT_ACK_MAX_ATTEMPTS = 3;
 
-type WorkerRegistrationMessage = {
+type WorkerPresenceMessage = {
     type: 'register';
     worker_id: string;
+    host_id: string;
 };
 
 type RegistrationAckMessage = {
     type: 'registration_ack';
     worker_id: string;
+    heartbeat_interval_ms: number;
 };
 
 type NoTaskMessage = {
     type: 'no_task';
 };
 
-type TaskDispatchMessage = TaskExecutionPayload & {
+type TaskDispatchMessage = TaskDispatchPayload & {
     type: 'task_dispatch';
     task_id: string;
 };
@@ -39,6 +42,7 @@ type WorkerResponse = RegistrationAckMessage | NoTaskMessage | TaskDispatchMessa
 
 type ResultAckMessage = {
     status: 'accepted';
+    worker_id?: string;
 };
 
 type WorkerExecutionResult =
@@ -64,6 +68,15 @@ class HttpError extends Error {
 
 function createWorkerId(): string {
     return process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
+}
+
+function requiredWorkerHostId(): string {
+    const hostId = process.env.RUNHELM_WORKER_HOST_ID?.trim();
+    if (!hostId) {
+        throw new Error('RUNHELM_WORKER_HOST_ID is required and must identify the worker host durable state domain');
+    }
+
+    return hostId;
 }
 
 function mapExecutionResult(result: TaskExecutionResult): WorkerExecutionResult {
@@ -109,11 +122,21 @@ async function processTask(
     }
 }
 
-function workerRegistration(workerId: string): WorkerRegistrationMessage {
+function workerPresence(workerId: string, workerHostId: string): WorkerPresenceMessage {
     return {
         type: 'register',
         worker_id: workerId,
+        host_id: workerHostId,
     };
+}
+
+async function postWorkerPresence<T>(
+    baseUrl: string,
+    endpoint: string,
+    workerId: string,
+    workerHostId: string
+): Promise<T> {
+    return await postJson<T>(`${baseUrl}${endpoint}`, workerPresence(workerId, workerHostId));
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -147,25 +170,48 @@ function describeError(error: unknown): string {
     return String(error);
 }
 
-async function registerWorkerUntilAck(baseUrl: string, workerId: string): Promise<void> {
-    const url = `${baseUrl}/workers/register`;
+type WorkerHeartbeatPolicy = {
+    heartbeatIntervalMs: number;
+};
+
+async function registerWorkerUntilAck(baseUrl: string, workerId: string, workerHostId: string): Promise<WorkerHeartbeatPolicy> {
     let attempt = 0;
 
     while (true) {
         try {
-            const ack = await postJson<RegistrationAckMessage>(url, workerRegistration(workerId));
-            if (ack.type === 'registration_ack' && ack.worker_id === workerId) {
-                logger.info({ workerId }, "Worker registered with orchestrator");
-                return;
+            const ack = await postWorkerPresence<RegistrationAckMessage>(
+                baseUrl,
+                '/workers/register',
+                workerId,
+                workerHostId
+            );
+            if (
+                ack.type === 'registration_ack' &&
+                ack.worker_id === workerId &&
+                Number.isFinite(ack.heartbeat_interval_ms) &&
+                ack.heartbeat_interval_ms > 0
+            ) {
+                logger.info(
+                    {
+                        workerId,
+                        workerHostId,
+                        heartbeatIntervalMs: ack.heartbeat_interval_ms,
+                    },
+                    "Worker registered with orchestrator"
+                );
+                return {
+                    heartbeatIntervalMs: ack.heartbeat_interval_ms,
+                };
             }
 
-            logger.warn({ ack, workerId }, "Unexpected worker registration ack");
+            logger.warn({ ack, workerId, workerHostId }, "Unexpected worker registration ack");
         } catch (err) {
             attempt += 1;
             const retryContext = {
                 error: describeError(err),
                 attempt,
                 workerId,
+                workerHostId,
                 retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS,
             };
 
@@ -178,6 +224,33 @@ async function registerWorkerUntilAck(baseUrl: string, workerId: string): Promis
 
         await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
     }
+}
+
+function startHeartbeatLoop(
+    baseUrl: string,
+    workerId: string,
+    workerHostId: string,
+    heartbeatPolicy: WorkerHeartbeatPolicy
+): NodeJS.Timeout {
+    return setInterval(() => {
+        void postWorkerPresence<ResultAckMessage>(
+            baseUrl,
+            '/workers/heartbeat',
+            workerId,
+            workerHostId
+        )
+            .catch((err) => {
+                logger.warn(
+                    {
+                        error: describeError(err),
+                        workerId,
+                        workerHostId,
+                        retryDelayMs: heartbeatPolicy.heartbeatIntervalMs,
+                    },
+                    "Worker heartbeat failed; will retry"
+                );
+            });
+    }, heartbeatPolicy.heartbeatIntervalMs);
 }
 
 async function postTaskResultUntilAck(
@@ -218,6 +291,7 @@ async function postTaskResultUntilAck(
 
 async function runWorker(
     workerId: string,
+    workerHostId: string,
     executorFactory: ExecutorFactory,
     credentialsAdapter: CredentialsPort,
     sessionStore: SessionStore,
@@ -225,9 +299,10 @@ async function runWorker(
 ) {
     const baseUrl = (process.env.RUNHELM_ORCHESTRATOR_HTTP_URL || DEFAULT_ORCHESTRATOR_HTTP_URL)
         .replace(/\/$/, '');
-    logger.info({ baseUrl, workerId }, "Connecting to orchestrator HTTP API");
+    logger.info({ baseUrl, workerId, workerHostId }, "Connecting to orchestrator HTTP API");
 
-    await registerWorkerUntilAck(baseUrl, workerId);
+    let heartbeatPolicy = await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
+    let heartbeatTimer = startHeartbeatLoop(baseUrl, workerId, workerHostId, heartbeatPolicy);
 
     while(true) {
         let message: WorkerResponse;
@@ -238,7 +313,9 @@ async function runWorker(
         } catch (err) {
             if (err instanceof HttpError && err.status === 404) {
                 logger.warn({ workerId }, "Worker is not registered with orchestrator; re-registering");
-                await registerWorkerUntilAck(baseUrl, workerId);
+                heartbeatPolicy = await registerWorkerUntilAck(baseUrl, workerId, workerHostId);
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = startHeartbeatLoop(baseUrl, workerId, workerHostId, heartbeatPolicy);
             } else {
                 logger.warn({ error: describeError(err), workerId, retryDelayMs: DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS }, "Worker task claim failed; retrying");
                 await sleep(DEFAULT_ORCHESTRATOR_RETRY_DELAY_MS);
@@ -257,7 +334,9 @@ async function runWorker(
 
         logger.info({ taskId: message.task_id }, "Claimed task dispatch");
         // TODO: consider adding a timeout for task execution and implement a heartbeat mechanism to let the orchestrator know the worker is still alive and working on the task, especially for long-running tasks
-        const result = await processTask(message, executorFactory, credentialsAdapter, sessionStore, ajv);
+        const result = await materializeTaskWorkspace(message)
+            .then((payload) => processTask(payload, executorFactory, credentialsAdapter, sessionStore, ajv))
+            .catch((error) => ({ kind: 'failure' as const, reason: describeError(error) }));
         await postTaskResultUntilAck(baseUrl, message.task_id, result);
         logger.info({ taskId: message.task_id, resultKind: result.kind }, "Task result acknowledged");
     }
@@ -266,15 +345,16 @@ async function runWorker(
 async function main() {
     logger.info("Worker starting up...");
 
+    const workerId = createWorkerId();
+    const workerHostId = requiredWorkerHostId();
     const executorFactory = new ExecutorFactory();
     const credentialsFilePath = defaultCredentialsFilePath();
     const credentialsAdapter = await FileCredentialsAdapter.fromFile(credentialsFilePath);
     const sessionStore = new FileSessionStore();
 
     const ajv = new Ajv();
-    const workerId = createWorkerId();
 
-    await runWorker(workerId, executorFactory, credentialsAdapter, sessionStore, ajv);
+    await runWorker(workerId, workerHostId, executorFactory, credentialsAdapter, sessionStore, ajv);
 }
 
 main().catch((err) => {

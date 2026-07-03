@@ -111,6 +111,19 @@ The orchestrator SHALL construct executable workflow dataflow from the `DataBind
 - **WHEN** a materialized task receives propagated inputs
 - **THEN** the task records `input_mapping` for each consumed source task ID and generation
 
+### Requirement: Human Input Continuation Materialization
+The workflow engine SHALL materialize human-input continuations with the same logical task identity and workflow pin needed for dataflow, workspace, and Agent session reuse.
+
+#### Scenario: Human input continuation is materialized
+- **WHEN** human input is submitted for a waiting Agent task
+- **THEN** the workflow engine materializes or resumes a continuation attempt for the same logical task ID
+- **THEN** the continuation attempt carries generation lineage that preserves downstream data binding behavior
+
+#### Scenario: Continuation preserves workflow pin
+- **WHEN** a human-input continuation is prepared
+- **AND** the workflow instance has a host pin
+- **THEN** the workflow engine preserves the workflow instance host pin
+
 ### Requirement: Agent Session Key Convention
 The orchestrator SHALL provide stable task execution identity that allows workers to derive Agent session keys when Agent execution creates or reuses a durable session.
 
@@ -123,10 +136,9 @@ The orchestrator SHALL provide stable task execution identity that allows worker
 - **THEN** the later attempt carries its `generation_index`
 - **THEN** the worker can derive the same session key for that logical Agent task when `reuse_session` is true
 
-#### Scenario: Human-input continuation API is deferred
-- **WHEN** this change prepares session handling for human-input-created Agent attempts
-- **THEN** the public human-input submission API and end-to-end resume flow are completed by a separate change
-- **THEN** this change still requires future human-input continuation attempts to preserve workflow instance ID and logical task ID for session key derivation
+#### Scenario: Human-input continuation preserves session identity
+- **WHEN** the public human-input submission flow resumes an Agent task with `reuse_session` set to `true`
+- **THEN** the resumed attempt preserves workflow instance ID and logical task ID for session key derivation
 
 #### Scenario: Agent session reuse is disabled
 - **WHEN** an Agent task attempt has `reuse_session` set to `false`
@@ -149,7 +161,7 @@ Agent session keys SHALL preserve conversational continuity without replacing st
 
 #### Scenario: Waiting task reports input needed
 - **WHEN** an Agent task attempt is waiting for human input
-- **THEN** the workflow state records the `InputNeeded` status and request description independently of the Agent session transcript
+- **THEN** the workflow state records the `InputNeeded` status and input request independently of the Agent session transcript
 
 ### Requirement: Agent Session Recovery Lifecycle
 The workflow engine SHALL keep workflow attempt state independent of recoverable Agent session-load problems.

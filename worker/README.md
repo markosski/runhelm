@@ -38,6 +38,8 @@ npm run dev
 
 By default the worker connects to the orchestrator worker API at `http://127.0.0.1:3001`. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the worker API is reachable at a different URL.
 
+Set `RUNHELM_WORKER_HOST_ID` before starting the worker. This value is required and should identify the durable host state domain that owns the worker's local workspace and session stores, not a short-lived worker process or container ID.
+
 The worker registers with the orchestrator before polling for tasks. If the orchestrator service name or worker API is not reachable yet during container startup, registration is retried until it succeeds. These startup retries are expected during Compose bootstrap and do not require a worker restart.
 
 The worker reads credentials from `~/.runhelm/file_credentials.json` during startup. The file must contain a flat JSON object whose keys are credential names and whose values are strings:
@@ -306,7 +308,8 @@ Registers a worker.
 
 ```json
 {
-  "worker_id": "remote-worker-1"
+  "worker_id": "remote-worker-1",
+  "host_id": "local-dev-host"
 }
 ```
 
@@ -315,7 +318,8 @@ Response:
 ```json
 {
   "type": "registration_ack",
-  "worker_id": "remote-worker-1"
+  "worker_id": "remote-worker-1",
+  "heartbeat_interval_ms": 5000
 }
 ```
 
@@ -335,16 +339,40 @@ Task response:
 {
   "type": "task_dispatch",
   "task_id": "summarize_user-0",
+  "workflow_inst_id": "workflow-1",
   "task": {},
+  "workspace_path_suffix": "workflow-1/taskid-summarize_user",
   "inputs": []
 }
 ```
+
+The worker resolves `workspace_path_suffix` under its own `RUNHELM_WORKSPACE_ROOT`, creates the directory, updates `.timestamp`, and passes that worker-local absolute path to the task executor.
 
 Empty response:
 
 ```json
 {
   "type": "no_task"
+}
+```
+
+### `POST /workers/heartbeat`
+
+Joins or renews a worker registration using the worker process ID and stable host ID.
+
+```json
+{
+  "worker_id": "remote-worker-1",
+  "host_id": "local-dev-host"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "accepted",
+  "worker_id": "remote-worker-1"
 }
 ```
 
@@ -462,6 +490,8 @@ Use `tools: []` to disable tools, `tools: ["_all_"]` to allow every tool availab
 
 Agent tools include RunHelm built-ins, Pi coding-agent built-ins, and Pi-compatible extension tools. The Pi built-in tool names are `read`, `bash`, `edit`, and `write`.
 
+Set `ask: true` and include `ask_user` in `tools` when an Agent may pause for human input. See `worker/examples/example_human_input_workflow.yaml` for a minimal workflow that enters `InputNeeded`, then continues after `POST /workflows/{workflow_instance_id}/tasks/{task_id}/human-input`.
+
 Use `skills: []` to expose no skills, or list exact skill names such as `["ticket-triage"]`. Skills do not support `"_all_"`.
 
 The worker uses Pi's resource loader, so TypeScript extensions and skills are supported. Extension and skill packages are runtime resources, not worker application dependencies. They must already be installed in the worker image or mounted into the worker environment before startup. The default Docker Compose deployment mounts `${RUNHELM_SKILLS_DIR:-${HOME}/.runhelm/skills}` into `/home/runhelm/.pi/agent/skills` as read-only. If a mounted skill and an installed package skill have the same name, the mounted skill takes priority.
@@ -498,6 +528,8 @@ kind:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `RUNHELM_ORCHESTRATOR_HTTP_URL` | `http://127.0.0.1:3001` | Worker API base URL used for worker registration, task claiming, and task completion. |
+| `RUNHELM_WORKER_HOST_ID` | required | Stable host identity sent during registration. Use the same value for workers that share durable workspace and session roots. |
+| `RUNHELM_WORKSPACE_ROOT` | `$HOME/.cache/runhelm/workspaces` | Root directory where dispatched `workspace_path_suffix` values are materialized before task execution. The Docker Compose worker sets this to `/workspaces`. |
 | `WORKER_ID` | hostname plus process id | Worker id sent during registration. |
 | `RUNHELM_FUNCTION_TIMEOUT_MS` | `300000` | Timeout for Function dependency install and Function execution. |
 | `RUNHELM_TASK_TIMEOUT_SECS` | `300` | Orchestrator fallback timeout for tasks that do not set `timeout_secs`. |

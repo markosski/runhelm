@@ -1,8 +1,8 @@
 use crate::core::models::{ExecutionMetadata, TaskDef};
+use crate::core::workflow::models::TaskDispatchConstraints;
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::Path;
 
 /// A deterministic, in-process executor that generates schema-conformant default
 /// output from a `TaskDef`'s `output_schema`. Used in unit tests and dry-runs.
@@ -89,7 +89,7 @@ impl ExecutorPort for FakeExecutor {
         task: &TaskDef,
         _inputs: &[Value],
         _metadata: &ExecutionMetadata,
-        _workspace_path: &Path,
+        _dispatch: &TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         Ok(ExecutionResult::Success(match &task.output_schema {
             Some(schema) => schema_default(schema),
@@ -132,7 +132,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -158,7 +158,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -179,7 +179,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -198,7 +198,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -217,7 +217,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -236,7 +236,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -255,7 +255,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -274,7 +274,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -293,7 +293,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -314,7 +314,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -333,7 +333,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -343,7 +343,7 @@ mod tests {
                 &task,
                 &[json!("anything"), json!(42)],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -371,7 +371,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                Path::new("/tmp/runhelm-test-workspace"),
+                &crate::core::workflow::models::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();

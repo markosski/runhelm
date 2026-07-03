@@ -57,6 +57,11 @@ pub enum TaskResult {
         input: Vec<serde_json::Value>,
         metadata: Option<TaskResultMetadata>,
     },
+    InputNeeded {
+        input: Vec<serde_json::Value>,
+        input_request: String,
+        metadata: Option<TaskResultMetadata>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -142,6 +147,20 @@ impl Serialize for TaskResult {
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("status", "running")?;
                 map.serialize_entry("input", input)?;
+                if let Some(metadata) = metadata {
+                    serialize_metadata(&mut map, metadata)?;
+                }
+                map.end()
+            }
+            TaskResult::InputNeeded {
+                input,
+                input_request,
+                metadata,
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "input_needed")?;
+                map.serialize_entry("input", input)?;
+                map.serialize_entry("input_request", input_request)?;
                 if let Some(metadata) = metadata {
                     serialize_metadata(&mut map, metadata)?;
                 }

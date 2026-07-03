@@ -2,25 +2,23 @@ use super::*;
 use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+use crate::adapters::worker_pool::{WorkerPool, WorkerRegistration};
 use crate::api::models::WorkflowQueueStatus;
 use crate::core::function_service::FunctionService;
 use crate::core::models::{
-    ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskStatus, TaskTypeDef, Workspace,
-    verifier_decision_schema,
+    ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskInstance, TaskSatisfactionStatus,
+    TaskStatus, TaskTypeDef, Workspace, verifier_decision_schema,
 };
-use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance};
+use crate::core::workflow::models::{DataBinding, WorkerHostId, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
-use crate::core::workspace_manager::WorkspaceManagerConfig;
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, sleep};
 
 fn orchestrator() -> Orchestrator {
@@ -28,7 +26,6 @@ fn orchestrator() -> Orchestrator {
         Arc::new(MemoryStorage::new()),
         Arc::new(FakeExecutor::new()),
         Arc::new(MemoryWorkflowQueue::new(10)),
-        Arc::new(test_workspace_manager("orchestrator-default")),
     )
 }
 
@@ -39,33 +36,10 @@ fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionServi
             storage.clone(),
             Arc::new(FakeExecutor::new()),
             Arc::new(MemoryWorkflowQueue::new(10)),
-            Arc::new(test_workspace_manager("orchestrator-services")),
         ),
         WorkflowService::new(storage.clone()),
         FunctionService::new(storage),
     )
-}
-
-fn temp_root(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-
-    std::env::temp_dir().join(format!(
-        "runhelm-{}-{}-{}",
-        test_name,
-        std::process::id(),
-        nanos
-    ))
-}
-
-fn test_workspace_manager(test_name: &str) -> WorkspaceManager {
-    WorkspaceManager::new(WorkspaceManagerConfig {
-        root: temp_root(test_name),
-        ttl: Duration::from_secs(3600),
-        vacuum_interval: Duration::from_secs(60),
-    })
 }
 
 struct CountingExecutor {
@@ -96,7 +70,7 @@ impl ExecutorPort for CountingExecutor {
         _task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -110,7 +84,6 @@ impl ExecutorPort for CountingExecutor {
 struct RecordedIsolatedExecution {
     workflow_inst_id: String,
     task_id: String,
-    workspace_path: PathBuf,
 }
 
 struct RecordingIsolatedExecutor {
@@ -137,7 +110,7 @@ impl ExecutorPort for RecordingIsolatedExecutor {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        workspace_path: &Path,
+        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         self.records
             .lock()
@@ -145,7 +118,6 @@ impl ExecutorPort for RecordingIsolatedExecutor {
             .push(RecordedIsolatedExecution {
                 workflow_inst_id: workflow_inst_id.to_string(),
                 task_id: task.id.clone(),
-                workspace_path: workspace_path.to_path_buf(),
             });
         Ok(ExecutionResult::Success(json!({})))
     }
@@ -207,6 +179,7 @@ fn workflow_instance(id: &str, workflow_def_id: &str) -> WorkflowInstance {
         id: id.to_string(),
         workflow_def_id: workflow_def_id.to_string(),
         status: WorkflowStatus::Pending,
+        pinned_worker_host: None,
         tasks: HashMap::new(),
         verifier_states: HashMap::new(),
     }
@@ -293,11 +266,6 @@ async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
         storage,
         executor.clone(),
         Arc::new(MemoryWorkflowQueue::new(10)),
-        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
-            root: temp_root("isolated-id"),
-            ttl: Duration::from_secs(3600),
-            vacuum_interval: Duration::from_secs(60),
-        })),
     );
 
     workflow_service
@@ -319,46 +287,6 @@ async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
             .starts_with("isolated-workflow1-taska-")
     );
     assert_ne!(records[0].workflow_inst_id, "123");
-}
-
-#[tokio::test]
-async fn execute_workflow_task_isolated_creates_workspace_for_isolated_execution() {
-    let storage = Arc::new(MemoryStorage::new());
-    let executor = Arc::new(RecordingIsolatedExecutor::new());
-    let workflow_service = WorkflowService::new(storage.clone());
-    let workspace_root = temp_root("isolated-workspace");
-    let orchestrator = Orchestrator::new(
-        storage,
-        executor.clone(),
-        Arc::new(MemoryWorkflowQueue::new(10)),
-        Arc::new(WorkspaceManager::new(WorkspaceManagerConfig {
-            root: workspace_root.clone(),
-            ttl: Duration::from_secs(3600),
-            vacuum_interval: Duration::from_secs(60),
-        })),
-    );
-
-    workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
-        .await
-        .unwrap();
-
-    orchestrator
-        .execute_workflow_task_isolated("workflow1", "taska", &[])
-        .await
-        .unwrap();
-
-    let records = executor.records();
-    let record = records.first().unwrap();
-    assert!(record.workspace_path.is_dir());
-    assert!(record.workspace_path.join(".timestamp").is_file());
-    assert!(record.workspace_path.starts_with(&workspace_root));
-    assert_eq!(
-        record.workspace_path,
-        workspace_root
-            .join(&record.workflow_inst_id)
-            .join("taskid-taska")
-    );
 }
 
 #[tokio::test]
@@ -389,13 +317,8 @@ async fn scheduler_limits_concurrent_workflow_execution() {
     let storage = Arc::new(MemoryStorage::new());
     let executor = Arc::new(CountingExecutor::new(Duration::from_millis(50)));
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Arc::new(Orchestrator::new(
-        storage.clone(),
-        executor.clone(),
-        queue,
-        Arc::new(test_workspace_manager("orchestrator-concurrency")),
-    ));
-    let scheduler = tokio::spawn(orchestrator.clone().run_scheduler(2));
+    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue));
+    let scheduler = tokio::spawn(orchestrator.clone().run_workflow_queue(2));
 
     for id in ["workflow-1", "workflow-2", "workflow-3"] {
         storage
@@ -521,7 +444,7 @@ async fn workflow_without_control_verifier_deserializes_and_executes() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1")
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -552,7 +475,7 @@ async fn get_task_result_resolves_logical_task_id_to_generation_one() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1")
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -589,7 +512,7 @@ async fn list_task_results_returns_materialized_attempts() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1")
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -885,12 +808,7 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
 async fn queue_status_lists_pending_workflows() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(
-        storage.clone(),
-        Arc::new(FakeExecutor::new()),
-        queue,
-        Arc::new(test_workspace_manager("orchestrator-queue-status")),
-    );
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
 
     let mut running = workflow_instance("running-workflow", "workflow-1");
     running.status = WorkflowStatus::Running;
@@ -909,6 +827,511 @@ async fn queue_status_lists_pending_workflows() {
         WorkflowQueueStatus {
             pending: vec!["pending-workflow".to_string()],
         }
+    );
+}
+
+#[tokio::test]
+async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+
+    for (id, status) in [
+        ("pending-workflow", WorkflowStatus::Pending),
+        ("running-workflow", WorkflowStatus::Running),
+        ("paused-workflow", WorkflowStatus::Paused),
+        ("input-needed-workflow", WorkflowStatus::InputNeeded),
+        ("completed-workflow", WorkflowStatus::Completed),
+        ("failed-workflow", WorkflowStatus::Failed),
+    ] {
+        let mut instance = workflow_instance(id, "workflow-1");
+        instance.status = status;
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+    }
+
+    let discovery = orchestrator.list_active_workflow_info().await.unwrap();
+    let mut runnable_ids: Vec<String> =
+        discovery.runnable.into_iter().map(|info| info.id).collect();
+    runnable_ids.sort();
+    let mut blocked_ids: Vec<String> = discovery.blocked.into_iter().map(|info| info.id).collect();
+    blocked_ids.sort();
+
+    assert_eq!(
+        runnable_ids,
+        vec![
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+    assert_eq!(
+        blocked_ids,
+        vec![
+            "input-needed-workflow".to_string(),
+            "paused-workflow".to_string(),
+        ]
+    );
+
+    let requeued = orchestrator
+        .enqueue_active_workflow_instances()
+        .await
+        .unwrap();
+    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    pending.sort();
+
+    assert_eq!(requeued, 2);
+    assert_eq!(
+        pending,
+        vec![
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_preserves_workflow_pins_when_reloading_runnable_work() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let pinned_host = WorkerHostId::new("host-a");
+
+    for (id, status) in [
+        ("pending-workflow", WorkflowStatus::Pending),
+        ("running-workflow", WorkflowStatus::Running),
+        ("paused-workflow", WorkflowStatus::Paused),
+        ("input-needed-workflow", WorkflowStatus::InputNeeded),
+    ] {
+        let mut instance = workflow_instance(id, "workflow-1");
+        instance.status = status;
+        instance.pinned_worker_host = Some(pinned_host.clone());
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(orchestrator.synchronize_startup_tasks().await.unwrap(), 1);
+    assert_eq!(
+        orchestrator
+            .enqueue_active_workflow_instances()
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("running-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+
+    for id in [
+        "pending-workflow",
+        "running-workflow",
+        "paused-workflow",
+        "input-needed-workflow",
+    ] {
+        let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
+        assert_eq!(instance.pinned_worker_host, Some(pinned_host.clone()));
+    }
+
+    assert_eq!(
+        storage
+            .get_workflow_instance("running-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+
+    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    pending.sort();
+    assert_eq!(
+        pending,
+        vec![
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_requeues_abandoned_running_task_attempts() {
+    // Seed durable storage as it would look after a crash: the workflow and one
+    // task attempt were Running, but the in-memory dispatch lease is gone.
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let pinned_host = WorkerHostId::new("host-a");
+    let task_attempt_id = TaskInstance::make_task_attempt_id("taska", 1);
+
+    let mut instance = workflow_instance("running-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Running;
+    instance.pinned_worker_host = Some(pinned_host.clone());
+    instance.tasks.insert(
+        task_attempt_id.clone(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Running,
+            satisfaction_status: TaskSatisfactionStatus::Pending,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    // Startup recovery should treat the lost in-memory lease as abandoned,
+    // move runnable work back to Pending, and enqueue the workflow again.
+    assert_eq!(orchestrator.synchronize_startup_tasks().await.unwrap(), 1);
+    assert_eq!(
+        orchestrator
+            .enqueue_active_workflow_instances()
+            .await
+            .unwrap(),
+        1
+    );
+
+    // The workflow pin remains durable, while the running workflow and task
+    // attempt are made eligible for redispatch.
+    let recovered = storage
+        .get_workflow_instance("running-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.status, WorkflowStatus::Pending);
+    assert_eq!(recovered.pinned_worker_host, Some(pinned_host));
+    assert_eq!(
+        recovered.tasks.get(&task_attempt_id).unwrap().status,
+        TaskStatus::Pending
+    );
+    assert_eq!(
+        orchestrator.get_queue_status().await.unwrap().pending,
+        vec!["running-workflow".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn lost_pinned_host_marks_nonterminal_workflows_failed() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let lost_host = WorkerHostId::new("host-a");
+    let other_host = WorkerHostId::new("host-b");
+
+    for (id, status, pinned_host) in [
+        (
+            "pending-workflow",
+            WorkflowStatus::Pending,
+            Some(lost_host.clone()),
+        ),
+        (
+            "running-workflow",
+            WorkflowStatus::Running,
+            Some(lost_host.clone()),
+        ),
+        (
+            "paused-workflow",
+            WorkflowStatus::Paused,
+            Some(lost_host.clone()),
+        ),
+        (
+            "input-needed-workflow",
+            WorkflowStatus::InputNeeded,
+            Some(lost_host.clone()),
+        ),
+        (
+            "completed-workflow",
+            WorkflowStatus::Completed,
+            Some(lost_host.clone()),
+        ),
+        (
+            "already-failed-workflow",
+            WorkflowStatus::Failed,
+            Some(lost_host.clone()),
+        ),
+        (
+            "other-host-workflow",
+            WorkflowStatus::Pending,
+            Some(other_host.clone()),
+        ),
+        ("unpinned-workflow", WorkflowStatus::Pending, None),
+    ] {
+        let mut instance = workflow_instance(id, "workflow-1");
+        instance.status = status;
+        instance.pinned_worker_host = pinned_host;
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+    }
+
+    let failed = orchestrator
+        .fail_workflows_pinned_to_lost_hosts(std::slice::from_ref(&lost_host))
+        .await
+        .unwrap();
+
+    assert_eq!(failed, 4);
+    for id in [
+        "pending-workflow",
+        "running-workflow",
+        "paused-workflow",
+        "input-needed-workflow",
+    ] {
+        let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
+        assert_eq!(instance.status, WorkflowStatus::Failed);
+        assert_eq!(instance.pinned_worker_host, Some(lost_host.clone()));
+    }
+
+    assert_eq!(
+        storage
+            .get_workflow_instance("completed-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Completed
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("already-failed-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Failed
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("other-host-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+    assert_eq!(
+        storage
+            .get_workflow_instance("unpinned-workflow")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+}
+
+#[tokio::test]
+async fn retry_workflow_task_commits_retry_and_enqueues_workflow() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: Some(json!({"stale": true})),
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let result = orchestrator
+        .retry_workflow_task("failed-workflow", "taska")
+        .await
+        .unwrap();
+
+    assert_eq!(result.task_attempt_id, "taska[1]");
+    assert_eq!(result.pinned_host_id, Some(WorkerHostId::new("host-a")));
+    assert!(!result.local_context_may_be_lost);
+
+    let saved = storage
+        .get_workflow_instance("failed-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, WorkflowStatus::Pending);
+    assert_eq!(saved.tasks["taska[1]"].status, TaskStatus::Pending);
+    assert_eq!(
+        orchestrator.get_queue_status().await.unwrap().pending,
+        vec!["failed-workflow".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let worker_pool = WorkerPool::new();
+    worker_pool
+        .register_worker(WorkerRegistration {
+            worker_id: "worker-1".to_string(),
+            host_id: WorkerHostId::new("host-a"),
+        })
+        .await;
+    worker_pool
+        .register_worker(WorkerRegistration {
+            worker_id: "worker-2".to_string(),
+            host_id: WorkerHostId::new("host-b"),
+        })
+        .await;
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let result = orchestrator
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .await
+        .unwrap();
+
+    assert_eq!(result.pinned_host_id, Some(WorkerHostId::new("host-a")));
+    assert!(!result.local_context_may_be_lost);
+    let saved = storage
+        .get_workflow_instance("failed-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-a")));
+}
+
+#[tokio::test]
+async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let worker_pool = WorkerPool::new();
+    worker_pool
+        .register_worker(WorkerRegistration {
+            worker_id: "worker-1".to_string(),
+            host_id: WorkerHostId::new("host-b"),
+        })
+        .await;
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let result = orchestrator
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .await
+        .unwrap();
+
+    assert_eq!(result.pinned_host_id, Some(WorkerHostId::new("host-b")));
+    assert!(result.local_context_may_be_lost);
+    let saved = storage
+        .get_workflow_instance("failed-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-b")));
+    assert_eq!(
+        orchestrator.get_queue_status().await.unwrap().pending,
+        vec!["failed-workflow".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn force_retry_workflow_task_rejects_when_no_host_is_eligible() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let worker_pool = WorkerPool::new();
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    instance.status = WorkflowStatus::Failed;
+    instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+    instance.tasks.insert(
+        "taska[1]".to_string(),
+        TaskInstance {
+            task_def_id: "taska".to_string(),
+            status: TaskStatus::Failed,
+            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+            human_input: None,
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            generation_index: 1,
+            verifier_metadata: None,
+        },
+    );
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+
+    let error = orchestrator
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("no eligible retry host"));
+    assert!(
+        orchestrator
+            .get_queue_status()
+            .await
+            .unwrap()
+            .pending
+            .is_empty()
     );
 }
 

@@ -24,7 +24,9 @@ For a continuation attempt with a loaded session, the worker appends only the cu
 
 For a continuation attempt where no session can be loaded, the worker creates a fresh replacement session and rebuilds enough context from structured workflow data: the task prompt, upstream inputs, previous output or prior feedback history when available, and the current human response or verifier feedback.
 
-This change prepares the worker-side session handling needed for human-input-created continuation attempts. The public human-input submission API and full end-to-end resume flow are completed separately.
+The public human-input submission API durably records submitted input as workflow history and materializes the next attempt for the same logical Agent task. For reusable sessions, the worker receives that submitted response as the current event and appends it to the existing Agent session.
+
+`worker/examples/example_human_input_workflow.yaml` shows a minimal Agent workflow that enables `ask: true`, approves the `ask_user` tool, enters `InputNeeded`, and then returns JSON after the submitted human response is injected into the continuation attempt.
 
 ## Missing Session Recovery
 
@@ -67,3 +69,17 @@ Agent execution keeps Pi's SDK-managed stream function so model authentication c
 The session store interface is intended to allow a future blob-backed implementation without changing workflow attempt semantics. A blob store should use the same logical RunHelm session keys, download or materialize a Pi-compatible JSONL file before execution, and persist the updated JSONL after execution.
 
 Blob-backed implementations should add concurrency protection, such as ETags, generation IDs, or compare-and-swap writes, so two workers do not silently overwrite the same logical session. The orchestrator task model should not need to store opaque Pi session IDs or transcript contents when that adapter is added.
+
+## Remote Worker Pinning
+
+The OpenSpec change `add-workspace-session-persistence` defines the planned interaction between Agent sessions and remote worker placement. Workers must be configured with `RUNHELM_WORKER_HOST_ID`; RunHelm does not auto-detect this identity. A worker that starts or registers without a non-empty value fails with a host identity configuration error. The value should identify the durable execution state domain that owns the workspace and session roots, not the worker container or process.
+
+Every workflow instance is pinned to a registered worker host when the workflow instance is created for execution, and reusable Agent sessions in that workflow instance continue on the pinned host. This keeps host-local session files and workspace files aligned. Multiple worker processes may share the same `RUNHELM_WORKER_HOST_ID` when they share the same durable workspace and session roots. A single-host deployment remains compatible by configuring every worker that shares those roots with the same host ID.
+
+RunHelm records the workflow `pinned_host_id` on the workflow instance snapshot, separately from task results and Agent transcripts. Dispatch leases record the worker process currently executing an attempt. This keeps Agent session placement out of workflow output data while still giving restart and retry code a durable scheduling source of truth.
+
+Worker container restart does not by itself imply session loss. A replacement worker can resume work for the pinned host when it registers or renews via heartbeat with the same `RUNHELM_WORKER_HOST_ID` and has access to the same session store root.
+
+If one worker process disappears but another worker remains registered for the same `RUNHELM_WORKER_HOST_ID`, RunHelm treats that as worker loss, not host loss. Existing dispatch leases or task timeouts handle the affected attempt, and future claims can still use another worker on the same host identity.
+
+If no worker is currently registered for the pinned host, RunHelm waits rather than silently continuing a reusable Agent session on another host. If heartbeat policy deregisters the last worker for that host identity, RunHelm declares the pinned host lost, cancels pending dispatches pinned to that host, and marks non-terminal workflow instances pinned to that host as `Failed`. The workflow pin remains on the failed snapshot. Default task retry resets the selected failed task attempt and queues the workflow again without changing that pin. Force retry keeps the existing pin when that host is eligible; if that host is unavailable and another host is eligible, it reassigns the workflow and records that host-local Agent session and workspace context may be lost. If no eligible retry host exists, force retry is rejected instead of queueing work that cannot be claimed.

@@ -1,16 +1,4 @@
-# Capability: worker-pool-ipc
-
-## Purpose
-Defines how the orchestrator coordinates long-lived worker processes over Unix Domain Socket IPC for registration, task dispatch, result handling, failure recovery, and timeout management.
-
-## Requirements
-
-### Requirement: Orchestrator IPC Server
-The Orchestrator SHALL host a Unix Domain Socket server to receive connections from long-lived worker processes.
-
-#### Scenario: Orchestrator starts IPC server
-- **WHEN** the Orchestrator application starts up
-- **THEN** it binds to a Unix Domain Socket at the path specified in the configuration (defaulting to `/tmp/runhelm.sock`)
+## ADDED Requirements
 
 ### Requirement: Workflow-Pin Task Claiming
 The orchestrator SHALL only allow a worker to claim a task when the worker satisfies the workflow instance's host pin constraint.
@@ -32,6 +20,8 @@ The orchestrator SHALL only allow a worker to claim a task when the worker satis
 #### Scenario: Single active task per workflow instance
 - **WHEN** a workflow instance already has an active task dispatch
 - **THEN** the orchestrator does not dispatch another task for the same workflow instance until the active dispatch completes, expires, or is released
+
+## MODIFIED Requirements
 
 ### Requirement: Worker Connection and Registration
 Workers SHALL connect to the Orchestrator's socket and provide a registration message identifying their worker process and configured stable host identity.
@@ -106,13 +96,6 @@ The Orchestrator SHALL dispatch a task to exactly one idle worker from the pool 
 - **WHEN** the pinned host is unavailable past the configured host loss policy
 - **THEN** the Orchestrator marks non-terminal workflow instances pinned to that host as failed
 
-### Requirement: Task Completion via Response Queue
-Workers SHALL send the task result back to the Orchestrator via the same socket connection.
-
-#### Scenario: Worker returns task result
-- **WHEN** a worker finishes a task and writes the result JSON back to the socket
-- **THEN** the Orchestrator receives the result, routes it to the correct workflow task, and marks the worker as "Idle" again
-
 ### Requirement: Connection Failure Detection
 The Orchestrator SHALL detect when a worker connection is closed or lost and update in-memory dispatch lease state for any task owned by that connection.
 
@@ -144,10 +127,3 @@ The Orchestrator SHALL reconstruct runnable workflow work from durable workflow 
 - **WHEN** the Orchestrator application starts up
 - **AND** durable workflow state contains a running task attempt without an in-memory dispatch lease
 - **THEN** it requeues or fails the task according to recovery policy
-
-### Requirement: Task Timeout Management
-The Orchestrator SHALL monitor the execution time of tasks assigned to workers and handle timeouts.
-
-#### Scenario: Task exceeds maximum execution time
-- **WHEN** a worker does not return a result within the configured task timeout
-- **THEN** the Orchestrator marks the task as "FAILED" in the database and ignores any subsequent results from that specific connection

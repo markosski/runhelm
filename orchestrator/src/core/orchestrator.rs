@@ -1,21 +1,25 @@
+use crate::adapters::worker_pool::WorkerPool;
 use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::workflow::events::WorkflowInstanceEvent;
-use crate::core::workflow::models::{WorkflowInfo, WorkflowStatus};
+use crate::core::workflow::models::{
+    StartupWorkflowDiscovery, TaskDispatchConstraints, WorkerHostId, WorkflowInfo, WorkflowStatus,
+};
 use crate::core::workflow::state_manager::WorkflowStateManager;
-use crate::core::workspace_manager::WorkspaceManager;
+use crate::core::workflow::workflow_service::WorkflowService;
 use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{
     StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPageRequest,
     WorkflowInstanceFilter,
 };
 use crate::ports::workflow_queue::WorkflowQueuePort;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[cfg(test)]
 #[path = "orchestrator_tests.rs"]
@@ -28,7 +32,13 @@ pub struct Orchestrator {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
-    workspace_manager: Arc<WorkspaceManager>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryWorkflowTaskResult {
+    pub task_attempt_id: String,
+    pub pinned_host_id: Option<WorkerHostId>,
+    pub local_context_may_be_lost: bool,
 }
 
 impl Orchestrator {
@@ -36,17 +46,14 @@ impl Orchestrator {
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
         workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
-        workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
-        let engine =
-            WorkflowEngine::new(storage.clone(), executor.clone(), workspace_manager.clone());
+        let engine = WorkflowEngine::new(storage.clone(), executor.clone());
 
         Self {
             engine,
             storage,
             executor,
             workflow_queue,
-            workspace_manager,
         }
     }
 
@@ -77,6 +84,62 @@ impl Orchestrator {
     /// Adds a workflow instance to the execution queue.
     pub async fn enqueue_workflow_instance(&self, instance_id: String) -> anyhow::Result<()> {
         self.workflow_queue.enqueue(instance_id).await
+    }
+
+    pub async fn retry_workflow_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<RetryWorkflowTaskResult> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        let pinned_worker_host = workflow_service
+            .load_retryable_task_pin(workflow_instance_id, task_id)
+            .await?;
+        let task_attempt_id = workflow_service
+            .retry_task(workflow_instance_id, task_id)
+            .await?;
+        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+            .await?;
+
+        Ok(RetryWorkflowTaskResult {
+            task_attempt_id,
+            pinned_host_id: pinned_worker_host,
+            local_context_may_be_lost: false,
+        })
+    }
+
+    pub async fn force_retry_workflow_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+        worker_pool: &WorkerPool,
+    ) -> anyhow::Result<RetryWorkflowTaskResult> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        let pinned_worker_host = workflow_service
+            .load_retryable_task_pin(workflow_instance_id, task_id)
+            .await?;
+
+        let Some(target_host_id) = worker_pool
+            .select_force_retry_host(pinned_worker_host.as_ref())
+            .await
+        else {
+            anyhow::bail!("no eligible retry host available");
+        };
+
+        let local_context_may_be_lost = pinned_worker_host.as_ref() != Some(&target_host_id);
+
+        let task_attempt_id = workflow_service
+            .force_retry_task(workflow_instance_id, task_id, target_host_id.clone())
+            .await?;
+
+        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+            .await?;
+
+        Ok(RetryWorkflowTaskResult {
+            task_attempt_id,
+            pinned_host_id: Some(target_host_id),
+            local_context_may_be_lost,
+        })
     }
 
     /// Returns queued and currently running workflow instance IDs.
@@ -110,7 +173,7 @@ impl Orchestrator {
     }
 
     /// Continuously consumes queued workflow instances and runs up to `max_concurrent_workflows`.
-    pub async fn run_scheduler(self: Arc<Self>, max_concurrent_workflows: usize) {
+    pub async fn run_workflow_queue(self: Arc<Self>, max_concurrent_workflows: usize) {
         let max_concurrent_workflows = max_concurrent_workflows.max(1);
         let permits = Arc::new(Semaphore::new(max_concurrent_workflows));
         info!(max_concurrent_workflows, "workflow scheduler started");
@@ -157,7 +220,7 @@ impl Orchestrator {
 
         let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
 
-        for info in self.list_active_workflow_info().await? {
+        for info in self.list_active_workflow_info().await?.runnable {
             let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
                 continue;
             };
@@ -183,7 +246,7 @@ impl Orchestrator {
 
     /// Requeues all active workflow instances found in storage.
     pub async fn enqueue_active_workflow_instances(&self) -> anyhow::Result<usize> {
-        let infos = self.list_active_workflow_info().await?;
+        let infos = self.list_active_workflow_info().await?.runnable;
         let count = infos.len();
 
         for info in infos {
@@ -193,6 +256,53 @@ impl Orchestrator {
         Ok(count)
     }
 
+    /// Fails non-terminal workflow instances pinned to hosts that heartbeat
+    /// policy has declared lost. The existing pin remains on the snapshot so
+    /// later retry behavior can decide whether to preserve or reassign it.
+    pub async fn fail_workflows_pinned_to_lost_hosts(
+        &self,
+        lost_hosts: &[WorkerHostId],
+    ) -> anyhow::Result<usize> {
+        if lost_hosts.is_empty() {
+            return Ok(0);
+        }
+
+        let lost_hosts = lost_hosts.iter().cloned().collect::<HashSet<_>>();
+        let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
+        let active = self.list_active_workflow_info().await?;
+        let mut failed = 0;
+
+        for info in active.runnable.into_iter().chain(active.blocked) {
+            let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
+                continue;
+            };
+            let Some(pinned_host) = &instance.pinned_worker_host else {
+                continue;
+            };
+            if is_terminal_workflow_status(&instance.status) || !lost_hosts.contains(pinned_host) {
+                continue;
+            }
+            let pinned_host_id = pinned_host.0.clone();
+
+            state_manager
+                .commit_events_for_instance(
+                    instance,
+                    vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                        status: WorkflowStatus::Failed,
+                    }],
+                )
+                .await?;
+            failed += 1;
+            warn!(
+                workflow_instance_id = %info.id,
+                pinned_host_id = %pinned_host_id,
+                "marked workflow failed because pinned host was declared lost"
+            );
+        }
+
+        Ok(failed)
+    }
+
     async fn execute_task_isolated_with_id(
         &self,
         isolated_execution_id: String,
@@ -200,16 +310,13 @@ impl Orchestrator {
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
         let task = self.resolve_task_function_ref(task).await?;
-        let workspace_path = self
-            .workspace_manager
-            .create_or_time_stamp_workspace(&isolated_execution_id, &task)?;
         self.executor
             .execute(
                 &isolated_execution_id,
                 &task,
                 inputs,
                 &ExecutionMetadata::default(),
-                &workspace_path,
+                &TaskDispatchConstraints::default(),
             )
             .await
     }
@@ -218,34 +325,64 @@ impl Orchestrator {
         resolve_task_function_ref(self.storage.as_ref(), task).await
     }
 
-    async fn list_active_workflow_info(&self) -> anyhow::Result<Vec<WorkflowInfo>> {
+    async fn list_active_workflow_info(&self) -> anyhow::Result<StartupWorkflowDiscovery> {
         let mut cursor: Option<WorkflowInfoCursor> = None;
-        let mut infos = Vec::new();
+        let mut runnable_infos: Vec<WorkflowInfo> = Vec::new();
+        let mut blocked_infos: Vec<WorkflowInfo> = Vec::new();
 
         loop {
             let page = self
                 .storage
                 .list_workflow_info(WorkflowInfoListRequest {
-                    filters: active_workflow_filter(),
+                    filters: all_nonterminal_workflow_filter(),
                     page: WorkflowInfoPageRequest { limit: 100, cursor },
                 })
                 .await?;
-            infos.extend(page.workflows);
+
+            let runnable: Vec<WorkflowInfo> = page
+                .workflows
+                .iter()
+                .filter(|x| matches!(x.status, WorkflowStatus::Running | WorkflowStatus::Pending))
+                .map(|x| x.clone())
+                .collect();
+            let blocked: Vec<WorkflowInfo> = page
+                .workflows
+                .iter()
+                .filter(|x| {
+                    matches!(
+                        x.status,
+                        WorkflowStatus::Paused | WorkflowStatus::InputNeeded
+                    )
+                })
+                .map(|x| x.clone())
+                .collect();
+
+            runnable_infos.extend(runnable);
+            blocked_infos.extend(blocked);
             cursor = page.next_cursor;
             if cursor.is_none() {
                 break;
             }
         }
 
-        Ok(infos)
+        Ok(StartupWorkflowDiscovery {
+            runnable: runnable_infos,
+            blocked: blocked_infos,
+        })
     }
 }
 
-fn active_workflow_filter() -> Vec<WorkflowInstanceFilter> {
+fn all_nonterminal_workflow_filter() -> Vec<WorkflowInstanceFilter> {
     vec![WorkflowInstanceFilter::Statuses(vec![
         WorkflowStatus::Pending,
         WorkflowStatus::Running,
+        WorkflowStatus::Paused,
+        WorkflowStatus::InputNeeded,
     ])]
+}
+
+fn is_terminal_workflow_status(status: &WorkflowStatus) -> bool {
+    matches!(status, WorkflowStatus::Completed | WorkflowStatus::Failed)
 }
 
 fn isolated_workflow_task_execution_id(

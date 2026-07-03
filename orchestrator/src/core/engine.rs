@@ -7,11 +7,10 @@ use crate::core::models::{
 };
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
-    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowDef,
-    WorkflowInstance, WorkflowStatus,
+    TaskDispatchConstraints, VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
+    WorkflowDef, WorkflowInstance, WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
-use crate::core::workspace_manager::WorkspaceManager;
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +23,6 @@ mod tests;
 pub struct WorkflowEngine {
     storage: Arc<dyn StoragePort + Send + Sync>,
     executor: Arc<dyn ExecutorPort + Send + Sync>,
-    workspace_manager: Arc<WorkspaceManager>,
 }
 
 #[derive(Default)]
@@ -46,13 +44,8 @@ impl WorkflowEngine {
     pub fn new(
         storage: Arc<dyn StoragePort + Send + Sync>,
         executor: Arc<dyn ExecutorPort + Send + Sync>,
-        workspace_manager: Arc<WorkspaceManager>,
     ) -> Self {
-        Self {
-            storage,
-            executor,
-            workspace_manager,
-        }
+        Self { storage, executor }
     }
 
     /// Returns a lightweight status snapshot of a workflow instance.
@@ -116,6 +109,13 @@ impl WorkflowEngine {
             None => anyhow::bail!("Workflow instance not found"),
         };
 
+        if matches!(
+            workflow_instance.status,
+            WorkflowStatus::Completed | WorkflowStatus::Failed
+        ) {
+            return Ok(());
+        }
+
         let workflow_def = match self
             .storage
             .get_workflow_def(&workflow_instance.workflow_def_id)
@@ -148,6 +148,7 @@ impl WorkflowEngine {
                         task_def_id: task_def.id.clone(),
                         status: TaskStatus::Pending,
                         satisfaction_status: TaskSatisfactionStatus::Pending,
+                        human_input: None,
                         input_data: vec![], // Empty until upstream dependencies propagate data
                         input_mapping: vec![],
                         output_data: None,
@@ -205,6 +206,7 @@ impl WorkflowEngine {
                     }
                 }
             }
+            tasks_to_run.sort();
 
             for task_attempt_id in tasks_to_run {
                 workflow_instance = state_manager
@@ -229,11 +231,6 @@ impl WorkflowEngine {
                     .iter()
                     .find(|t| t.id == task_instance.task_def_id)
                     .unwrap();
-
-                // Ensure workspace is available and mark it as recently used before execution.
-                let workspace_path = self
-                    .workspace_manager
-                    .create_or_time_stamp_workspace(&workflow_instance.id, &task_def)?;
 
                 let resolved_inputs = self
                     .resolve_inputs(
@@ -279,6 +276,9 @@ impl WorkflowEngine {
 
                 let metadata =
                     self.execution_metadata(&workflow_instance, &workflow_def, &task_instance);
+                let dispatch = TaskDispatchConstraints {
+                    pinned_host_id: workflow_instance.pinned_worker_host.clone(),
+                };
 
                 let execution_result =
                     match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
@@ -289,7 +289,7 @@ impl WorkflowEngine {
                                     &resolved_task_def,
                                     &inputs,
                                     &metadata,
-                                    &workspace_path,
+                                    &dispatch,
                                 )
                                 .await
                         }
@@ -300,8 +300,10 @@ impl WorkflowEngine {
                     Ok(result) => {
                         let output = match result {
                             ExecutionResult::Success(output) => output,
-                            ExecutionResult::InputNeeded(description) => {
-                                workflow_instance = state_manager
+                            // TODO: Consider reducing granularity of those events
+                            // i.e. InputNeeded should issue TaskReturnedInputNeeded this should perform all needed internal mutations to task and workflow, statuses etc.
+                            ExecutionResult::InputNeeded(input_request) => {
+                                state_manager
                                     .commit_events_for_instance(
                                         workflow_instance,
                                         vec![
@@ -315,7 +317,7 @@ impl WorkflowEngine {
                                             },
                                             WorkflowInstanceEvent::TaskStatusChanged {
                                                 task_attempt_id: task_attempt_id.clone(),
-                                                status: TaskStatus::InputNeeded { description },
+                                                status: TaskStatus::InputNeeded { input_request },
                                             },
                                             WorkflowInstanceEvent::WorkflowStatusChanged {
                                                 status: WorkflowStatus::InputNeeded,
@@ -323,7 +325,7 @@ impl WorkflowEngine {
                                         ],
                                     )
                                     .await?;
-                                continue;
+                                return Ok(());
                             }
                             ExecutionResult::Failure(reason) => {
                                 state_manager
@@ -509,16 +511,16 @@ impl WorkflowEngine {
             }
         }
 
-        let all_completed = workflow_instance
-            .tasks
-            .values()
-            .all(|t| t.status == TaskStatus::Completed)
-            && workflow_instance.verifier_states.values().all(|state| {
-                matches!(
-                    state.status,
-                    VerifierStateStatus::Accepted | VerifierStateStatus::ExhaustedAccepted
-                )
-            });
+        let all_completed = workflow_def.tasks.iter().all(|task_def| {
+            self.latest_materialized_attempt_id(&workflow_instance, &task_def.id)
+                .and_then(|task_attempt_id| workflow_instance.tasks.get(&task_attempt_id))
+                .is_some_and(|task| task.status == TaskStatus::Completed)
+        }) && workflow_instance.verifier_states.values().all(|state| {
+            matches!(
+                state.status,
+                VerifierStateStatus::Accepted | VerifierStateStatus::ExhaustedAccepted
+            )
+        });
         if all_completed {
             state_manager
                 .commit_events_for_instance(
@@ -701,6 +703,7 @@ impl WorkflowEngine {
                     task_def_id: task_def_id.clone(),
                     status: TaskStatus::Pending,
                     satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
                     input_data: vec![],
                     input_mapping: vec![],
                     output_data: None,
@@ -862,6 +865,10 @@ impl WorkflowEngine {
         ExecutionMetadata {
             generation_index: task_instance.generation_index,
             loop_context,
+            human_input_provided: task_instance
+                .human_input
+                .as_ref()
+                .map(format_human_input_for_execution),
         }
     }
 
@@ -1217,6 +1224,12 @@ fn validate_inputs(
     }
 
     Ok(())
+}
+
+fn format_human_input_for_execution(input: &serde_json::Value) -> String {
+    input.as_str().map(str::to_string).unwrap_or_else(|| {
+        serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string())
+    })
 }
 
 fn verifier_rerun_start_task_id(

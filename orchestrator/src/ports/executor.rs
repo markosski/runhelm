@@ -1,6 +1,8 @@
-use crate::core::models::{ExecutionMetadata, TaskDef};
+use crate::core::{
+    models::{ExecutionMetadata, TaskDef},
+    workflow::models::TaskDispatchConstraints,
+};
 use async_trait::async_trait;
-use std::path::Path;
 
 #[derive(Debug, PartialEq)]
 pub enum ExecutionResult {
@@ -17,6 +19,6 @@ pub trait ExecutorPort {
         task: &TaskDef,
         inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
-        workspace_path: &Path,
+        constraints: &TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult>;
 }

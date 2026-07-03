@@ -65,6 +65,14 @@ pub fn create_public_router(
             get(handlers::get_task_result_generation),
         )
         .route(
+            "/workflows/{workflow_instance_id}/tasks/{task_id}/human-input",
+            post(handlers::submit_human_input),
+        )
+        .route(
+            "/workflows/{workflow_instance_id}/tasks/{task_id}/retry",
+            post(handlers::retry_task),
+        )
+        .route(
             "/workflows/{workflow_instance_id}/tasks/{task_id}",
             get(handlers::get_task_result),
         )
@@ -88,6 +96,7 @@ pub fn create_worker_router(
     Router::new()
         .route("/health", get(handlers::health_check))
         .route("/workers/register", post(handlers::register_worker))
+        .route("/workers/heartbeat", post(handlers::heartbeat_worker))
         .route("/workers/tasks/claim", post(handlers::claim_worker_task))
         .route(
             "/workers/tasks/{task_id}/result",
@@ -95,4 +104,29 @@ pub fn create_worker_router(
         )
         .fallback(handlers::not_found)
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::fake_executor::FakeExecutor;
+    use crate::adapters::memory_storage::MemoryStorage;
+    use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+
+    #[test]
+    fn public_router_accepts_task_action_route_shapes() {
+        let storage = Arc::new(MemoryStorage::new());
+        let orchestrator = Arc::new(Orchestrator::new(
+            storage.clone(),
+            Arc::new(FakeExecutor::new()),
+            Arc::new(MemoryWorkflowQueue::new(10)),
+        ));
+
+        let _router = create_public_router(
+            orchestrator,
+            Arc::new(WorkflowService::new(storage.clone())),
+            Arc::new(FunctionService::new(storage)),
+            WorkerPool::new(),
+        );
+    }
 }

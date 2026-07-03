@@ -1,9 +1,9 @@
 use crate::api::models::{WorkflowEvents, WorkflowList};
 use crate::core::models::{
-    TaskDef, TaskInstance, TaskStatus, VerifierControlConfig, verifier_decision_schema,
+    TaskDef, TaskInstance, TaskStatus, TaskTypeDef, VerifierControlConfig, verifier_decision_schema,
 };
 use crate::core::workflow::events::WorkflowInstanceEvent;
-use crate::core::workflow::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
+use crate::core::workflow::models::{WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::{
     StoragePort, TaskResult, TaskResultMetadata, WorkflowInfoCursor, WorkflowInfoListRequest,
@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct WorkflowService {
     storage: Arc<dyn StoragePort + Send + Sync>,
+    state_manager: WorkflowStateManager,
 }
 
 pub const DEFAULT_WORKFLOW_LIST_LIMIT: usize = 50;
@@ -22,7 +23,10 @@ pub const MAX_WORKFLOW_LIST_LIMIT: usize = 100;
 
 impl WorkflowService {
     pub fn new(storage: Arc<dyn StoragePort + Send + Sync>) -> Self {
-        Self { storage }
+        Self {
+            state_manager: WorkflowStateManager::new(Arc::clone(&storage)),
+            storage,
+        }
     }
 
     pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
@@ -51,6 +55,7 @@ impl WorkflowService {
     pub async fn create_workflow_instance_for_def(
         &self,
         workflow_def_id: &str,
+        pinned_worker_host: WorkerHostId,
     ) -> anyhow::Result<String> {
         let Some(_) = self.storage.get_workflow_def(workflow_def_id).await? else {
             anyhow::bail!("workflow definition {workflow_def_id} not found");
@@ -61,11 +66,12 @@ impl WorkflowService {
             id: instance_id.clone(),
             workflow_def_id: workflow_def_id.to_string(),
             status: WorkflowStatus::Pending,
+            pinned_worker_host: Some(pinned_worker_host),
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
         };
 
-        WorkflowStateManager::new(Arc::clone(&self.storage))
+        self.state_manager
             .commit_events(
                 &instance_id,
                 vec![WorkflowInstanceEvent::WorkflowCreated { instance }],
@@ -123,6 +129,133 @@ impl WorkflowService {
             workflow_instance_id: workflow_instance_id.to_string(),
             events,
         }))
+    }
+
+    pub async fn submit_human_input(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+        submitted_input: serde_json::Value,
+    ) -> anyhow::Result<String> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        if instance.status != WorkflowStatus::InputNeeded {
+            anyhow::bail!("workflow instance {workflow_instance_id} is not waiting for input");
+        }
+
+        let task_attempt_id = resolve_task_attempt_id(&instance, task_id, None)?;
+        let task = instance
+            .tasks
+            .get(&task_attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
+
+        if !matches!(task.status, TaskStatus::InputNeeded { .. }) {
+            anyhow::bail!("task {task_id} is not waiting for input");
+        }
+
+        let task_def_id = task.task_def_id.clone();
+        let next_generation = task.generation_index + 1;
+
+        let Some(workflow_def) = self
+            .storage
+            .get_workflow_def(&instance.workflow_def_id)
+            .await?
+        else {
+            anyhow::bail!("workflow definition {} not found", instance.workflow_def_id);
+        };
+
+        let task_def = workflow_def
+            .tasks
+            .iter()
+            .find(|task_def| task_def.id == task_def_id)
+            .ok_or_else(|| anyhow::anyhow!("task definition {task_def_id} not found"))?;
+        if !matches!(task_def.kind, TaskTypeDef::Agent { .. }) {
+            anyhow::bail!("task {task_id} is not an Agent task");
+        }
+
+        let next_task_attempt_id =
+            TaskInstance::make_task_attempt_id(&task_def_id, next_generation);
+
+        // This could happen if request was submitted more than once
+        if instance.tasks.contains_key(&next_task_attempt_id) {
+            anyhow::bail!("task {task_id} already has a materialized continuation attempt");
+        }
+
+        self.state_manager
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::HumanInputSubmitted {
+                    task_attempt_id: task_attempt_id.clone(),
+                    continuation_task_attempt_id: next_task_attempt_id.clone(),
+                    submitted_input,
+                }],
+            )
+            .await?;
+
+        Ok(next_task_attempt_id)
+    }
+
+    pub async fn retry_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<String> {
+        let (instance, task_attempt_id) = self
+            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .await?;
+
+        self.state_manager
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::TaskRetryRequested {
+                    task_attempt_id: task_attempt_id.clone(),
+                }],
+            )
+            .await?;
+
+        Ok(task_attempt_id)
+    }
+
+    pub async fn load_retryable_task_pin(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<Option<WorkerHostId>> {
+        let (instance, _) = self
+            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .await?;
+        Ok(instance.pinned_worker_host)
+    }
+
+    pub async fn force_retry_task(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+        target_host_id: WorkerHostId,
+    ) -> anyhow::Result<String> {
+        let (instance, task_attempt_id) = self
+            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .await?;
+        let previous_host_id = instance.pinned_worker_host.clone();
+        let local_context_may_be_lost = previous_host_id.as_ref() != Some(&target_host_id);
+
+        self.state_manager
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::TaskForceRetryRequested {
+                    task_attempt_id: task_attempt_id.clone(),
+                    previous_host_id,
+                    target_host_id,
+                    local_context_may_be_lost,
+                }],
+            )
+            .await?;
+
+        Ok(task_attempt_id)
     }
 
     pub async fn get_task_result(
@@ -195,6 +328,34 @@ impl WorkflowService {
                 generation,
             ),
         ))
+    }
+
+    async fn load_retryable_task_instance(
+        &self,
+        workflow_instance_id: &str,
+        task_id: &str,
+    ) -> anyhow::Result<(WorkflowInstance, String)> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        if instance.status != WorkflowStatus::Failed {
+            anyhow::bail!("workflow instance {workflow_instance_id} is not failed");
+        }
+
+        let task_attempt_id = resolve_task_attempt_id(&instance, task_id, None)?;
+        let task = instance
+            .tasks
+            .get(&task_attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("task {task_id} not found"))?;
+
+        if task.status != TaskStatus::Failed {
+            anyhow::bail!("task {task_id} is not failed");
+        }
+
+        Ok((instance, task_attempt_id))
     }
 }
 
@@ -276,8 +437,13 @@ fn task_result_for_instance(
             input: task.input_data.clone(),
             metadata,
         },
-        TaskStatus::Running | TaskStatus::InputNeeded { .. } => TaskResult::Running {
+        TaskStatus::Running => TaskResult::Running {
             input: task.input_data.clone(),
+            metadata,
+        },
+        TaskStatus::InputNeeded { input_request } => TaskResult::InputNeeded {
+            input: task.input_data.clone(),
+            input_request: input_request.clone(),
             metadata,
         },
     }
@@ -597,7 +763,7 @@ fn validate_non_overlapping_verifier_slices(def: &WorkflowDef) -> anyhow::Result
 mod tests {
     use super::*;
     use crate::adapters::memory_storage::MemoryStorage;
-    use crate::core::models::{FunctionTaskDef, TaskTypeDef};
+    use crate::core::models::{FunctionTaskDef, TaskSatisfactionStatus, TaskTypeDef};
     use serde_json::json;
 
     fn workflow_def(id: &str) -> WorkflowDef {
@@ -621,6 +787,28 @@ mod tests {
                 required_credentials: vec![],
             }],
             data_bindings: vec![],
+        }
+    }
+
+    fn agent_task_def(task_id: &str) -> TaskDef {
+        TaskDef {
+            id: task_id.to_string(),
+            kind: TaskTypeDef::Agent {
+                model_id: "test/model".to_string(),
+                provider_url: "".to_string(),
+                prompt: "continue".to_string(),
+                tools: vec![],
+                skills: vec![],
+                ask: true,
+                schema_failure_retry_times: 0.into(),
+                reuse_session: true,
+            },
+            control: None,
+            timeout_secs: None,
+            input_schemas: vec![],
+            output_schema: Some(json!({ "type": "object" })),
+            workspace: None,
+            required_credentials: vec![],
         }
     }
 
@@ -656,7 +844,7 @@ mod tests {
             .await
             .unwrap();
         service
-            .create_workflow_instance_for_def("workflow1")
+            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
             .await
             .unwrap();
 
@@ -690,6 +878,7 @@ mod tests {
                     id: "completed-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
                     status: WorkflowStatus::Completed,
+                    pinned_worker_host: None,
                     tasks: HashMap::new(),
                     verifier_states: HashMap::new(),
                 },
@@ -715,7 +904,7 @@ mod tests {
             .unwrap();
 
         let instance_id = service
-            .create_workflow_instance_for_def("workflow1")
+            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
             .await
             .unwrap();
 
@@ -726,6 +915,10 @@ mod tests {
             .unwrap();
         assert_eq!(instance.workflow_def_id, "workflow1");
         assert_eq!(instance.status, WorkflowStatus::Pending);
+        assert_eq!(
+            instance.pinned_worker_host,
+            Some(WorkerHostId::new("test-host"))
+        );
         assert!(instance.tasks.is_empty());
         assert!(instance.verifier_states.is_empty());
 
@@ -744,7 +937,7 @@ mod tests {
         let service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
         let error = service
-            .create_workflow_instance_for_def("missing")
+            .create_workflow_instance_for_def("missing", WorkerHostId::new("test-host"))
             .await
             .unwrap_err();
 
@@ -763,6 +956,7 @@ mod tests {
             id: "completed-workflow".to_string(),
             workflow_def_id: "workflow-1".to_string(),
             status: WorkflowStatus::Completed,
+            pinned_worker_host: None,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
         };
@@ -799,5 +993,417 @@ mod tests {
         let events = service.list_workflow_events("missing").await.unwrap();
 
         assert!(events.is_none());
+    }
+
+    #[tokio::test]
+    async fn input_needed_task_result_is_not_reported_as_running() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow1".to_string(),
+                tasks: vec![agent_task_def("taska")],
+                data_bindings: vec![],
+            })
+            .await
+            .unwrap();
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "input-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::InputNeeded,
+                    pinned_worker_host: Some(WorkerHostId::new("test-host")),
+                    tasks: HashMap::from([(
+                        "taska[1]".to_string(),
+                        TaskInstance {
+                            task_def_id: "taska".to_string(),
+                            status: TaskStatus::InputNeeded {
+                                input_request: "Which release channel?".to_string(),
+                            },
+                            satisfaction_status: TaskSatisfactionStatus::Pending,
+                            human_input: None,
+                            input_data: vec![],
+                            input_mapping: vec![],
+                            output_data: None,
+                            generation_index: 1,
+                            verifier_metadata: None,
+                        },
+                    )]),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .get_task_result("input-workflow", "taska")
+            .await
+            .unwrap();
+        match result {
+            TaskResult::InputNeeded {
+                input,
+                input_request,
+                metadata: Some(metadata),
+            } => {
+                assert_eq!(input, Vec::<serde_json::Value>::new());
+                assert_eq!(input_request, "Which release channel?");
+                assert_eq!(metadata.task_attempt_id, "taska[1]");
+                assert_eq!(metadata.generation_index, 1);
+            }
+            result => panic!("expected input-needed result, got {result:?}"),
+        }
+
+        let tasks = service.list_task_results("input-workflow").await.unwrap();
+        let serialized = serde_json::to_value(&tasks[0]).unwrap();
+        assert_eq!(serialized["result"]["status"], "input_needed");
+        assert_eq!(
+            serialized["result"]["input_request"],
+            "Which release channel?"
+        );
+        assert!(serialized["result"]["description"].is_null());
+    }
+
+    #[tokio::test]
+    async fn submit_human_input_records_durable_event() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow1".to_string(),
+                tasks: vec![agent_task_def("taska")],
+                data_bindings: vec![],
+            })
+            .await
+            .unwrap();
+        let instance = WorkflowInstance {
+            id: "input-workflow".to_string(),
+            workflow_def_id: "workflow1".to_string(),
+            status: WorkflowStatus::InputNeeded,
+            pinned_worker_host: Some(WorkerHostId::new("test-host")),
+            tasks: HashMap::from([(
+                "taska[1]".to_string(),
+                TaskInstance {
+                    task_def_id: "taska".to_string(),
+                    status: TaskStatus::InputNeeded {
+                        input_request: "need input".to_string(),
+                    },
+                    satisfaction_status: Default::default(),
+                    human_input: None,
+                    input_data: vec![],
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 1,
+                    verifier_metadata: None,
+                },
+            )]),
+            verifier_states: HashMap::new(),
+        };
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+
+        let task_attempt_id = service
+            .submit_human_input("input-workflow", "taska", json!({"answer": "continue"}))
+            .await
+            .unwrap();
+
+        assert_eq!(task_attempt_id, "taska[2]");
+        let saved = storage
+            .get_workflow_instance("input-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(
+            saved.pinned_worker_host,
+            Some(WorkerHostId::new("test-host"))
+        );
+        assert!(matches!(
+            saved.tasks["taska[1]"].status,
+            TaskStatus::InputNeeded { .. }
+        ));
+        assert_eq!(saved.tasks["taska[2]"].task_def_id, "taska");
+        assert_eq!(saved.tasks["taska[2]"].status, TaskStatus::Pending);
+        assert_eq!(saved.tasks["taska[2]"].generation_index, 2);
+        assert_eq!(
+            saved.tasks["taska[2]"].human_input,
+            Some(json!({"answer": "continue"}))
+        );
+
+        let events = storage
+            .get_workflow_instance_events("input-workflow")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::HumanInputSubmitted {
+                task_attempt_id,
+                continuation_task_attempt_id,
+                submitted_input
+            } if task_attempt_id == "taska[1]"
+                && continuation_task_attempt_id == "taska[2]"
+                && submitted_input == &json!({"answer": "continue"})
+        ));
+    }
+
+    #[tokio::test]
+    async fn submit_human_input_rejects_non_waiting_workflow() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "running-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Running,
+                    pinned_worker_host: None,
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let error = service
+            .submit_human_input("running-workflow", "taska", json!({"answer": "continue"}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not waiting for input"));
+    }
+
+    #[tokio::test]
+    async fn retry_task_records_durable_event_and_preserves_pin() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        let instance = WorkflowInstance {
+            id: "failed-workflow".to_string(),
+            workflow_def_id: "workflow1".to_string(),
+            status: WorkflowStatus::Failed,
+            pinned_worker_host: Some(WorkerHostId::new("test-host")),
+            tasks: HashMap::from([
+                (
+                    "taska[1]".to_string(),
+                    TaskInstance {
+                        task_def_id: "taska".to_string(),
+                        status: TaskStatus::Failed,
+                        satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                        human_input: None,
+                        input_data: vec![json!({"input": true})],
+                        input_mapping: vec![],
+                        output_data: Some(json!({"stale": true})),
+                        generation_index: 1,
+                        verifier_metadata: None,
+                    },
+                ),
+                (
+                    "taskb[1]".to_string(),
+                    TaskInstance {
+                        task_def_id: "taskb".to_string(),
+                        status: TaskStatus::Completed,
+                        satisfaction_status: TaskSatisfactionStatus::Satisfied,
+                        human_input: None,
+                        input_data: vec![],
+                        input_mapping: vec![],
+                        output_data: Some(json!({"ok": true})),
+                        generation_index: 1,
+                        verifier_metadata: None,
+                    },
+                ),
+            ]),
+            verifier_states: HashMap::new(),
+        };
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+
+        let task_attempt_id = service
+            .retry_task("failed-workflow", "taska")
+            .await
+            .unwrap();
+
+        assert_eq!(task_attempt_id, "taska[1]");
+        let saved = storage
+            .get_workflow_instance("failed-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(
+            saved.pinned_worker_host,
+            Some(WorkerHostId::new("test-host"))
+        );
+        assert_eq!(saved.tasks["taska[1]"].status, TaskStatus::Pending);
+        assert_eq!(
+            saved.tasks["taska[1]"].satisfaction_status,
+            TaskSatisfactionStatus::Pending
+        );
+        assert_eq!(saved.tasks["taska[1]"].output_data, None);
+        assert_eq!(saved.tasks["taskb[1]"].status, TaskStatus::Completed);
+
+        let events = storage
+            .get_workflow_instance_events("failed-workflow")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::TaskRetryRequested { task_attempt_id }
+                if task_attempt_id == "taska[1]"
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_task_rejects_non_failed_workflow() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "pending-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Pending,
+                    pinned_worker_host: Some(WorkerHostId::new("test-host")),
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let error = service
+            .retry_task("pending-workflow", "taska")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("is not failed"));
+    }
+
+    #[tokio::test]
+    async fn force_retry_task_records_reassignment_and_context_loss() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "failed-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Failed,
+                    pinned_worker_host: Some(WorkerHostId::new("host-a")),
+                    tasks: HashMap::from([(
+                        "taska[1]".to_string(),
+                        TaskInstance {
+                            task_def_id: "taska".to_string(),
+                            status: TaskStatus::Failed,
+                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                            human_input: None,
+                            input_data: vec![json!({"input": true})],
+                            input_mapping: vec![],
+                            output_data: Some(json!({"stale": true})),
+                            generation_index: 1,
+                            verifier_metadata: None,
+                        },
+                    )]),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let task_attempt_id = service
+            .force_retry_task("failed-workflow", "taska", WorkerHostId::new("host-b"))
+            .await
+            .unwrap();
+
+        assert_eq!(task_attempt_id, "taska[1]");
+        let saved = storage
+            .get_workflow_instance("failed-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-b")));
+        assert_eq!(saved.tasks["taska[1]"].status, TaskStatus::Pending);
+        assert_eq!(saved.tasks["taska[1]"].output_data, None);
+
+        let events = storage
+            .get_workflow_instance_events("failed-workflow")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::TaskForceRetryRequested {
+                task_attempt_id,
+                previous_host_id,
+                target_host_id,
+                local_context_may_be_lost,
+            } if task_attempt_id == "taska[1]"
+                && previous_host_id == &Some(WorkerHostId::new("host-a"))
+                && target_host_id == &WorkerHostId::new("host-b")
+                && *local_context_may_be_lost
+        ));
+    }
+
+    #[tokio::test]
+    async fn force_retry_task_records_same_host_without_context_loss() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "failed-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Failed,
+                    pinned_worker_host: Some(WorkerHostId::new("host-a")),
+                    tasks: HashMap::from([(
+                        "taska[1]".to_string(),
+                        TaskInstance {
+                            task_def_id: "taska".to_string(),
+                            status: TaskStatus::Failed,
+                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
+                            human_input: None,
+                            input_data: vec![],
+                            input_mapping: vec![],
+                            output_data: None,
+                            generation_index: 1,
+                            verifier_metadata: None,
+                        },
+                    )]),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        service
+            .force_retry_task("failed-workflow", "taska", WorkerHostId::new("host-a"))
+            .await
+            .unwrap();
+
+        let events = storage
+            .get_workflow_instance_events("failed-workflow")
+            .await
+            .unwrap();
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::TaskForceRetryRequested {
+                previous_host_id,
+                target_host_id,
+                local_context_may_be_lost,
+                ..
+            } if previous_host_id == &Some(WorkerHostId::new("host-a"))
+                && target_host_id == &WorkerHostId::new("host-a")
+                && !*local_context_may_be_lost
+        ));
     }
 }
