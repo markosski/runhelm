@@ -26,6 +26,59 @@ The system SHALL persist enough workflow and scheduling state to resume non-term
 - **AND** a workflow instance snapshot is terminal
 - **THEN** the orchestrator does not enqueue new task execution for that instance
 
+### Requirement: Workflow Pause and Resume Control
+The system SHALL expose API operations to pause and resume workflow execution without losing valid in-flight task results.
+
+#### Scenario: Specific workflow is paused
+- **WHEN** a caller pauses a workflow instance whose snapshot is `Pending` or `Running`
+- **THEN** the system records the workflow status as `Paused`
+- **THEN** the system removes that workflow instance from the pending execution queue
+- **THEN** the system does not dispatch additional tasks for that workflow until it is resumed
+
+#### Scenario: Already paused workflow pause is idempotent
+- **WHEN** a caller pauses a workflow instance whose snapshot is already `Paused`
+- **THEN** the system accepts the request without recording duplicate state changes
+- **THEN** the workflow remains `Paused`
+
+#### Scenario: Specific workflow is resumed
+- **WHEN** a caller resumes a workflow instance whose snapshot is `Paused`
+- **THEN** the system records the workflow status as `Pending`
+- **THEN** the system enqueues that workflow instance for execution
+
+#### Scenario: Bulk pause affects active workflows
+- **WHEN** a caller requests all active workflows to pause
+- **THEN** the system pauses each workflow instance whose snapshot is `Pending` or `Running`
+- **THEN** the system removes each paused workflow instance from the pending execution queue
+- **THEN** the response identifies the affected workflow instances
+
+#### Scenario: Bulk resume affects paused workflows
+- **WHEN** a caller requests all paused workflows to resume
+- **THEN** the system resumes each workflow instance whose snapshot is `Paused`
+- **THEN** the system enqueues each resumed workflow instance for execution
+- **THEN** the response identifies the affected workflow instances
+
+#### Scenario: In-flight non-final task completes after workflow pause
+- **WHEN** a task dispatch is still active for a workflow instance
+- **AND** the workflow instance is paused before the task result is committed
+- **AND** the task result does not complete the workflow
+- **THEN** the system records the task result in durable workflow state
+- **THEN** the workflow remains `Paused`
+- **THEN** the system does not dispatch downstream work for that workflow
+
+#### Scenario: In-flight final task completes after workflow pause
+- **WHEN** a task dispatch is still active for a workflow instance
+- **AND** the workflow instance is paused before the task result is committed
+- **AND** the task result completes the workflow
+- **THEN** the system records the task result in durable workflow state
+- **THEN** the workflow is marked `Completed`
+
+#### Scenario: In-flight task reaches stronger blocked or terminal state after workflow pause
+- **WHEN** a task dispatch is still active for a workflow instance
+- **AND** the workflow instance is paused before the task result is committed
+- **AND** the task result fails or requests human input
+- **THEN** the system records the task result in durable workflow state
+- **THEN** the workflow is marked `Failed` or `InputNeeded` according to the task result
+
 ### Requirement: Workflow Pin Creation
 The system SHALL create a workflow-instance host pin when a workflow instance is created for execution.
 
