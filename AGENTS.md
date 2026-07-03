@@ -10,6 +10,11 @@ This is instructions to the agent on how to do work in this project.
 
 * This project is maintained in private repo at this URL -> https://github.com/markosski/runhelm
 * User may request for agent to implement specific Github issue, in this case use built in capabilities or command line tools to lookup Github issue content and work with the user to implement it.
+* User may request for agent to create a new Github issue based on the recent discussion. Agent should use it's capabilities like Github plugin or command line tools to create the issue with well describe content and acceptance criteria. Issue should contain following sections:
+    * Problem - descxribe issue and provide scenario explainer
+    * Goal - what is the intended behavior we want
+    * Acceptance Criteria - list of tasks to meet the goal
+    * Notes - additional information or context that will help with implementation
 
 ## Important!
 - Always update documents in docs/ directory with most recent changes made
