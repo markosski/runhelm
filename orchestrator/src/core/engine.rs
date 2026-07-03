@@ -212,6 +212,9 @@ impl WorkflowEngine {
             tasks_to_run.sort();
 
             for task_attempt_id in tasks_to_run {
+                // A pause may have been committed while this engine pass was
+                // resolving runnable work. Stop cleanly instead of turning the
+                // next task attempt Running and relying on a version conflict.
                 if self.is_workflow_paused(&workflow_inst_id).await? {
                     return Ok(());
                 }
@@ -577,7 +580,9 @@ impl WorkflowEngine {
             .is_some_and(|instance| instance.status == WorkflowStatus::Paused))
     }
 
-    // Ensure we're not operating on stale snapshot where its state could have changed to paused
+    // If a pause races with an in-flight task, record the task result on top of
+    // the latest paused snapshot so pause state is preserved. Optimistic
+    // locking still rejects any other stale base snapshot.
     async fn commit_task_result_events_preserving_pause(
         &self,
         state_manager: &WorkflowStateManager,

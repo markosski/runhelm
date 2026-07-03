@@ -630,6 +630,7 @@ mod tests {
         WorkflowInstance {
             id: id.to_string(),
             workflow_def_id: "workflow-1".to_string(),
+            version: 0,
             status,
             pinned_worker_host,
             tasks: HashMap::from([("taska[1]".to_string(), task)]),
@@ -652,7 +653,8 @@ mod tests {
 
     async fn save_failed_workflow(storage: &Arc<MemoryStorage>) {
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 workflow_instance(
                     "failed-workflow",
@@ -730,7 +732,8 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let state = app_state(storage.clone(), WorkerPool::new());
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 workflow_instance(
                     "active-workflow",
@@ -797,7 +800,8 @@ mod tests {
             ("completed-workflow", WorkflowStatus::Completed),
         ] {
             storage
-                .commit_workflow_instance_events(
+                .save_workflow_instance(
+                    0,
                     vec![],
                     workflow_instance(id, status, None, input_needed_task()),
                 )
@@ -875,7 +879,8 @@ mod tests {
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 workflow_instance(
                     "input-needed-workflow",
@@ -922,7 +927,8 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let state = app_state(storage.clone(), WorkerPool::new());
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 workflow_instance(
                     "input-needed-workflow",
@@ -934,7 +940,8 @@ mod tests {
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 workflow_instance(
                     "failed-workflow",

@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::core::models::FunctionDef;
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::WorkflowEventRecord;
 use crate::core::workflow::models::{WorkflowDef, WorkflowInfo, WorkflowInstance, WorkflowStatus};
 use crate::ports::storage::{
-    StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPage,
-    WorkflowInstanceFilter,
+    StoragePort, StorageResult, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPage,
+    WorkflowInstanceFilter, WorkflowVersionConflict,
 };
 
 pub struct MemoryStorage {
@@ -17,6 +17,7 @@ pub struct MemoryStorage {
     workflow_instances: RwLock<HashMap<String, WorkflowInstance>>,
     workflow_instance_events: RwLock<HashMap<String, Vec<WorkflowEventRecord>>>,
     workflow_infos: RwLock<HashMap<String, WorkflowInfo>>,
+    commit_lock: Mutex<()>,
 }
 
 impl MemoryStorage {
@@ -27,6 +28,7 @@ impl MemoryStorage {
             workflow_instances: RwLock::new(HashMap::new()),
             workflow_instance_events: RwLock::new(HashMap::new()),
             workflow_infos: RwLock::new(HashMap::new()),
+            commit_lock: Mutex::new(()),
         }
     }
 }
@@ -36,34 +38,35 @@ impl MemoryStorage {
 /// and should not be used in production environments.
 #[async_trait]
 impl StoragePort for MemoryStorage {
-    async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
+    async fn save_workflow_def(&self, def: WorkflowDef) -> StorageResult<()> {
         let mut map = self.workflow_defs.write().await;
         map.insert(def.id.clone(), def);
         Ok(())
     }
 
-    async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
+    async fn get_workflow_def(&self, id: &str) -> StorageResult<Option<WorkflowDef>> {
         let map = self.workflow_defs.read().await;
         Ok(map.get(id).cloned())
     }
 
-    async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
+    async fn save_function_def(&self, def: FunctionDef) -> StorageResult<()> {
         let mut map = self.function_defs.write().await;
         map.insert(def.id.clone(), def);
         Ok(())
     }
 
-    async fn get_function_def(&self, id: &str) -> anyhow::Result<Option<FunctionDef>> {
+    async fn get_function_def(&self, id: &str) -> StorageResult<Option<FunctionDef>> {
         let map = self.function_defs.read().await;
         Ok(map.get(id).cloned())
     }
 
-    async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
+    async fn delete_function_def(&self, id: &str) -> StorageResult<bool> {
         let mut map = self.function_defs.write().await;
         Ok(map.remove(id).is_some())
     }
 
-    async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>> {
+    async fn get_workflow_instance(&self, id: &str) -> StorageResult<Option<WorkflowInstance>> {
+        let _commit_guard = self.commit_lock.lock().await;
         let map = self.workflow_instances.read().await;
         Ok(map.get(id).cloned())
     }
@@ -71,7 +74,8 @@ impl StoragePort for MemoryStorage {
     async fn get_workflow_instance_events(
         &self,
         workflow_instance_id: &str,
-    ) -> anyhow::Result<Vec<WorkflowEventRecord>> {
+    ) -> StorageResult<Vec<WorkflowEventRecord>> {
+        let _commit_guard = self.commit_lock.lock().await;
         let map = self.workflow_instance_events.read().await;
         Ok(map.get(workflow_instance_id).cloned().unwrap_or_default())
     }
@@ -79,7 +83,8 @@ impl StoragePort for MemoryStorage {
     async fn list_workflow_info(
         &self,
         request: WorkflowInfoListRequest,
-    ) -> anyhow::Result<WorkflowInfoPage> {
+    ) -> StorageResult<WorkflowInfoPage> {
+        let _commit_guard = self.commit_lock.lock().await;
         let map = self.workflow_infos.read().await;
         let mut workflows: Vec<WorkflowInfo> = map
             .values()
@@ -116,12 +121,31 @@ impl StoragePort for MemoryStorage {
         })
     }
 
-    async fn commit_workflow_instance_events(
+    async fn save_workflow_instance(
         &self,
+        expected_version: u64,
         events: Vec<WorkflowEventRecord>,
         instance: WorkflowInstance,
-    ) -> anyhow::Result<()> {
+    ) -> StorageResult<()> {
+        let _commit_guard = self.commit_lock.lock().await;
         let workflow_instance_id = instance.id.clone();
+        let actual_version = self
+            .workflow_instances
+            .read()
+            .await
+            .get(&workflow_instance_id)
+            .map(|instance| instance.version)
+            .unwrap_or(0);
+
+        if actual_version != expected_version {
+            return Err(WorkflowVersionConflict {
+                workflow_instance_id,
+                expected_version,
+                actual_version,
+            }
+            .into());
+        }
+
         let created_from_events_at_epoch_ms = events
             .first()
             .map(|event| event.created_time)
@@ -211,6 +235,7 @@ mod tests {
         WorkflowInstance {
             id: id.to_string(),
             workflow_def_id: workflow_def_id.to_string(),
+            version: 0,
             status,
             pinned_worker_host: None,
             tasks: HashMap::new(),
@@ -253,13 +278,14 @@ mod tests {
         let storage = MemoryStorage::new();
         let mut instance = instance("wf-1", WorkflowStatus::Pending);
         storage
-            .commit_workflow_instance_events(vec![], instance.clone())
+            .save_workflow_instance(0, vec![], instance.clone())
             .await
             .unwrap();
 
         instance.status = WorkflowStatus::Completed;
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![WorkflowEventRecord {
                     created_time: 42,
                     event: WorkflowInstanceEvent::WorkflowStatusChanged {
@@ -292,6 +318,47 @@ mod tests {
         assert!(infos[0].created_at_epoch_ms.is_some());
         assert!(infos[0].modified_at_epoch_ms >= 42);
         assert_eq!(infos[0].completed_at_epoch_ms, Some(42));
+    }
+
+    #[tokio::test]
+    async fn rejects_workflow_commit_when_expected_version_is_stale() {
+        let storage = MemoryStorage::new();
+        let mut instance = instance("wf-1", WorkflowStatus::Pending);
+        instance.version = 1;
+        storage
+            .save_workflow_instance(0, vec![event_record(1000)], instance.clone())
+            .await
+            .unwrap();
+
+        instance.status = WorkflowStatus::Completed;
+        instance.version = 2;
+        let error = storage
+            .save_workflow_instance(0, vec![event_record(2000)], instance)
+            .await
+            .unwrap_err();
+
+        let crate::ports::storage::StorageError::WorkflowVersionConflict(conflict) = error else {
+            panic!("expected workflow version conflict");
+        };
+        assert_eq!(conflict.workflow_instance_id, "wf-1");
+        assert_eq!(conflict.expected_version, 0);
+        assert_eq!(conflict.actual_version, 1);
+
+        let saved = storage
+            .get_workflow_instance("wf-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, WorkflowStatus::Pending);
+        assert_eq!(saved.version, 1);
+        assert_eq!(
+            storage
+                .get_workflow_instance_events("wf-1")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -328,7 +395,7 @@ mod tests {
         );
 
         storage
-            .commit_workflow_instance_events(vec![], instance.clone())
+            .save_workflow_instance(0, vec![], instance.clone())
             .await
             .unwrap();
 
@@ -347,13 +414,13 @@ mod tests {
         let storage = MemoryStorage::new();
         let mut instance = instance("wf-1", WorkflowStatus::Running);
         storage
-            .commit_workflow_instance_events(vec![event_record(1000)], instance.clone())
+            .save_workflow_instance(0, vec![event_record(1000)], instance.clone())
             .await
             .unwrap();
 
         instance.status = WorkflowStatus::Completed;
         storage
-            .commit_workflow_instance_events(vec![event_record(2000)], instance)
+            .save_workflow_instance(0, vec![event_record(2000)], instance)
             .await
             .unwrap();
 
@@ -371,7 +438,8 @@ mod tests {
     async fn summary_creation_uses_first_event_and_modification_uses_last_event() {
         let storage = MemoryStorage::new();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![event_record(1000), event_record(1500)],
                 instance("wf-1", WorkflowStatus::Running),
             )
@@ -391,21 +459,24 @@ mod tests {
     async fn list_workflow_info_sorts_by_modified_time_desc_then_id_desc() {
         let storage = MemoryStorage::new();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![event_record(1000)],
                 instance("older", WorkflowStatus::Pending),
             )
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![event_record(2000)],
                 instance("same-a", WorkflowStatus::Pending),
             )
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![event_record(2000)],
                 instance("same-b", WorkflowStatus::Pending),
             )
@@ -426,21 +497,24 @@ mod tests {
     async fn list_workflow_info_paginates_after_cursor() {
         let storage = MemoryStorage::new();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![event_record(3000)],
                 instance("newest", WorkflowStatus::Pending),
             )
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![event_record(2000)],
                 instance("middle", WorkflowStatus::Pending),
             )
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![event_record(1000)],
                 instance("oldest", WorkflowStatus::Pending),
             )
@@ -479,12 +553,12 @@ mod tests {
         let storage = MemoryStorage::new();
         let pending = instance("pending", WorkflowStatus::Pending);
         storage
-            .commit_workflow_instance_events(vec![], pending.clone())
+            .save_workflow_instance(0, vec![], pending.clone())
             .await
             .unwrap();
         let completed = instance("completed", WorkflowStatus::Completed);
         storage
-            .commit_workflow_instance_events(vec![], completed.clone())
+            .save_workflow_instance(0, vec![], completed.clone())
             .await
             .unwrap();
 
@@ -514,14 +588,16 @@ mod tests {
     async fn filters_summary_queries_by_workflow_def_id() {
         let storage = MemoryStorage::new();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 instance_for_def("workflow-1-instance", "workflow-1", WorkflowStatus::Pending),
             )
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 instance_for_def(
                     "workflow-2-instance",
@@ -548,14 +624,16 @@ mod tests {
     async fn combines_summary_query_filters_with_and_semantics() {
         let storage = MemoryStorage::new();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 instance_for_def("workflow-1-pending", "workflow-1", WorkflowStatus::Pending),
             )
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 instance_for_def(
                     "workflow-1-completed",
@@ -566,7 +644,8 @@ mod tests {
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 instance_for_def("workflow-2-pending", "workflow-2", WorkflowStatus::Pending),
             )
@@ -590,7 +669,8 @@ mod tests {
     async fn empty_statuses_filter_matches_no_summaries() {
         let storage = MemoryStorage::new();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 instance_for_def("workflow-1-pending", "workflow-1", WorkflowStatus::Pending),
             )
@@ -626,7 +706,7 @@ mod tests {
         );
 
         storage
-            .commit_workflow_instance_events(vec![], instance.clone())
+            .save_workflow_instance(0, vec![], instance.clone())
             .await
             .unwrap();
 

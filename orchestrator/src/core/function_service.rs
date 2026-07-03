@@ -13,11 +13,12 @@ impl FunctionService {
     }
 
     pub async fn create_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
-        self.storage.save_function_def(def).await
+        self.storage.save_function_def(def).await?;
+        Ok(())
     }
 
     pub async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
-        self.storage.delete_function_def(id).await
+        Ok(self.storage.delete_function_def(id).await?)
     }
 }
 

@@ -6,6 +6,65 @@ use crate::core::workflow::models::{WorkflowDef, WorkflowInfo, WorkflowInstance,
 use async_trait::async_trait;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowVersionConflict {
+    pub workflow_instance_id: String,
+    pub expected_version: u64,
+    pub actual_version: u64,
+}
+
+impl Display for WorkflowVersionConflict {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "workflow instance {} version conflict: expected {}, actual {}",
+            self.workflow_instance_id, self.expected_version, self.actual_version
+        )
+    }
+}
+
+impl Error for WorkflowVersionConflict {}
+
+#[derive(Debug)]
+pub enum StorageError {
+    WorkflowVersionConflict(WorkflowVersionConflict),
+    Backend(anyhow::Error),
+}
+
+pub type StorageResult<T> = Result<T, StorageError>;
+
+impl Display for StorageError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WorkflowVersionConflict(conflict) => conflict.fmt(f),
+            Self::Backend(error) => write!(f, "storage backend error: {error}"),
+        }
+    }
+}
+
+impl Error for StorageError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::WorkflowVersionConflict(conflict) => Some(conflict),
+            Self::Backend(error) => error.source(),
+        }
+    }
+}
+
+impl From<WorkflowVersionConflict> for StorageError {
+    fn from(value: WorkflowVersionConflict) -> Self {
+        Self::WorkflowVersionConflict(value)
+    }
+}
+
+impl From<anyhow::Error> for StorageError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Backend(value)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowInstanceFilter {
@@ -174,23 +233,24 @@ impl Serialize for TaskResult {
 // TODO: consider converting to using event sourcing for state changes
 //  Global destrictive operations like delete workflow should still wipe out all workflow data
 pub trait StoragePort {
-    async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>>;
-    async fn get_function_def(&self, id: &str) -> anyhow::Result<Option<FunctionDef>>;
-    async fn get_workflow_instance(&self, id: &str) -> anyhow::Result<Option<WorkflowInstance>>;
+    async fn get_workflow_def(&self, id: &str) -> StorageResult<Option<WorkflowDef>>;
+    async fn get_function_def(&self, id: &str) -> StorageResult<Option<FunctionDef>>;
+    async fn get_workflow_instance(&self, id: &str) -> StorageResult<Option<WorkflowInstance>>;
     async fn get_workflow_instance_events(
         &self,
         workflow_instance_id: &str,
-    ) -> anyhow::Result<Vec<WorkflowEventRecord>>;
+    ) -> StorageResult<Vec<WorkflowEventRecord>>;
     async fn list_workflow_info(
         &self,
         request: WorkflowInfoListRequest,
-    ) -> anyhow::Result<WorkflowInfoPage>;
-    async fn save_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()>;
-    async fn save_function_def(&self, def: FunctionDef) -> anyhow::Result<()>;
-    async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool>;
-    async fn commit_workflow_instance_events(
+    ) -> StorageResult<WorkflowInfoPage>;
+    async fn save_workflow_def(&self, def: WorkflowDef) -> StorageResult<()>;
+    async fn save_function_def(&self, def: FunctionDef) -> StorageResult<()>;
+    async fn delete_function_def(&self, id: &str) -> StorageResult<bool>;
+    async fn save_workflow_instance(
         &self,
+        expected_version: u64,
         events: Vec<WorkflowEventRecord>,
         instance: WorkflowInstance,
-    ) -> anyhow::Result<()>;
+    ) -> StorageResult<()>;
 }

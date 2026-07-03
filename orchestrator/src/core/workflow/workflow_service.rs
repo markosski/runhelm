@@ -49,7 +49,8 @@ impl WorkflowService {
                 );
             }
         }
-        self.storage.save_workflow_def(def).await
+        self.storage.save_workflow_def(def).await?;
+        Ok(())
     }
 
     pub async fn create_workflow_instance_for_def(
@@ -65,6 +66,7 @@ impl WorkflowService {
         let instance = WorkflowInstance {
             id: instance_id.clone(),
             workflow_def_id: workflow_def_id.to_string(),
+            version: 0,
             status: WorkflowStatus::Pending,
             pinned_worker_host: Some(pinned_worker_host),
             tasks: HashMap::new(),
@@ -980,11 +982,13 @@ mod tests {
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 WorkflowInstance {
                     id: "completed-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
+                    version: 0,
                     status: WorkflowStatus::Completed,
                     pinned_worker_host: None,
                     tasks: HashMap::new(),
@@ -1007,11 +1011,13 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 WorkflowInstance {
                     id: "active-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
+                    version: 0,
                     status: WorkflowStatus::Running,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
                     tasks: HashMap::new(),
@@ -1073,11 +1079,13 @@ mod tests {
             ("failed-workflow", WorkflowStatus::Failed),
         ] {
             storage
-                .commit_workflow_instance_events(
+                .save_workflow_instance(
+                    0,
                     vec![],
                     WorkflowInstance {
                         id: id.to_string(),
                         workflow_def_id: "workflow1".to_string(),
+                        version: 0,
                         status,
                         pinned_worker_host: None,
                         tasks: HashMap::new(),
@@ -1171,6 +1179,7 @@ mod tests {
         let completed = WorkflowInstance {
             id: "completed-workflow".to_string(),
             workflow_def_id: "workflow-1".to_string(),
+            version: 0,
             status: WorkflowStatus::Completed,
             pinned_worker_host: None,
             tasks: HashMap::new(),
@@ -1181,11 +1190,11 @@ mod tests {
         running.status = WorkflowStatus::Running;
 
         storage
-            .commit_workflow_instance_events(vec![], completed)
+            .save_workflow_instance(0, vec![], completed)
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(vec![], running)
+            .save_workflow_instance(0, vec![], running)
             .await
             .unwrap();
 
@@ -1224,11 +1233,13 @@ mod tests {
             .await
             .unwrap();
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 WorkflowInstance {
                     id: "input-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
+                    version: 0,
                     status: WorkflowStatus::InputNeeded,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
                     tasks: HashMap::from([(
@@ -1296,6 +1307,7 @@ mod tests {
         let instance = WorkflowInstance {
             id: "input-workflow".to_string(),
             workflow_def_id: "workflow1".to_string(),
+            version: 0,
             status: WorkflowStatus::InputNeeded,
             pinned_worker_host: Some(WorkerHostId::new("test-host")),
             tasks: HashMap::from([(
@@ -1317,7 +1329,7 @@ mod tests {
             verifier_states: HashMap::new(),
         };
         storage
-            .commit_workflow_instance_events(vec![], instance)
+            .save_workflow_instance(0, vec![], instance)
             .await
             .unwrap();
 
@@ -1371,11 +1383,13 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 WorkflowInstance {
                     id: "running-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
+                    version: 0,
                     status: WorkflowStatus::Running,
                     pinned_worker_host: None,
                     tasks: HashMap::new(),
@@ -1400,6 +1414,7 @@ mod tests {
         let instance = WorkflowInstance {
             id: "failed-workflow".to_string(),
             workflow_def_id: "workflow1".to_string(),
+            version: 0,
             status: WorkflowStatus::Failed,
             pinned_worker_host: Some(WorkerHostId::new("test-host")),
             tasks: HashMap::from([
@@ -1435,7 +1450,7 @@ mod tests {
             verifier_states: HashMap::new(),
         };
         storage
-            .commit_workflow_instance_events(vec![], instance)
+            .save_workflow_instance(0, vec![], instance)
             .await
             .unwrap();
 
@@ -1480,11 +1495,13 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 WorkflowInstance {
                     id: "pending-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
+                    version: 0,
                     status: WorkflowStatus::Pending,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
                     tasks: HashMap::new(),
@@ -1507,11 +1524,13 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 WorkflowInstance {
                     id: "failed-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
+                    version: 0,
                     status: WorkflowStatus::Failed,
                     pinned_worker_host: Some(WorkerHostId::new("host-a")),
                     tasks: HashMap::from([(
@@ -1574,11 +1593,13 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         storage
-            .commit_workflow_instance_events(
+            .save_workflow_instance(
+                0,
                 vec![],
                 WorkflowInstance {
                     id: "failed-workflow".to_string(),
                     workflow_def_id: "workflow1".to_string(),
+                    version: 0,
                     status: WorkflowStatus::Failed,
                     pinned_worker_host: Some(WorkerHostId::new("host-a")),
                     tasks: HashMap::from([(

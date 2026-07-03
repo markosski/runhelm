@@ -341,6 +341,7 @@ async fn setup_with_pin(
     let instance = WorkflowInstance {
         id: instance_id.clone(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Pending,
         pinned_worker_host,
         tasks: HashMap::new(),
@@ -349,7 +350,7 @@ async fn setup_with_pin(
     engine.storage.save_workflow_def(def).await.unwrap();
     engine
         .storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
     instance_id
@@ -428,6 +429,7 @@ fn test_workspace_group_does_not_create_scheduling_dependency() {
     let instance = WorkflowInstance {
         id: "inst-workspace-group-no-edge".to_string(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Running,
         pinned_worker_host: None,
         tasks: HashMap::from([
@@ -480,6 +482,7 @@ fn test_workspace_group_tasks_still_wait_for_data_binding() {
     let mut instance = WorkflowInstance {
         id: "inst-workspace-group-data-binding".to_string(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Running,
         pinned_worker_host: None,
         tasks: HashMap::from([
@@ -678,6 +681,7 @@ fn test_loop_execution_metadata_includes_feedback_history() {
     let mut instance = WorkflowInstance {
         id: "inst-loop-metadata".to_string(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Running,
         pinned_worker_host: None,
         tasks: HashMap::from([
@@ -759,6 +763,7 @@ fn test_execution_metadata_includes_task_instance_generation_index() {
     let instance = WorkflowInstance {
         id: "inst-generation-metadata".to_string(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Running,
         pinned_worker_host: None,
         tasks: HashMap::from([("task-a[2]".to_string(), task_instance.clone())]),
@@ -817,11 +822,13 @@ async fn paused_workflow_records_in_flight_nonfinal_task_and_stops() {
     };
     storage.save_workflow_def(def.clone()).await.unwrap();
     storage
-        .commit_workflow_instance_events(
+        .save_workflow_instance(
+            0,
             vec![],
             WorkflowInstance {
                 id: "inst-paused".to_string(),
                 workflow_def_id: def.id,
+                version: 0,
                 status: WorkflowStatus::Pending,
                 pinned_worker_host: None,
                 tasks: HashMap::new(),
@@ -859,11 +866,13 @@ async fn paused_workflow_records_in_flight_final_task_and_completes() {
     };
     storage.save_workflow_def(def.clone()).await.unwrap();
     storage
-        .commit_workflow_instance_events(
+        .save_workflow_instance(
+            0,
             vec![],
             WorkflowInstance {
                 id: "inst-paused".to_string(),
                 workflow_def_id: def.id,
+                version: 0,
                 status: WorkflowStatus::Pending,
                 pinned_worker_host: None,
                 tasks: HashMap::new(),
@@ -1113,6 +1122,7 @@ async fn test_human_input_continuation_dispatches_same_logical_agent_identity() 
     let instance = WorkflowInstance {
         id: instance_id.clone(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Pending,
         pinned_worker_host: Some(pinned_host.clone()),
         tasks: HashMap::from([
@@ -1152,7 +1162,7 @@ async fn test_human_input_continuation_dispatches_same_logical_agent_identity() 
     engine.storage.save_workflow_def(def).await.unwrap();
     engine
         .storage
-        .commit_workflow_instance_events(vec![], instance)
+        .save_workflow_instance(0, vec![], instance)
         .await
         .unwrap();
 
@@ -1208,6 +1218,7 @@ fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
     let instance = WorkflowInstance {
         id: "inst-verifier-latest-completed-source".to_string(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Running,
         pinned_worker_host: None,
         tasks: HashMap::from([
@@ -1312,6 +1323,7 @@ fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
     let instance = WorkflowInstance {
         id: "inst-verifier-waits-current-source".to_string(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Running,
         pinned_worker_host: None,
         tasks: HashMap::from([
@@ -1604,6 +1616,7 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
     let instance = WorkflowInstance {
         id: "inst-exhaustion-no-valid-output".to_string(),
         workflow_def_id: def.id.clone(),
+        version: 0,
         status: WorkflowStatus::Running,
         pinned_worker_host: None,
         tasks: HashMap::from([(
