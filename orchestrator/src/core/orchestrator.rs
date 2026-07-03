@@ -245,6 +245,17 @@ impl Orchestrator {
                         "workflow execution failed"
                     );
                 }
+                if let Err(error) = orchestrator
+                    .workflow_queue
+                    .complete(&workflow_instance_id)
+                    .await
+                {
+                    error!(
+                        %workflow_instance_id,
+                        error = ?error,
+                        "workflow scheduler failed to mark workflow instance complete"
+                    );
+                }
                 drop(permit);
             });
         }

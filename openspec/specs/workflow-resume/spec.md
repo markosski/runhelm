@@ -26,6 +26,20 @@ The system SHALL persist enough workflow and scheduling state to resume non-term
 - **AND** a workflow instance snapshot is terminal
 - **THEN** the orchestrator does not enqueue new task execution for that instance
 
+### Requirement: Workflow Engine Pass Scheduling
+The system SHALL avoid overlapping engine passes for the same workflow instance.
+
+#### Scenario: Duplicate pending enqueue is ignored
+- **WHEN** a workflow instance is already pending in the workflow execution queue
+- **AND** the same workflow instance is enqueued again
+- **THEN** the queue keeps a single pending entry for that workflow instance
+
+#### Scenario: Active workflow enqueue is deferred
+- **WHEN** a workflow instance already has an active engine pass
+- **AND** the same workflow instance is enqueued again
+- **THEN** the queue records at most one pending entry for a later pass
+- **THEN** the queued pass is not dequeued until the active engine pass completes
+
 ### Requirement: Workflow Pause and Resume Control
 The system SHALL expose API operations to pause and resume workflow execution without losing valid in-flight task results.
 

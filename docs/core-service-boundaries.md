@@ -57,7 +57,7 @@ Side effects remain behind ports:
 
 - `StoragePort` persists workflow definitions, function definitions, and workflow instances.
 - `ExecutorPort` executes one task attempt.
-- `WorkflowQueuePort` stores pending workflow instance IDs.
+- `WorkflowQueuePort` stores workflow instance IDs waiting for an engine pass and tracks workflow instance IDs with an active engine pass. This prevents overlapping engine passes for one workflow while still allowing a new pass to be queued after the active pass completes.
 
 Core services depend on these ports rather than concrete adapters so storage, execution, and queue implementations remain swappable.
 
