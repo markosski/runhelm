@@ -131,6 +131,114 @@ impl WorkflowService {
         }))
     }
 
+    pub async fn pause_workflow(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        match instance.status {
+            WorkflowStatus::Pending | WorkflowStatus::Running => {
+                self.state_manager
+                    .commit_events_for_instance(
+                        instance,
+                        vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                            status: WorkflowStatus::Paused,
+                        }],
+                    )
+                    .await?;
+                Ok(())
+            }
+            WorkflowStatus::Paused => Ok(()),
+            _ => anyhow::bail!(
+                "workflow instance {workflow_instance_id} cannot be paused from its current status"
+            ),
+        }
+    }
+
+    pub async fn resume_workflow(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+        let instance = self
+            .storage
+            .get_workflow_instance(workflow_instance_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
+
+        if instance.status != WorkflowStatus::Paused {
+            anyhow::bail!("workflow instance {workflow_instance_id} is not paused");
+        }
+
+        self.state_manager
+            .commit_events_for_instance(
+                instance,
+                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                    status: WorkflowStatus::Pending,
+                }],
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn pause_active_workflows(&self) -> anyhow::Result<Vec<String>> {
+        let mut cursor: Option<WorkflowInfoCursor> = None;
+        let mut paused = Vec::new();
+
+        loop {
+            let page = self
+                .storage
+                .list_workflow_info(WorkflowInfoListRequest {
+                    filters: vec![WorkflowInstanceFilter::Statuses(vec![
+                        WorkflowStatus::Pending,
+                        WorkflowStatus::Running,
+                    ])],
+                    page: WorkflowInfoPageRequest { limit: 100, cursor },
+                })
+                .await?;
+
+            for info in &page.workflows {
+                self.pause_workflow(&info.id).await?;
+                paused.push(info.id.clone());
+            }
+
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        Ok(paused)
+    }
+
+    pub async fn resume_paused_workflows(&self) -> anyhow::Result<Vec<String>> {
+        let mut cursor: Option<WorkflowInfoCursor> = None;
+        let mut resumed = Vec::new();
+
+        loop {
+            let page = self
+                .storage
+                .list_workflow_info(WorkflowInfoListRequest {
+                    filters: vec![WorkflowInstanceFilter::Statuses(vec![
+                        WorkflowStatus::Paused,
+                    ])],
+                    page: WorkflowInfoPageRequest { limit: 100, cursor },
+                })
+                .await?;
+
+            for info in &page.workflows {
+                self.resume_workflow(&info.id).await?;
+                resumed.push(info.id.clone());
+            }
+
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        Ok(resumed)
+    }
+
     pub async fn submit_human_input(
         &self,
         workflow_instance_id: &str,
@@ -892,6 +1000,114 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("cannot be overwritten"));
+    }
+
+    #[tokio::test]
+    async fn pause_and_resume_workflow_record_status_events() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                WorkflowInstance {
+                    id: "active-workflow".to_string(),
+                    workflow_def_id: "workflow1".to_string(),
+                    status: WorkflowStatus::Running,
+                    pinned_worker_host: Some(WorkerHostId::new("test-host")),
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        service.pause_workflow("active-workflow").await.unwrap();
+        let paused = storage
+            .get_workflow_instance("active-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(paused.status, WorkflowStatus::Paused);
+        assert_eq!(
+            paused.pinned_worker_host,
+            Some(WorkerHostId::new("test-host"))
+        );
+
+        service.resume_workflow("active-workflow").await.unwrap();
+        let resumed = storage
+            .get_workflow_instance("active-workflow")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.status, WorkflowStatus::Pending);
+
+        let events = storage
+            .get_workflow_instance_events("active-workflow")
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0].event,
+            WorkflowInstanceEvent::WorkflowStatusChanged {
+                status: WorkflowStatus::Paused
+            }
+        ));
+        assert!(matches!(
+            &events[1].event,
+            WorkflowInstanceEvent::WorkflowStatusChanged {
+                status: WorkflowStatus::Pending
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn pause_active_and_resume_paused_workflows_apply_bulk_filters() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        for (id, status) in [
+            ("pending-workflow", WorkflowStatus::Pending),
+            ("running-workflow", WorkflowStatus::Running),
+            ("paused-workflow", WorkflowStatus::Paused),
+            ("input-needed-workflow", WorkflowStatus::InputNeeded),
+            ("completed-workflow", WorkflowStatus::Completed),
+            ("failed-workflow", WorkflowStatus::Failed),
+        ] {
+            storage
+                .commit_workflow_instance_events(
+                    vec![],
+                    WorkflowInstance {
+                        id: id.to_string(),
+                        workflow_def_id: "workflow1".to_string(),
+                        status,
+                        pinned_worker_host: None,
+                        tasks: HashMap::new(),
+                        verifier_states: HashMap::new(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let mut paused = service.pause_active_workflows().await.unwrap();
+        paused.sort();
+        assert_eq!(
+            paused,
+            vec![
+                "pending-workflow".to_string(),
+                "running-workflow".to_string(),
+            ]
+        );
+
+        let mut resumed = service.resume_paused_workflows().await.unwrap();
+        resumed.sort();
+        assert_eq!(
+            resumed,
+            vec![
+                "paused-workflow".to_string(),
+                "pending-workflow".to_string(),
+                "running-workflow".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]

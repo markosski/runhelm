@@ -179,6 +179,83 @@ pub async fn get_workflow_events(
     }
 }
 
+pub async fn pause_workflow(
+    State(state): State<AppState>,
+    Path(workflow_instance_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    match state
+        .orchestrator
+        .pause_workflow_instance(&workflow_instance_id)
+        .await
+    {
+        Ok(()) => Ok(Json(json!({
+            "status": "paused",
+            "workflow_instance_id": workflow_instance_id,
+        }))),
+        Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
+        Err(error) if error.to_string().contains("cannot be paused") => Err(StatusCode::CONFLICT),
+        Err(error) => {
+            tracing::error!(%workflow_instance_id, %error, "workflow pause request failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn resume_workflow(
+    State(state): State<AppState>,
+    Path(workflow_instance_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    match state
+        .orchestrator
+        .resume_workflow_instance(&workflow_instance_id)
+        .await
+    {
+        Ok(()) => Ok(Json(json!({
+            "status": "queued",
+            "workflow_instance_id": workflow_instance_id,
+        }))),
+        // TODO: Consider implementing better error modes so we don't have to string match
+        Err(error) if error.to_string().contains("not found") => Err(StatusCode::NOT_FOUND),
+        Err(error) if error.to_string().contains("not paused") => Err(StatusCode::CONFLICT),
+        Err(error) => {
+            tracing::error!(%workflow_instance_id, %error, "workflow resume request failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn pause_active_workflows(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    match state.orchestrator.pause_active_workflow_instances().await {
+        Ok(workflow_instance_ids) => Ok(Json(json!({
+            "status": "paused",
+            "count": workflow_instance_ids.len(),
+            "workflow_instance_ids": workflow_instance_ids,
+        }))),
+        Err(error) => {
+            tracing::error!(%error, "bulk workflow pause request failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn resume_paused_workflows(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    match state.orchestrator.resume_paused_workflow_instances().await {
+        Ok(workflow_instance_ids) => Ok(Json(json!({
+            "status": "queued",
+            "count": workflow_instance_ids.len(),
+            "workflow_instance_ids": workflow_instance_ids,
+        }))),
+        Err(error) => {
+            tracing::error!(%error, "bulk workflow resume request failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct SubmitHumanInputRequest {
     input: Value,
@@ -646,6 +723,124 @@ mod tests {
             .unwrap();
         assert_eq!(saved.status, WorkflowStatus::Failed);
         assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-a")));
+    }
+
+    #[tokio::test]
+    async fn pause_and_resume_workflow_api_update_queue() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage.clone(), WorkerPool::new());
+        storage
+            .commit_workflow_instance_events(
+                vec![],
+                workflow_instance(
+                    "active-workflow",
+                    WorkflowStatus::Pending,
+                    Some(WorkerHostId::new("host-a")),
+                    input_needed_task(),
+                ),
+            )
+            .await
+            .unwrap();
+        state
+            .orchestrator
+            .enqueue_workflow_instance("active-workflow".to_string())
+            .await
+            .unwrap();
+
+        let Json(paused) =
+            pause_workflow(State(state.clone()), Path("active-workflow".to_string()))
+                .await
+                .unwrap();
+
+        assert_eq!(paused["status"], "paused");
+        assert_eq!(paused["workflow_instance_id"], "active-workflow");
+        assert_eq!(
+            storage
+                .get_workflow_instance("active-workflow")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            WorkflowStatus::Paused
+        );
+        assert!(
+            state
+                .orchestrator
+                .get_queue_status()
+                .await
+                .unwrap()
+                .pending
+                .is_empty()
+        );
+
+        let Json(resumed) =
+            resume_workflow(State(state.clone()), Path("active-workflow".to_string()))
+                .await
+                .unwrap();
+
+        assert_eq!(resumed["status"], "queued");
+        assert_eq!(resumed["workflow_instance_id"], "active-workflow");
+        assert_eq!(
+            state.orchestrator.get_queue_status().await.unwrap().pending,
+            vec!["active-workflow".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_pause_and_resume_workflows_api_returns_affected_ids() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage.clone(), WorkerPool::new());
+        for (id, status) in [
+            ("pending-workflow", WorkflowStatus::Pending),
+            ("running-workflow", WorkflowStatus::Running),
+            ("paused-workflow", WorkflowStatus::Paused),
+            ("completed-workflow", WorkflowStatus::Completed),
+        ] {
+            storage
+                .commit_workflow_instance_events(
+                    vec![],
+                    workflow_instance(id, status, None, input_needed_task()),
+                )
+                .await
+                .unwrap();
+        }
+
+        let Json(paused) = pause_active_workflows(State(state.clone())).await.unwrap();
+        let mut paused_ids: Vec<String> = paused["workflow_instance_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        paused_ids.sort();
+        assert_eq!(paused["status"], "paused");
+        assert_eq!(paused["count"], 2);
+        assert_eq!(
+            paused_ids,
+            vec![
+                "pending-workflow".to_string(),
+                "running-workflow".to_string(),
+            ]
+        );
+
+        let Json(resumed) = resume_paused_workflows(State(state.clone())).await.unwrap();
+        let mut resumed_ids: Vec<String> = resumed["workflow_instance_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        resumed_ids.sort();
+        assert_eq!(resumed["status"], "queued");
+        assert_eq!(resumed["count"], 3);
+        assert_eq!(
+            resumed_ids,
+            vec![
+                "paused-workflow".to_string(),
+                "pending-workflow".to_string(),
+                "running-workflow".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]

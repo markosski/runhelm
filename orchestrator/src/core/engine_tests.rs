@@ -3,6 +3,7 @@ use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::core::models::*;
 use crate::core::workflow::models::{DataBinding, TaskDispatchConstraints, WorkerHostId};
+use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
 use async_trait::async_trait;
@@ -218,6 +219,50 @@ impl ExecutorPort for InputNeededForTaskExecutor {
                 "Need human input before continuing.".to_string(),
             ));
         }
+
+        Ok(ExecutionResult::Success(json!({ "ok": true })))
+    }
+}
+
+struct PauseDuringTaskExecutor {
+    storage: Arc<MemoryStorage>,
+    workflow_instance_id: String,
+    calls: StdMutex<Vec<String>>,
+}
+
+impl PauseDuringTaskExecutor {
+    fn new(storage: Arc<MemoryStorage>, workflow_instance_id: &str) -> Self {
+        Self {
+            storage,
+            workflow_instance_id: workflow_instance_id.to_string(),
+            calls: StdMutex::new(vec![]),
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ExecutorPort for PauseDuringTaskExecutor {
+    async fn execute(
+        &self,
+        _workflow_inst_id: &str,
+        task: &TaskDef,
+        _inputs: &[serde_json::Value],
+        _metadata: &ExecutionMetadata,
+        _dispatch: &TaskDispatchConstraints,
+    ) -> anyhow::Result<ExecutionResult> {
+        self.calls.lock().unwrap().push(task.id.clone());
+        WorkflowStateManager::new(self.storage.clone())
+            .commit_events(
+                &self.workflow_instance_id,
+                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
+                    status: WorkflowStatus::Paused,
+                }],
+            )
+            .await?;
 
         Ok(ExecutionResult::Success(json!({ "ok": true })))
     }
@@ -752,6 +797,95 @@ async fn test_single_task_workflow_completes() {
     assert_eq!(result.tasks["task-a[1]"].status, TaskStatus::Completed);
     assert_eq!(result.tasks["task-a[1]"].task_def_id, "task-a");
     assert_eq!(result.tasks["task-a[1]"].generation_index, 1);
+}
+
+#[tokio::test]
+async fn paused_workflow_records_in_flight_nonfinal_task_and_stops() {
+    let storage = Arc::new(MemoryStorage::new());
+    let executor = Arc::new(PauseDuringTaskExecutor::new(storage.clone(), "inst-paused"));
+    let engine = WorkflowEngine::new(storage.clone(), executor.clone());
+    let def = WorkflowDef {
+        id: "def-paused-nonfinal".to_string(),
+        tasks: vec![
+            task_def("task-a", json!({ "type": "object" })),
+            task_def("task-b", json!({ "type": "object" })),
+        ],
+        data_bindings: vec![DataBinding {
+            source_task_id: "task-a".to_string(),
+            target_task_id: "task-b".to_string(),
+        }],
+    };
+    storage.save_workflow_def(def.clone()).await.unwrap();
+    storage
+        .commit_workflow_instance_events(
+            vec![],
+            WorkflowInstance {
+                id: "inst-paused".to_string(),
+                workflow_def_id: def.id,
+                status: WorkflowStatus::Pending,
+                pinned_worker_host: None,
+                tasks: HashMap::new(),
+                verifier_states: HashMap::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    engine
+        .run_workflow_instance("inst-paused".to_string())
+        .await
+        .unwrap();
+
+    let saved = storage
+        .get_workflow_instance("inst-paused")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, WorkflowStatus::Paused);
+    assert_eq!(saved.tasks["task-a[1]"].status, TaskStatus::Completed);
+    assert_eq!(saved.tasks["task-b[1]"].status, TaskStatus::Pending);
+    assert_eq!(executor.calls(), vec!["task-a".to_string()]);
+}
+
+#[tokio::test]
+async fn paused_workflow_records_in_flight_final_task_and_completes() {
+    let storage = Arc::new(MemoryStorage::new());
+    let executor = Arc::new(PauseDuringTaskExecutor::new(storage.clone(), "inst-paused"));
+    let engine = WorkflowEngine::new(storage.clone(), executor.clone());
+    let def = WorkflowDef {
+        id: "def-paused-final".to_string(),
+        tasks: vec![task_def("task-a", json!({ "type": "object" }))],
+        data_bindings: vec![],
+    };
+    storage.save_workflow_def(def.clone()).await.unwrap();
+    storage
+        .commit_workflow_instance_events(
+            vec![],
+            WorkflowInstance {
+                id: "inst-paused".to_string(),
+                workflow_def_id: def.id,
+                status: WorkflowStatus::Pending,
+                pinned_worker_host: None,
+                tasks: HashMap::new(),
+                verifier_states: HashMap::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    engine
+        .run_workflow_instance("inst-paused".to_string())
+        .await
+        .unwrap();
+
+    let saved = storage
+        .get_workflow_instance("inst-paused")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, WorkflowStatus::Completed);
+    assert_eq!(saved.tasks["task-a[1]"].status, TaskStatus::Completed);
+    assert_eq!(executor.calls(), vec!["task-a".to_string()]);
 }
 
 /// Two independent tasks (A and B) feed into a third (C) via data bindings.

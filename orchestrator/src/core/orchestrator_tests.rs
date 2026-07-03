@@ -892,6 +892,139 @@ async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
 }
 
 #[tokio::test]
+async fn pause_and_resume_workflow_update_status_and_queue() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let mut instance = workflow_instance("workflow-1", "workflow-def");
+    instance.status = WorkflowStatus::Pending;
+    storage
+        .commit_workflow_instance_events(vec![], instance)
+        .await
+        .unwrap();
+    orchestrator
+        .enqueue_workflow_instance("workflow-1".to_string())
+        .await
+        .unwrap();
+
+    orchestrator
+        .pause_workflow_instance("workflow-1")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        storage
+            .get_workflow_instance("workflow-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Paused
+    );
+    assert!(
+        orchestrator
+            .get_queue_status()
+            .await
+            .unwrap()
+            .pending
+            .is_empty()
+    );
+
+    orchestrator
+        .resume_workflow_instance("workflow-1")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        storage
+            .get_workflow_instance("workflow-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkflowStatus::Pending
+    );
+    assert_eq!(
+        orchestrator.get_queue_status().await.unwrap().pending,
+        vec!["workflow-1".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn bulk_pause_and_resume_update_queue_for_matching_workflows() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue = Arc::new(MemoryWorkflowQueue::new(10));
+    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+
+    for (id, status) in [
+        ("pending-workflow", WorkflowStatus::Pending),
+        ("running-workflow", WorkflowStatus::Running),
+        ("paused-workflow", WorkflowStatus::Paused),
+        ("input-needed-workflow", WorkflowStatus::InputNeeded),
+    ] {
+        let mut instance = workflow_instance(id, "workflow-def");
+        instance.status = status;
+        storage
+            .commit_workflow_instance_events(vec![], instance)
+            .await
+            .unwrap();
+    }
+    orchestrator
+        .enqueue_workflow_instance("pending-workflow".to_string())
+        .await
+        .unwrap();
+    orchestrator
+        .enqueue_workflow_instance("running-workflow".to_string())
+        .await
+        .unwrap();
+
+    let mut paused = orchestrator
+        .pause_active_workflow_instances()
+        .await
+        .unwrap();
+    paused.sort();
+    assert_eq!(
+        paused,
+        vec![
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+    assert!(
+        orchestrator
+            .get_queue_status()
+            .await
+            .unwrap()
+            .pending
+            .is_empty()
+    );
+
+    let mut resumed = orchestrator
+        .resume_paused_workflow_instances()
+        .await
+        .unwrap();
+    resumed.sort();
+    assert_eq!(
+        resumed,
+        vec![
+            "paused-workflow".to_string(),
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    pending.sort();
+    assert_eq!(
+        pending,
+        vec![
+            "paused-workflow".to_string(),
+            "pending-workflow".to_string(),
+            "running-workflow".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn startup_recovery_preserves_workflow_pins_when_reloading_runnable_work() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));

@@ -142,6 +142,45 @@ impl Orchestrator {
         })
     }
 
+    pub async fn pause_workflow_instance(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        workflow_service
+            .pause_workflow(workflow_instance_id)
+            .await?;
+        self.remove_queued_workflow_instance(workflow_instance_id)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn resume_workflow_instance(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        workflow_service
+            .resume_workflow(workflow_instance_id)
+            .await?;
+        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+            .await
+    }
+
+    pub async fn pause_active_workflow_instances(&self) -> anyhow::Result<Vec<String>> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        let paused = workflow_service.pause_active_workflows().await?;
+        for workflow_instance_id in &paused {
+            self.remove_queued_workflow_instance(workflow_instance_id)
+                .await?;
+        }
+        Ok(paused)
+    }
+
+    pub async fn resume_paused_workflow_instances(&self) -> anyhow::Result<Vec<String>> {
+        let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
+        let resumed = workflow_service.resume_paused_workflows().await?;
+        for workflow_instance_id in &resumed {
+            self.enqueue_workflow_instance(workflow_instance_id.clone())
+                .await?;
+        }
+        Ok(resumed)
+    }
+
     /// Returns queued and currently running workflow instance IDs.
     pub async fn get_queue_status(&self) -> anyhow::Result<WorkflowQueueStatus> {
         let pending = self.workflow_queue.pending_ids().await?;
