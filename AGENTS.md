@@ -4,7 +4,12 @@ This is instructions to the agent on how to do work in this project.
 
 ## Project Description
 
-RunHelm is a agentic workflow orchestrator. It focuses on composing workflows from agents and tools, and executing them in a reliable and observable way.
+* RunHelm is a agentic workflow orchestrator. It focuses on composing workflows from agents and tools, and executing them in a reliable and observable way.
+
+## Github integration
+
+* This project is maintained in private repo at this URL -> https://github.com/markosski/runhelm
+* User may request for agent to implement specific Github issue, in this case use built in capabilities or command line tools to lookup Github issue content and work with the user to implement it.
 
 ## Important!
 - Always update documents in docs/ directory with most recent changes made
