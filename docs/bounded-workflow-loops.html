@@ -973,6 +973,11 @@
           side effects, make those effects idempotent or safe to repeat because rejected generations are
           retained, not rolled back.
         </p>
+        <p>
+          RunHelm provides at-least-once task execution. Workflow state is protected from stale worker
+          results, but a task may be retried or duplicated after orchestrator restart, lease timeout,
+          worker loss, verifier rerun, or explicit retry.
+        </p>
       </div>
     </section>
 
