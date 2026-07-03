@@ -132,6 +132,14 @@ The Orchestrator SHALL detect when a worker connection is closed or lost and upd
 - **THEN** the Orchestrator does not advance workflow state from that result
 - **THEN** recovery or retry policy handles the corresponding running task attempt
 
+#### Scenario: Re-registered worker reports stale pre-restart dispatch result
+- **WHEN** the Orchestrator has restarted with an empty in-memory dispatch lease table
+- **AND** a worker re-registers successfully
+- **AND** that worker reports completion for a dispatch ID claimed before the restart
+- **THEN** the Orchestrator treats the result as late or untracked unless that dispatch ID matches a current active lease
+- **THEN** the Orchestrator acknowledges the result without advancing workflow state
+- **THEN** the recovered workflow attempt may already have been redispatched
+
 ### Requirement: Orchestrator Startup Recovery
 The Orchestrator SHALL reconstruct runnable workflow work from durable workflow state upon application startup while treating worker registrations and dispatch leases as empty in-memory state.
 
@@ -144,6 +152,7 @@ The Orchestrator SHALL reconstruct runnable workflow work from durable workflow 
 - **WHEN** the Orchestrator application starts up
 - **AND** durable workflow state contains a running task attempt without an in-memory dispatch lease
 - **THEN** it requeues or fails the task according to recovery policy
+- **THEN** duplicate execution of that logical task attempt is possible until durable lease reattachment is implemented
 
 ### Requirement: Task Timeout Management
 The Orchestrator SHALL monitor the execution time of tasks assigned to workers and handle timeouts.
