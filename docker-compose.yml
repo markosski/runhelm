@@ -2,6 +2,7 @@ services:
   orchestrator:
     build:
       context: ./orchestrator
+      dockerfile: Dockerfile.dev
     ports:
       - "0.0.0.0:3000:3000"
     environment:
@@ -20,6 +21,7 @@ services:
   worker:
     build:
       context: ./worker
+      dockerfile: Dockerfile.dev
     depends_on:
       orchestrator:
         condition: service_healthy
