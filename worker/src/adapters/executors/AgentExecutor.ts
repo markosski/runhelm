@@ -18,6 +18,7 @@ import { selectApprovedSkills } from './agent_tools/skillSelection.js';
 import type { SessionStore } from '../../core/ports/SessionStore.js';
 import { nativeSessionDir, persistSessionBestEffort, materializePiSessionFile } from '../../core/ports/SessionStore.js';
 import { agentSessionKey } from '../../core/models/AgentSession.js';
+import { resolveCredentialEnvironment, withTaskEnvironment } from '../../core/TaskEnvironment.js';
 
 function extractAssistantText(agent: Agent): string {
     let resultText = '';
@@ -443,7 +444,10 @@ export class AgentExecutor implements TaskExecutor {
         );
 
         try {
-            await session.prompt(finalPrompt);
+            const envCredentials = await resolveCredentialEnvironment(payload, credentialsPort);
+            await withTaskEnvironment(envCredentials, async () => {
+                await session.prompt(finalPrompt);
+            });
 
             if (inputNeededQuestion) {
                 return { status: 'input_needed', description: inputNeededQuestion };

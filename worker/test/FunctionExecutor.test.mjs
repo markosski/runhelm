@@ -42,3 +42,39 @@ export default async function run(context) {
         inputs: [{ report: 'quarterly' }],
     });
 });
+
+test('maps required_credentials to child process environment', async () => {
+    const executor = new FunctionExecutor();
+
+    const result = await executor.execute(
+        {
+            workflow_inst_id: 'workflow-1',
+            task: {
+                id: 'read-gh-token',
+                kind: {
+                    Function: {
+                        code: `
+export default async function run() {
+  return { ghToken: process.env.GH_TOKEN };
+}
+`.trim(),
+                        dependencies: [],
+                    },
+                },
+                required_credentials: ['gh_token'],
+            },
+            workspace_path: '/tmp/runhelm/workflow-1/taskid-read-gh-token',
+            inputs: [],
+        },
+        {
+            async getCredential(name) {
+                return name === 'gh_token' ? 'ghp_test_token' : undefined;
+            },
+        }
+    );
+
+    assert.equal(result.status, 'ok', result.status === 'error' ? result.message : undefined);
+    assert.deepEqual(result.output, {
+        ghToken: 'ghp_test_token',
+    });
+});

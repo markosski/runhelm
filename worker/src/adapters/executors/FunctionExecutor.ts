@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { JsonValue, TaskExecutor, TaskExecutionResult } from '../../core/ports/TaskExecutor.js';
 import type { FunctionDependency, TaskExecutionPayload } from '../../core/models/TaskDef.js';
 import type { CredentialsPort } from '../../core/ports/CredentialsPort.js';
+import { resolveCredentialEnvironment } from '../../core/TaskEnvironment.js';
 import { logger } from '../../utils/logger.js';
 
 const DEFAULT_FUNCTION_TIMEOUT_MS = 300_000;
@@ -61,6 +62,7 @@ export class FunctionExecutor implements TaskExecutor {
             }
 
             const credentials = await readRequiredCredentials(payload, credentialsPort);
+            const envCredentials = await resolveCredentialEnvironment(payload, credentialsPort);
             const context = {
                 inputs: payload.inputs,
                 credentials,
@@ -72,7 +74,8 @@ export class FunctionExecutor implements TaskExecutor {
                 ['runner.mjs'],
                 workDir,
                 JSON.stringify(context),
-                timeoutMs
+                timeoutMs,
+                envCredentials
             );
 
             if (runResult.timedOut) {
@@ -168,13 +171,14 @@ function runChild(
     args: string[],
     cwd: string,
     stdin: string | undefined,
-    timeoutMs: number
+    timeoutMs: number,
+    env: Record<string, string> = {}
 ): Promise<ChildResult> {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {
             cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: process.env,
+            env: { ...process.env, ...env },
         });
 
         let stdout = '';
