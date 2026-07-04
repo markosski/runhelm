@@ -96,15 +96,16 @@ pub async fn delete_function_def(
 pub async fn trigger_workflow_instance(
     State(state): State<AppState>,
     Path(workflow_def_id): Path<String>,
-    Json(_payload): Json<Value>,
+    Json(payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
     let Some(pinned_worker_host) = state.worker_pool.select_eligible_host().await else {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
 
+    let input = trigger_payload_input(payload);
     let instance_id = state
         .workflow_service
-        .create_workflow_instance_for_def(&workflow_def_id, pinned_worker_host.clone())
+        .create_workflow_instance_for_def(&workflow_def_id, pinned_worker_host.clone(), input)
         .await
         .map_err(|error| {
             if error.to_string().contains("not found") {
@@ -131,6 +132,13 @@ pub async fn trigger_workflow_instance(
         "id": instance_id,
         "pinned_host_id": pinned_worker_host
     })))
+}
+
+fn trigger_payload_input(payload: Value) -> Option<Value> {
+    match payload {
+        Value::Null => None,
+        value => Some(value),
+    }
 }
 
 #[derive(Deserialize)]
@@ -632,6 +640,7 @@ mod tests {
             workflow_def_id: "workflow-1".to_string(),
             version: 0,
             status,
+            trigger_input: None,
             pinned_worker_host,
             tasks: HashMap::from([("taska[1]".to_string(), task)]),
             verifier_states: HashMap::new(),

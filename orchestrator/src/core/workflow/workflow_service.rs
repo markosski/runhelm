@@ -57,6 +57,7 @@ impl WorkflowService {
         &self,
         workflow_def_id: &str,
         pinned_worker_host: WorkerHostId,
+        input: Option<serde_json::Value>,
     ) -> anyhow::Result<String> {
         let Some(_) = self.storage.get_workflow_def(workflow_def_id).await? else {
             anyhow::bail!("workflow definition {workflow_def_id} not found");
@@ -68,6 +69,7 @@ impl WorkflowService {
             workflow_def_id: workflow_def_id.to_string(),
             version: 0,
             status: WorkflowStatus::Pending,
+            trigger_input: input,
             pinned_worker_host: Some(pinned_worker_host),
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
@@ -954,7 +956,7 @@ mod tests {
             .await
             .unwrap();
         service
-            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"), None)
             .await
             .unwrap();
 
@@ -990,6 +992,7 @@ mod tests {
                     workflow_def_id: "workflow1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Completed,
+                    trigger_input: None,
                     pinned_worker_host: None,
                     tasks: HashMap::new(),
                     verifier_states: HashMap::new(),
@@ -1019,6 +1022,7 @@ mod tests {
                     workflow_def_id: "workflow1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Running,
+                    trigger_input: None,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
                     tasks: HashMap::new(),
                     verifier_states: HashMap::new(),
@@ -1087,6 +1091,7 @@ mod tests {
                         workflow_def_id: "workflow1".to_string(),
                         version: 0,
                         status,
+                        trigger_input: None,
                         pinned_worker_host: None,
                         tasks: HashMap::new(),
                         verifier_states: HashMap::new(),
@@ -1128,7 +1133,7 @@ mod tests {
             .unwrap();
 
         let instance_id = service
-            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"), None)
             .await
             .unwrap();
 
@@ -1157,11 +1162,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_workflow_instance_for_def_persists_trigger_input() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        let mut def = workflow_def("workflow1");
+        def.tasks[0].input_schemas = vec![json!({
+            "type": "object",
+            "required": ["repository"],
+            "properties": {
+                "repository": { "type": "string" }
+            }
+        })];
+        service.create_workflow_def(def).await.unwrap();
+
+        let input = json!({ "repository": "markosski/runhelm" });
+        let instance_id = service
+            .create_workflow_instance_for_def(
+                "workflow1",
+                WorkerHostId::new("test-host"),
+                Some(input.clone()),
+            )
+            .await
+            .unwrap();
+
+        let instance = storage
+            .get_workflow_instance(&instance_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(instance.trigger_input, Some(input));
+        assert!(instance.tasks.is_empty());
+    }
+
+    #[tokio::test]
     async fn create_workflow_instance_for_def_rejects_unknown_definition() {
         let service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
         let error = service
-            .create_workflow_instance_for_def("missing", WorkerHostId::new("test-host"))
+            .create_workflow_instance_for_def("missing", WorkerHostId::new("test-host"), None)
             .await
             .unwrap_err();
 
@@ -1181,6 +1219,7 @@ mod tests {
             workflow_def_id: "workflow-1".to_string(),
             version: 0,
             status: WorkflowStatus::Completed,
+            trigger_input: None,
             pinned_worker_host: None,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),
@@ -1241,6 +1280,7 @@ mod tests {
                     workflow_def_id: "workflow1".to_string(),
                     version: 0,
                     status: WorkflowStatus::InputNeeded,
+                    trigger_input: None,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
                     tasks: HashMap::from([(
                         "taska[1]".to_string(),
@@ -1309,6 +1349,7 @@ mod tests {
             workflow_def_id: "workflow1".to_string(),
             version: 0,
             status: WorkflowStatus::InputNeeded,
+            trigger_input: None,
             pinned_worker_host: Some(WorkerHostId::new("test-host")),
             tasks: HashMap::from([(
                 "taska[1]".to_string(),
@@ -1391,6 +1432,7 @@ mod tests {
                     workflow_def_id: "workflow1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Running,
+                    trigger_input: None,
                     pinned_worker_host: None,
                     tasks: HashMap::new(),
                     verifier_states: HashMap::new(),
@@ -1416,6 +1458,7 @@ mod tests {
             workflow_def_id: "workflow1".to_string(),
             version: 0,
             status: WorkflowStatus::Failed,
+            trigger_input: None,
             pinned_worker_host: Some(WorkerHostId::new("test-host")),
             tasks: HashMap::from([
                 (
@@ -1503,6 +1546,7 @@ mod tests {
                     workflow_def_id: "workflow1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Pending,
+                    trigger_input: None,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
                     tasks: HashMap::new(),
                     verifier_states: HashMap::new(),
@@ -1532,6 +1576,7 @@ mod tests {
                     workflow_def_id: "workflow1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Failed,
+                    trigger_input: None,
                     pinned_worker_host: Some(WorkerHostId::new("host-a")),
                     tasks: HashMap::from([(
                         "taska[1]".to_string(),
@@ -1601,6 +1646,7 @@ mod tests {
                     workflow_def_id: "workflow1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Failed,
+                    trigger_input: None,
                     pinned_worker_host: Some(WorkerHostId::new("host-a")),
                     tasks: HashMap::from([(
                         "taska[1]".to_string(),

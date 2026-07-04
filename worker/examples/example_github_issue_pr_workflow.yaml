@@ -1,7 +1,8 @@
 id: github-issue-pr-workflow
 
 # Example workflow that works a GitHub issue through implementation, verifier
-# review, and PR creation. The first task requires one input object:
+# review, PR creation when needed, and a final issue summary comment. The first
+# task requires one input object:
 # {
 #   "repository": "owner/name",
 #   "issue_number": 46
@@ -97,9 +98,8 @@ tasks:
 
           Requirements:
           - use the selected workspace path for repository work
-          - inspect the current checkout before editing
+          - inspect the current checkout before editing, repository may need to be closed if doesn't exist in the workspace.
           - make the minimum reasonable code and documentation changes needed
-          - update docs/ when the implementation changes project behavior
           - run focused tests or checks that are relevant to the change
           - if the issue is unclear or a critical implementation decision is underspecified, call ask_user with a specific question
           - do not create a pull request in this task
@@ -118,24 +118,6 @@ tasks:
         ask: true
         schema_failure_retry_times: 2
         reuse_session: true
-    input_schemas:
-      - type: object
-        required:
-          - repository
-          - issue_number
-          - summary
-          - acceptance_criteria
-        properties:
-          repository:
-            type: string
-          issue_number:
-            type: integer
-          summary:
-            type: string
-          acceptance_criteria:
-            type: array
-            items:
-              type: string
     output_schema:
       type: object
       required:
@@ -204,50 +186,109 @@ tasks:
         model_id: "google/gemini-3-flash-preview"
         provider_url: ""
         prompt: |
-          Create a GitHub pull request for the completed implementation.
+          Create a GitHub pull request for the completed implementation when there are changes to publish.
 
           Requirements:
           - use git status and git diff to summarize the final changes
           - create a branch if the checkout is currently on the default branch
           - commit the changes with a concise issue-oriented commit message
           - push the branch
-          - run gh pr create for the repository and issue
+          - run gh pr create for the repository and issue when changes exist
           - include the issue number, what changed, and tests run in the PR body
-          - if there are no changes to commit, do not create a PR and explain why in the response
+          - if there are no changes to commit, do not create a PR
+          - if no PR is created because the requested change is already in place, set pr_created to false, omit pr_number and pr_url, and explain that in summary
 
           Return exactly this JSON shape:
           {
             "repository": "owner/name",
             "issue_number": 123,
+            "pr_created": true,
             "branch": "branch-name",
+            "pr_number": 123,
             "pr_url": "https://github.com/owner/name/pull/123",
-            "summary": "PR summary"
+            "summary": "PR summary, or why no PR was needed"
           }
         tools: ["bash"]
         skills: []
         ask: false
         schema_failure_retry_times: 2
-    input_schemas:
-      - type: object
-      - type: object
     output_schema:
       type: object
       required:
         - repository
         - issue_number
-        - branch
-        - pr_url
+        - pr_created
         - summary
       properties:
         repository:
           type: string
         issue_number:
           type: integer
+        pr_created:
+          type: boolean
         branch:
           type: string
+        pr_number:
+          type: integer
         pr_url:
           type: string
         summary:
+          type: string
+    workspace:
+      group_name: repo
+    required_credentials:
+      - llm_api_key
+      - gh_token
+
+  - id: update-github-issue
+    kind:
+      Agent:
+        model_id: "google/gemini-3-flash-preview"
+        provider_url: ""
+        prompt: |
+          Add a short final status comment to the GitHub issue.
+
+          Requirements:
+          - use the upstream fetch-issue data to identify the repository and issue number
+          - use the upstream create-pull-request data to determine whether a PR was created
+          - always add exactly one concise issue comment with gh issue comment
+          - if a PR was created, include the PR number and URL in the comment
+          - if no PR was created because no work was needed or the change was already in place, say that clearly
+          - if no PR was created, omit pr_number and pr_url from the response
+          - do not close the issue, reopen the issue, change labels, or otherwise mutate the issue beyond adding the comment
+
+          Return exactly this JSON shape:
+          {
+            "repository": "owner/name",
+            "issue_number": 123,
+            "commented": true,
+            "comment_summary": "short summary of the issue comment",
+            "pr_number": 123,
+            "pr_url": "https://github.com/owner/name/pull/123"
+          }
+        tools: ["bash"]
+        skills: []
+        ask: false
+        schema_failure_retry_times: 2
+    output_schema:
+      type: object
+      required:
+        - repository
+        - issue_number
+        - commented
+        - comment_summary
+      properties:
+        repository:
+          type: string
+        issue_number:
+          type: integer
+        commented:
+          type: boolean
+        comment_summary:
+          type: string
+        pr_number:
+          type: integer
+        pr_url:
           type: string
     workspace:
       group_name: repo
@@ -266,3 +307,7 @@ data_bindings:
     target_task_id: create-pull-request
   - source_task_id: review-implementation
     target_task_id: create-pull-request
+  - source_task_id: fetch-issue
+    target_task_id: update-github-issue
+  - source_task_id: create-pull-request
+    target_task_id: update-github-issue

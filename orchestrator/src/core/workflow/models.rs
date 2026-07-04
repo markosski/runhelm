@@ -97,6 +97,8 @@ pub struct WorkflowInstance {
     #[serde(default)]
     pub version: u64,
     pub status: WorkflowStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_input: Option<serde_json::Value>,
     // TODO: make this non Optional if possible
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_worker_host: Option<WorkerHostId>,
