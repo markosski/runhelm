@@ -159,6 +159,33 @@ RunHelm is in an early implementation stage. The important pieces already visibl
 
 Not everything is wired end-to-end yet, but the repository already reflects the intended architecture rather than a throwaway prototype.
 
+## Local Install With Docker
+
+The Docker-first local install path does not require Rust, Node.js, or a source checkout after installation. It uses prebuilt images by default and manages local config under `~/.runhelm`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/markosski/runhelm/main/packaging/install.sh | sh
+runhelm init
+runhelm up
+runhelm status
+```
+
+The generated config is written to `~/.runhelm/config.env`, and the generated Compose file is written to `~/.runhelm/docker-compose.yml`. Override image references there when using an internal registry:
+
+```env
+RUNHELM_ORCHESTRATOR_IMAGE=registry.example.com/runhelm-orchestrator:0
+RUNHELM_WORKER_IMAGE=registry.example.com/runhelm-worker:0
+RUNHELM_FRONTEND_IMAGE=registry.example.com/runhelm-frontend:0
+```
+
+Users who need to own their image artifacts can build them from a checkout or git ref:
+
+```bash
+packaging/build-images.sh --ref v0.3.1 --tag-prefix registry.example.com/runhelm --push
+```
+
+See `docs/local-install-distribution.md` for the release Compose template, wrapper commands, self-build path, and current persistence limits.
+
 ## Local Development
 
 ### Orchestrator
@@ -170,7 +197,18 @@ cargo run
 
 The orchestrator starts a public Axum server on `0.0.0.0:3000` and a worker-only server on `127.0.0.1:3001`. Override them with `RUNHELM_PUBLIC_HTTP_ADDR` and `RUNHELM_WORKER_HTTP_ADDR`.
 
+For a faster non-Docker development loop from the repository root:
+
+```bash
+scripts/run-orchestrator-dev.sh
+scripts/run-orchestrator-dev.sh --skip-build
+```
+
+The script builds the debug binary with Cargo unless `--skip-build` is passed, then executes `orchestrator/target/debug/orchestrator` directly with local loopback HTTP defaults.
+
 When running with Docker Compose, the orchestrator worker API is bound to `0.0.0.0:3001` inside the container so workers can reach it at `http://orchestrator:3001`. The Compose health check waits for both the public API and worker API before starting worker containers.
+
+The repository root `docker-compose.yml` is the local development Compose file. It builds from `orchestrator/Dockerfile.dev` and `worker/Dockerfile.dev`. The production/release images use the main component Dockerfiles and are referenced by `packaging/docker-compose.release.yml`.
 
 ### Worker
 
@@ -184,6 +222,15 @@ npm start
 The worker pulls tasks from the worker-only orchestrator API. Set `RUNHELM_ORCHESTRATOR_HTTP_URL` when the worker API is not reachable at the default local URL.
 
 During container startup the worker retries registration until the orchestrator worker API is reachable. Short DNS or service-readiness races are logged as startup wait messages; a worker only exits on unrecoverable startup failures such as credential loading errors.
+
+For a faster non-Docker single-worker loop from the repository root:
+
+```bash
+scripts/run-worker-dev.sh
+scripts/run-worker-dev.sh --skip-build
+```
+
+The script builds the worker TypeScript unless `--skip-build` is passed, then runs `worker/dist/index.js` directly against `http://127.0.0.1:3001` by default. It sets `RUNHELM_WORKER_HOST_ID=local-dev-host` and a process-specific `WORKER_ID` unless those variables are already configured.
 
 ### Frontend
 
