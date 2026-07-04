@@ -1,4 +1,4 @@
-id: simpleagentworkflow
+id: simpleagentworkflow:v1
 
 tasks:
   - id: pullstocks

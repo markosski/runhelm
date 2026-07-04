@@ -32,22 +32,10 @@ impl WorkflowService {
     pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
         let def = validate_and_normalize_workflow_def(def)?;
         if self.storage.get_workflow_def(&def.id).await?.is_some() {
-            let existing_instances = self
-                .storage
-                .list_workflow_info(WorkflowInfoListRequest {
-                    filters: vec![WorkflowInstanceFilter::WorkflowDefId(def.id.clone())],
-                    page: WorkflowInfoPageRequest {
-                        limit: 1,
-                        cursor: None,
-                    },
-                })
-                .await?;
-            if !existing_instances.workflows.is_empty() {
-                anyhow::bail!(
-                    "workflow definition {} already has workflow instances and cannot be overwritten",
-                    def.id
-                );
-            }
+            anyhow::bail!(
+                "workflow definition {} already exists and cannot be overwritten",
+                def.id
+            );
         }
         self.storage.save_workflow_def(def).await?;
         Ok(())
@@ -671,6 +659,9 @@ fn verifier_rerun_start_task_id(
 
 fn validate_and_normalize_workflow_def(mut def: WorkflowDef) -> anyhow::Result<WorkflowDef> {
     validate_identifier("workflow", &def.id)?;
+    if !def.id.contains(':') {
+        anyhow::bail!("workflow id {:?} must include a version suffix (e.g. 'name:v1')", def.id);
+    }
     def.id = def.id.to_ascii_lowercase();
 
     let mut original_to_normalized = HashMap::new();
@@ -759,10 +750,10 @@ fn validate_identifier(kind: &str, id: &str) -> anyhow::Result<()> {
     if id.is_empty()
         || !id
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':' || ch == '.')
     {
         anyhow::bail!(
-            "{kind} id {id:?} must contain only ASCII alphanumeric characters, '-' or '_'"
+            "{kind} id {id:?} must contain only ASCII alphanumeric characters, '-', '_', ':' or '.'"
         );
     }
     Ok(())
@@ -923,25 +914,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_workflow_def_allows_overwrite_before_instances_exist() {
+    async fn create_workflow_def_rejects_overwrite_even_before_instances_exist() {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
 
         service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taska"))
+            .create_workflow_def(workflow_def_with_task("workflow:v1", "taska"))
             .await
             .unwrap();
-        service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+        let error = service
+            .create_workflow_def(workflow_def_with_task("workflow:v1", "taskb"))
             .await
-            .unwrap();
+            .unwrap_err();
 
+        assert!(error.to_string().contains("already exists and cannot be overwritten"));
         let stored = storage
-            .get_workflow_def("workflow1")
+            .get_workflow_def("workflow:v1")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stored.tasks[0].id, "taskb");
+        assert_eq!(stored.tasks[0].id, "taska");
     }
 
     #[tokio::test]
@@ -950,22 +942,22 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
 
         service
-            .create_workflow_def(workflow_def("workflow1"))
+            .create_workflow_def(workflow_def("workflow:v1"))
             .await
             .unwrap();
         service
-            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+            .create_workflow_instance_for_def("workflow:v1", WorkerHostId::new("test-host"))
             .await
             .unwrap();
 
         let error = service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+            .create_workflow_def(workflow_def_with_task("workflow:v1", "taskb"))
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("cannot be overwritten"));
+        assert!(error.to_string().contains("already exists and cannot be overwritten"));
         let stored = storage
-            .get_workflow_def("workflow1")
+            .get_workflow_def("workflow:v1")
             .await
             .unwrap()
             .unwrap();
@@ -978,7 +970,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
 
         service
-            .create_workflow_def(workflow_def("workflow1"))
+            .create_workflow_def(workflow_def("workflow:v1"))
             .await
             .unwrap();
         storage
@@ -987,7 +979,7 @@ mod tests {
                 vec![],
                 WorkflowInstance {
                     id: "completed-workflow".to_string(),
-                    workflow_def_id: "workflow1".to_string(),
+                    workflow_def_id: "workflow:v1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Completed,
                     pinned_worker_host: None,
@@ -999,11 +991,11 @@ mod tests {
             .unwrap();
 
         let error = service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+            .create_workflow_def(workflow_def_with_task("workflow:v1", "taskb"))
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("cannot be overwritten"));
+        assert!(error.to_string().contains("already exists and cannot be overwritten"));
     }
 
     #[tokio::test]
@@ -1016,7 +1008,7 @@ mod tests {
                 vec![],
                 WorkflowInstance {
                     id: "active-workflow".to_string(),
-                    workflow_def_id: "workflow1".to_string(),
+                    workflow_def_id: "workflow:v1".to_string(),
                     version: 0,
                     status: WorkflowStatus::Running,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
@@ -1084,7 +1076,7 @@ mod tests {
                     vec![],
                     WorkflowInstance {
                         id: id.to_string(),
-                        workflow_def_id: "workflow1".to_string(),
+                        workflow_def_id: "workflow:v1".to_string(),
                         version: 0,
                         status,
                         pinned_worker_host: None,
@@ -1123,12 +1115,12 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         service
-            .create_workflow_def(workflow_def("workflow1"))
+            .create_workflow_def(workflow_def("workflow:v1"))
             .await
             .unwrap();
 
         let instance_id = service
-            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+            .create_workflow_instance_for_def("workflow:v1", WorkerHostId::new("test-host"))
             .await
             .unwrap();
 
@@ -1137,7 +1129,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(instance.workflow_def_id, "workflow1");
+        assert_eq!(instance.workflow_def_id, "workflow:v1");
         assert_eq!(instance.status, WorkflowStatus::Pending);
         assert_eq!(
             instance.pinned_worker_host,
@@ -1178,7 +1170,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         let completed = WorkflowInstance {
             id: "completed-workflow".to_string(),
-            workflow_def_id: "workflow-1".to_string(),
+            workflow_def_id: "workflow:v1".to_string(),
             version: 0,
             status: WorkflowStatus::Completed,
             pinned_worker_host: None,
@@ -1205,7 +1197,7 @@ mod tests {
 
         assert_eq!(workflows.workflows.len(), 1);
         assert_eq!(workflows.workflows[0].id, "running-workflow");
-        assert_eq!(workflows.workflows[0].workflow_def_id, "workflow-1");
+        assert_eq!(workflows.workflows[0].workflow_def_id, "workflow:v1");
         assert_eq!(workflows.workflows[0].status, WorkflowStatus::Running);
         assert_eq!(workflows.workflows[0].total_task_count, 0);
         assert_eq!(workflows.workflows[0].completed_task_count, 0);
@@ -1226,7 +1218,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         service
             .create_workflow_def(WorkflowDef {
-                id: "workflow1".to_string(),
+                id: "workflow:v1".to_string(),
                 tasks: vec![agent_task_def("taska")],
                 data_bindings: vec![],
             })
@@ -1238,7 +1230,7 @@ mod tests {
                 vec![],
                 WorkflowInstance {
                     id: "input-workflow".to_string(),
-                    workflow_def_id: "workflow1".to_string(),
+                    workflow_def_id: "workflow:v1".to_string(),
                     version: 0,
                     status: WorkflowStatus::InputNeeded,
                     pinned_worker_host: Some(WorkerHostId::new("test-host")),
@@ -1298,7 +1290,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         service
             .create_workflow_def(WorkflowDef {
-                id: "workflow1".to_string(),
+                id: "workflow:v1".to_string(),
                 tasks: vec![agent_task_def("taska")],
                 data_bindings: vec![],
             })
@@ -1306,7 +1298,7 @@ mod tests {
             .unwrap();
         let instance = WorkflowInstance {
             id: "input-workflow".to_string(),
-            workflow_def_id: "workflow1".to_string(),
+            workflow_def_id: "workflow:v1".to_string(),
             version: 0,
             status: WorkflowStatus::InputNeeded,
             pinned_worker_host: Some(WorkerHostId::new("test-host")),
@@ -1413,7 +1405,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         let instance = WorkflowInstance {
             id: "failed-workflow".to_string(),
-            workflow_def_id: "workflow1".to_string(),
+            workflow_def_id: "workflow:v1".to_string(),
             version: 0,
             status: WorkflowStatus::Failed,
             pinned_worker_host: Some(WorkerHostId::new("test-host")),

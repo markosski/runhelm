@@ -629,7 +629,7 @@ mod tests {
     ) -> WorkflowInstance {
         WorkflowInstance {
             id: id.to_string(),
-            workflow_def_id: "workflow-1".to_string(),
+            workflow_def_id: "workflow:v1".to_string(),
             version: 0,
             status,
             pinned_worker_host,
@@ -854,7 +854,7 @@ mod tests {
         state
             .workflow_service
             .create_workflow_def(WorkflowDef {
-                id: "workflow-1".to_string(),
+                id: "workflow:v1".to_string(),
                 tasks: vec![crate::core::models::TaskDef {
                     id: "taska".to_string(),
                     kind: TaskTypeDef::Agent {

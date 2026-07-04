@@ -1,4 +1,4 @@
-id: simple-function-workflow
+id: simple-function-workflow:v1
 
 tasks:
   - id: test

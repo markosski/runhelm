@@ -1,4 +1,4 @@
-id: mailgun-dispatcher-workflow
+id: mailgun-dispatcher-workflow:v1
 
 # Prototype email dispatcher workflow.
 #

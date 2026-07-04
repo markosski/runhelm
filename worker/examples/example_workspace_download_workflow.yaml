@@ -1,4 +1,4 @@
-id: workspace-download-workflow
+id: workspace-download-workflow:v1
 
 # Two Agent task example that stores downloaded page content in a shared
 # RunHelm workspace, then reads that file from a later task.

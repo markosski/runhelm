@@ -1,4 +1,4 @@
-id: human-input-agent-workflow
+id: human-input-agent-workflow:v1
 
 # Single Agent task example that intentionally pauses for human input.
 # Register this workflow, start an instance, then submit the answer with:

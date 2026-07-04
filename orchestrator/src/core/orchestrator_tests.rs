@@ -190,12 +190,12 @@ fn workflow_instance(id: &str, workflow_def_id: &str) -> WorkflowInstance {
 async fn execute_workflow_task_isolated_finds_registered_task() {
     let (orchestrator, workflow_service, _) = orchestrator_with_services();
     workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow:v1", vec![task("taska")]))
         .await
         .unwrap();
 
     let result = orchestrator
-        .execute_workflow_task_isolated("workflow1", "taska", &[])
+        .execute_workflow_task_isolated("workflow:v1", "taska", &[])
         .await
         .unwrap();
 
@@ -209,16 +209,16 @@ async fn execute_workflow_task_isolated_finds_registered_task() {
 async fn execute_workflow_task_isolated_scopes_task_lookup_to_workflow_def() {
     let (orchestrator, workflow_service, _) = orchestrator_with_services();
     workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow1:v1", vec![task("taska")]))
         .await
         .unwrap();
     workflow_service
-        .create_workflow_def(workflow("workflow2", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow2:v1", vec![task("taska")]))
         .await
         .unwrap();
 
     let result = orchestrator
-        .execute_workflow_task_isolated("workflow2", "taska", &[])
+        .execute_workflow_task_isolated("workflow2:v1", "taska", &[])
         .await
         .unwrap();
 
@@ -241,14 +241,14 @@ async fn execute_workflow_task_isolated_resolves_registered_function_ref() {
         .unwrap();
     workflow_service
         .create_workflow_def(workflow(
-            "workflow1",
+            "workflow:v1",
             vec![function_ref_task("taska", "functiona")],
         ))
         .await
         .unwrap();
 
     let result = orchestrator
-        .execute_workflow_task_isolated("workflow1", "taska", &[])
+        .execute_workflow_task_isolated("workflow:v1", "taska", &[])
         .await
         .unwrap();
 
@@ -270,12 +270,12 @@ async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
     );
 
     workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow:v1", vec![task("taska")]))
         .await
         .unwrap();
 
     orchestrator
-        .execute_workflow_task_isolated("workflow1", "taska", &[])
+        .execute_workflow_task_isolated("workflow:v1", "taska", &[])
         .await
         .unwrap();
 
@@ -285,7 +285,7 @@ async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
     assert!(
         records[0]
             .workflow_inst_id
-            .starts_with("isolated-workflow1-taska-")
+            .starts_with("isolated-workflow:v1-taska-")
     );
     assert_ne!(records[0].workflow_inst_id, "123");
 }
@@ -295,14 +295,14 @@ async fn execute_workflow_task_isolated_errors_for_missing_function_ref() {
     let (orchestrator, workflow_service, _) = orchestrator_with_services();
     workflow_service
         .create_workflow_def(workflow(
-            "workflow1",
+            "workflow:v1",
             vec![function_ref_task("taska", "missingfunction")],
         ))
         .await
         .unwrap();
 
     let error = orchestrator
-        .execute_workflow_task_isolated("workflow1", "taska", &[])
+        .execute_workflow_task_isolated("workflow:v1", "taska", &[])
         .await
         .unwrap_err();
 
@@ -321,7 +321,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
     let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue));
     let scheduler = tokio::spawn(orchestrator.clone().run_workflow_queue(2));
 
-    for id in ["workflow-1", "workflow-2", "workflow-3"] {
+    for id in ["workflow:v1", "workflow:v2", "workflow:v3"] {
         storage
             .save_workflow_def(workflow(
                 id,
@@ -344,7 +344,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
 
     for _ in 0..20 {
         let mut completed = 0;
-        for id in ["workflow-1", "workflow-2", "workflow-3"] {
+        for id in ["workflow:v1", "workflow:v2", "workflow:v3"] {
             let instance = storage.get_workflow_instance(id).await.unwrap().unwrap();
             if instance.status == WorkflowStatus::Completed {
                 completed += 1;
@@ -364,12 +364,12 @@ async fn scheduler_limits_concurrent_workflow_execution() {
 async fn isolated_workflow_task_execution_does_not_require_scheduler() {
     let (orchestrator, workflow_service, _) = orchestrator_with_services();
     workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow:v1", vec![task("taska")]))
         .await
         .unwrap();
 
     let result = orchestrator
-        .execute_workflow_task_isolated("workflow1", "taska", &[])
+        .execute_workflow_task_isolated("workflow:v1", "taska", &[])
         .await
         .unwrap();
 
@@ -381,7 +381,7 @@ async fn create_workflow_def_accepts_missing_input_schemas() {
     let storage = Arc::new(MemoryStorage::new());
     let workflow_service = WorkflowService::new(storage.clone());
     let workflow_def: WorkflowDef = serde_json::from_value(json!({
-        "id": "workflow1",
+        "id": "workflow:v1",
         "tasks": [
             {
                 "id": "taska",
@@ -407,7 +407,7 @@ async fn create_workflow_def_accepts_missing_input_schemas() {
         .unwrap();
 
     let stored = storage
-        .get_workflow_def("workflow1")
+        .get_workflow_def("workflow:v1")
         .await
         .unwrap()
         .unwrap();
@@ -418,7 +418,7 @@ async fn create_workflow_def_accepts_missing_input_schemas() {
 async fn workflow_without_control_verifier_deserializes_and_executes() {
     let (orchestrator, workflow_service, _) = orchestrator_with_services();
     let workflow_def: WorkflowDef = serde_json::from_value(json!({
-        "id": "workflow1",
+        "id": "workflow:v1",
         "tasks": [
             {
                 "id": "taska",
@@ -445,7 +445,7 @@ async fn workflow_without_control_verifier_deserializes_and_executes() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+        .create_workflow_instance_for_def("workflow:v1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -472,11 +472,11 @@ async fn workflow_without_control_verifier_deserializes_and_executes() {
 async fn get_task_result_resolves_logical_task_id_to_generation_one() {
     let (orchestrator, workflow_service, _) = orchestrator_with_services();
     workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow:v1", vec![task("taska")]))
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+        .create_workflow_instance_for_def("workflow:v1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -509,11 +509,11 @@ async fn get_task_result_resolves_logical_task_id_to_generation_one() {
 async fn list_task_results_returns_materialized_attempts() {
     let (orchestrator, workflow_service, _) = orchestrator_with_services();
     workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow:v1", vec![task("taska")]))
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+        .create_workflow_instance_for_def("workflow:v1", WorkerHostId::new("test-host"))
         .await
         .unwrap();
 
@@ -560,12 +560,12 @@ async fn verifier_control_accepts_function_task_and_injects_decision_schema() {
     });
 
     workflow_service
-        .create_workflow_def(workflow("workflow1", vec![verifier]))
+        .create_workflow_def(workflow("workflow:v1", vec![verifier]))
         .await
         .unwrap();
 
     let def = storage
-        .get_workflow_def("workflow1")
+        .get_workflow_def("workflow:v1")
         .await
         .unwrap()
         .unwrap();
@@ -586,7 +586,7 @@ async fn verifier_control_rejects_user_output_schema() {
     });
 
     let error = workflow_service
-        .create_workflow_def(workflow("workflow1", vec![verifier]))
+        .create_workflow_def(workflow("workflow:v1", vec![verifier]))
         .await
         .unwrap_err();
 
@@ -610,7 +610,7 @@ async fn create_workflow_def_normalizes_workflow_def_task_def_and_binding_ids() 
 
     workflow_service
         .create_workflow_def(WorkflowDef {
-            id: "Workflow_ABC-1".to_string(),
+            id: "Workflow_ABC:v1".to_string(),
             tasks: vec![task_a, task_b],
             data_bindings: vec![DataBinding {
                 source_task_id: "Task_A".to_string(),
@@ -621,12 +621,12 @@ async fn create_workflow_def_normalizes_workflow_def_task_def_and_binding_ids() 
         .unwrap();
 
     let stored = storage
-        .get_workflow_def("workflow_abc-1")
+        .get_workflow_def("workflow_abc:v1")
         .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(stored.id, "workflow_abc-1");
+    assert_eq!(stored.id, "workflow_abc:v1");
     assert_eq!(stored.tasks[0].id, "task_a");
     assert_eq!(
         stored.tasks[0]
@@ -645,33 +645,33 @@ async fn create_workflow_def_rejects_invalid_identifier_characters() {
     let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
     let workflow_error = workflow_service
-        .create_workflow_def(workflow("workflow.1", vec![task("taska")]))
+        .create_workflow_def(workflow("workflow%v1", vec![task("taska")]))
         .await
         .unwrap_err();
     assert!(workflow_error.to_string().contains(
-        "workflow id \"workflow.1\" must contain only ASCII alphanumeric characters, '-' or '_'"
+        "workflow id \"workflow%v1\" must contain only ASCII alphanumeric characters, '-', '_', ':' or '.'"
     ));
 
     let task_error = workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task("task a")]))
+        .create_workflow_def(workflow("workflow:v1", vec![task("task a")]))
         .await
         .unwrap_err();
     assert!(task_error.to_string().contains(
-        "task id \"task a\" must contain only ASCII alphanumeric characters, '-' or '_'"
+        "task id \"task a\" must contain only ASCII alphanumeric characters, '-', '_', ':' or '.'"
     ));
 
     let mut task_with_workspace = task("taska");
     task_with_workspace.workspace = Some(Workspace {
-        group_name: "repo.cache".to_string(),
+        group_name: "repo%cache".to_string(),
     });
     let workspace_error = workflow_service
-        .create_workflow_def(workflow("workflow1", vec![task_with_workspace]))
+        .create_workflow_def(workflow("workflow:v1", vec![task_with_workspace]))
         .await
         .unwrap_err();
     assert!(
         workspace_error
             .to_string()
-            .contains("workspace group id \"repo.cache\" must contain only ASCII alphanumeric characters, '-' or '_'")
+            .contains("workspace group id \"repo%cache\" must contain only ASCII alphanumeric characters, '-', '_', ':' or '.'")
     );
 }
 
@@ -690,7 +690,7 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
     });
     let missing_target_error = workflow_service
         .create_workflow_def(WorkflowDef {
-            id: "workflow1".to_string(),
+            id: "workflow:v1".to_string(),
             tasks: vec![task("taska"), missing_target_verifier],
             data_bindings: vec![DataBinding {
                 source_task_id: "taska".to_string(),
@@ -716,7 +716,7 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
     });
     let downstream_target_error = workflow_service
         .create_workflow_def(WorkflowDef {
-            id: "workflow2".to_string(),
+            id: "workflow:v2".to_string(),
             tasks: vec![downstream_target_verifier, task("taskb")],
             data_bindings: vec![DataBinding {
                 source_task_id: "taska".to_string(),
@@ -742,7 +742,7 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
     });
     let unrelated_target_error = workflow_service
         .create_workflow_def(WorkflowDef {
-            id: "workflow3".to_string(),
+            id: "workflow:v3".to_string(),
             tasks: vec![task("taska"), task("taskb"), unrelated_target_verifier],
             data_bindings: vec![DataBinding {
                 source_task_id: "taska".to_string(),
@@ -782,7 +782,7 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
 
     let error = workflow_service
         .create_workflow_def(WorkflowDef {
-            id: "workflow1".to_string(),
+            id: "workflow:v1".to_string(),
             tasks: vec![task("taska"), task("taskb"), verifya, verifyb],
             data_bindings: vec![
                 DataBinding {
@@ -1273,7 +1273,7 @@ async fn retry_workflow_task_commits_retry_and_enqueues_workflow() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
     let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
-    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    let mut instance = workflow_instance("failed-workflow", "workflow:v1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
     instance.tasks.insert(
@@ -1335,7 +1335,7 @@ async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
         })
         .await;
     let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
-    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    let mut instance = workflow_instance("failed-workflow", "workflow:v1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
     instance.tasks.insert(
@@ -1384,7 +1384,7 @@ async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable()
         })
         .await;
     let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
-    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    let mut instance = workflow_instance("failed-workflow", "workflow:v1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
     instance.tasks.insert(
@@ -1431,7 +1431,7 @@ async fn force_retry_workflow_task_rejects_when_no_host_is_eligible() {
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
     let worker_pool = WorkerPool::new();
     let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
-    let mut instance = workflow_instance("failed-workflow", "workflow-1");
+    let mut instance = workflow_instance("failed-workflow", "workflow:v1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
     instance.tasks.insert(

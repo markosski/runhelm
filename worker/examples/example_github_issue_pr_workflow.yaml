@@ -1,4 +1,4 @@
-id: github-issue-pr-workflow
+id: github-issue-pr-workflow:v1
 
 # Example workflow that works a GitHub issue through implementation, verifier
 # review, and PR creation. The first task requires one input object:
