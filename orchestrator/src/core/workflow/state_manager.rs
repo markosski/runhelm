@@ -103,6 +103,7 @@ mod tests {
             workflow_def_id: "wf".to_string(),
             version: 0,
             status,
+            trigger_input: None,
             pinned_worker_host: None,
             tasks: HashMap::new(),
             verifier_states: HashMap::new(),

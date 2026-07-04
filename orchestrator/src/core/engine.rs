@@ -145,6 +145,8 @@ impl WorkflowEngine {
             let mut events = Vec::with_capacity(workflow_def.tasks.len());
             for task_def in &workflow_def.tasks {
                 let task_attempt_id = TaskInstance::make_task_attempt_id(&task_def.id, 1);
+                let input_data =
+                    initial_task_input_data(&workflow_instance, &workflow_def, task_def);
                 events.push(WorkflowInstanceEvent::TaskMaterialized {
                     task_attempt_id,
                     task: TaskInstance {
@@ -152,7 +154,7 @@ impl WorkflowEngine {
                         status: TaskStatus::Pending,
                         satisfaction_status: TaskSatisfactionStatus::Pending,
                         human_input: None,
-                        input_data: vec![], // Empty until upstream dependencies propagate data
+                        input_data,
                         input_mapping: vec![],
                         output_data: None,
                         generation_index: 1,
@@ -844,11 +846,20 @@ impl WorkflowEngine {
         let mut inputs = Vec::new();
         let mut mapping = Vec::new();
 
-        for binding in workflow_def
+        let inbound_bindings: Vec<_> = workflow_def
             .data_bindings
             .iter()
             .filter(|binding| binding.target_task_id == task_def.id)
-        {
+            .collect();
+
+        if inbound_bindings.is_empty() && !task_instance.input_data.is_empty() {
+            return Some(ResolvedTaskInputs {
+                values: task_instance.input_data.clone(),
+                mapping: task_instance.input_mapping.clone(),
+            });
+        }
+
+        for binding in inbound_bindings {
             let source_task_attempt_id = self.resolve_source_attempt_id(
                 workflow_instance,
                 &loop_slices,
@@ -1296,6 +1307,28 @@ impl WorkflowEngine {
             events,
             error_message: None,
         })
+    }
+}
+
+fn initial_task_input_data(
+    workflow_instance: &WorkflowInstance,
+    workflow_def: &WorkflowDef,
+    task_def: &crate::core::models::TaskDef,
+) -> Vec<serde_json::Value> {
+    if workflow_instance.trigger_input.is_none() || task_def.input_schemas.is_empty() {
+        return vec![];
+    }
+
+    let has_inbound_binding = workflow_def
+        .data_bindings
+        .iter()
+        .any(|binding| binding.target_task_id == task_def.id);
+
+    // Return trigger input only if provided task_def has no other dependency
+    if has_inbound_binding {
+        vec![]
+    } else {
+        vec![workflow_instance.trigger_input.clone().unwrap()]
     }
 }
 

@@ -121,22 +121,27 @@ curl -sS -X DELETE http://localhost:3000/function-def/mailgun.fetch_inbound_mail
 
 ### `POST /workflow-def/{def_id}`
 
-Creates and starts a workflow instance from a registered workflow definition. The current handler accepts a JSON body but does not read fields from it.
+Creates and starts a workflow instance from a registered workflow definition.
+The JSON body is used as the initial input for root tasks that declare
+`input_schemas`. The request body is persisted as a single JSON value and then
+passed as one input slot to eligible root tasks. `null` is treated as no initial
+input.
 
 Example:
 
 ```bash
 curl -sS -X POST http://localhost:3000/workflow-def/simple-function-workflow \
   -H 'content-type: application/json' \
-  -d '{}'
+  -d '{"name":"Ada"}'
 ```
 
 Response:
 
 ```json
 {
-  "status": "created",
-  "id": "simple-function-workflow-1780000000000000000"
+  "status": "queued",
+  "id": "simple-function-workflow-1780000000000000000",
+  "pinned_host_id": "local-host"
 }
 ```
 

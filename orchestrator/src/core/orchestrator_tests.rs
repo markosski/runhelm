@@ -180,6 +180,7 @@ fn workflow_instance(id: &str, workflow_def_id: &str) -> WorkflowInstance {
         workflow_def_id: workflow_def_id.to_string(),
         version: 0,
         status: WorkflowStatus::Pending,
+        trigger_input: None,
         pinned_worker_host: None,
         tasks: HashMap::new(),
         verifier_states: HashMap::new(),
@@ -445,7 +446,7 @@ async fn workflow_without_control_verifier_deserializes_and_executes() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"), None)
         .await
         .unwrap();
 
@@ -476,7 +477,7 @@ async fn get_task_result_resolves_logical_task_id_to_generation_one() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"), None)
         .await
         .unwrap();
 
@@ -513,7 +514,7 @@ async fn list_task_results_returns_materialized_attempts() {
         .await
         .unwrap();
     let instance_id = workflow_service
-        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"))
+        .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"), None)
         .await
         .unwrap();
 
