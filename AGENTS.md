@@ -17,7 +17,7 @@ This is instructions to the agent on how to do work in this project.
     * Notes - additional information or context that will help with implementation
 
 ## Important!
-- Always update documents in docs/ directory with most recent changes made
+- Always update existing documents in docs/ directory with most recent changes made.
 - Focus on minimum or reasonable necessary code changes and functionality, i.e. do not add code to future proof design
 - When making changes to existing code favor simplicity over backwards compatibility
 - Do not make assumptions about critical decisions, ask to clarify underspecified information
