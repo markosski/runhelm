@@ -34,6 +34,7 @@ pub fn create_public_router(
 
     Router::new()
         .route("/health", get(handlers::health_check))
+        .route("/orchestrator/status", get(handlers::get_orchestrator_status))
         .route("/function-def", post(handlers::create_function_def))
         .route(
             "/function-def/{def_id}",

@@ -6,6 +6,7 @@ pub trait WorkflowQueuePort {
     async fn dequeue(&self) -> anyhow::Result<String>;
     async fn complete(&self, workflow_instance_id: &str) -> anyhow::Result<()>;
     async fn pending_ids(&self) -> anyhow::Result<Vec<String>>;
+    async fn active_ids(&self) -> anyhow::Result<Vec<String>>;
     async fn remove(&self, workflow_instance_id: &str) -> anyhow::Result<bool>;
     async fn purge(&self) -> anyhow::Result<Vec<String>>;
 }

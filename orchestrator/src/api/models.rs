@@ -35,6 +35,28 @@ pub struct WorkflowQueueStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestratorStatus {
+    pub workflow_queue: OrchestratorWorkflowQueueStatus,
+    pub worker_pool: OrchestratorWorkerPoolStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestratorWorkflowQueueStatus {
+    pub pending_workflow_instance_ids: Vec<String>,
+    pub active_workflow_instance_ids: Vec<String>,
+    pub pending_count: usize,
+    pub active_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestratorWorkerPoolStatus {
+    pub registered_worker_count: usize,
+    pub pending_task_count: usize,
+    pub in_flight_task_count: usize,
+    pub in_flight_workflow_instance_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskStatusReport {
     pub task_attempt_id: String,
     pub task_def_id: String,

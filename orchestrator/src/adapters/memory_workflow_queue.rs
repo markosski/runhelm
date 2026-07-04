@@ -95,6 +95,11 @@ impl WorkflowQueuePort for MemoryWorkflowQueue {
         Ok(state.pending.iter().cloned().collect())
     }
 
+    async fn active_ids(&self) -> anyhow::Result<Vec<String>> {
+        let state = self.state.lock().await;
+        Ok(state.active_ids.iter().cloned().collect())
+    }
+
     async fn remove(&self, workflow_instance_id: &str) -> anyhow::Result<bool> {
         let mut state = self.state.lock().await;
         let Some(position) = state

@@ -1,5 +1,8 @@
 use crate::adapters::worker_pool::WorkerPool;
-use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
+use crate::api::models::{
+    OrchestratorStatus, OrchestratorWorkerPoolStatus, OrchestratorWorkflowQueueStatus,
+    WorkflowQueueStatus, WorkflowStatusReport,
+};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
@@ -188,6 +191,30 @@ impl Orchestrator {
         Ok(WorkflowQueueStatus { pending })
     }
 
+    pub async fn get_orchestrator_status(
+        &self,
+        worker_pool: &WorkerPool,
+    ) -> anyhow::Result<OrchestratorStatus> {
+        let pending_ids = self.workflow_queue.pending_ids().await?;
+        let active_ids = self.workflow_queue.active_ids().await?;
+        let worker_pool_status = worker_pool.status_snapshot().await;
+
+        Ok(OrchestratorStatus {
+            workflow_queue: OrchestratorWorkflowQueueStatus {
+                pending_count: pending_ids.len(),
+                active_count: active_ids.len(),
+                pending_workflow_instance_ids: pending_ids,
+                active_workflow_instance_ids: active_ids,
+            },
+            worker_pool: OrchestratorWorkerPoolStatus {
+                registered_worker_count: worker_pool_status.registered_worker_count,
+                pending_task_count: worker_pool_status.pending_task_count,
+                in_flight_task_count: worker_pool_status.in_flight_task_count,
+                in_flight_workflow_instance_ids: worker_pool_status.in_flight_workflow_instance_ids,
+            },
+        })
+    }
+
     /// Removes a pending workflow instance from the queue.
     pub async fn remove_queued_workflow_instance(&self, instance_id: &str) -> anyhow::Result<bool> {
         self.workflow_queue.remove(instance_id).await
@@ -204,6 +231,11 @@ impl Orchestrator {
         id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
         self.engine.get_workflow_status(id).await
+    }
+
+    #[cfg(test)]
+    pub fn workflow_queue_for_test(&self) -> Arc<dyn WorkflowQueuePort + Send + Sync> {
+        Arc::clone(&self.workflow_queue)
     }
 
     /// Starts or resumes execution of a workflow instance.

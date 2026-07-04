@@ -147,6 +147,14 @@ struct PendingTask {
     timeout: Duration,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerPoolStatus {
+    pub registered_worker_count: usize,
+    pub pending_task_count: usize,
+    pub in_flight_task_count: usize,
+    pub in_flight_workflow_instance_ids: Vec<String>,
+}
+
 /// Manages queues and in-flight worker tasks.
 /// Tasks are claimed by workers in FIFO order, and execution timeout tracking
 /// starts when a worker claims a task.
@@ -247,6 +255,26 @@ impl WorkerPool {
     pub async fn select_eligible_host(&self) -> Option<WorkerHostId> {
         self.update_worker_liveness().await;
         self.eligible_hosts().await.into_iter().next()
+    }
+
+    pub async fn status_snapshot(&self) -> WorkerPoolStatus {
+        let workers = self.workers.read().await;
+        let pending_tasks = self.pending_tasks.lock().await;
+        let in_flight_tasks = self.in_flight_tasks.lock().await;
+
+        let mut in_flight_workflow_instance_ids: Vec<String> = in_flight_tasks
+            .values()
+            .map(|lease| lease.workflow_instance_id.clone())
+            .collect();
+        in_flight_workflow_instance_ids.sort();
+        in_flight_workflow_instance_ids.dedup();
+
+        WorkerPoolStatus {
+            registered_worker_count: workers.len(),
+            pending_task_count: pending_tasks.len(),
+            in_flight_task_count: in_flight_tasks.len(),
+            in_flight_workflow_instance_ids,
+        }
     }
 
     // we should not be seeing current_host as None, that would indicate some suspicious bug

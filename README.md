@@ -95,7 +95,7 @@ Rust control plane built around ports and adapters:
 - `src/core/engine.rs` runs workflow instances by finding runnable tasks, executing them, validating outputs, and propagating data bindings.
 - `src/core/models.rs` defines workflow, task, run, and status models.
 - `src/ports/` abstracts persistence and execution so storage backends and worker backends stay replaceable.
-- `src/api/` exposes HTTP endpoints such as `/health`, `POST /workflow-def`, `GET /workflows`, `GET /workflows?status=Running`, and `GET /workflows/:id`.
+- `src/api/` exposes HTTP endpoints such as `/health`, `GET /orchestrator/status`, `POST /workflow-def`, `GET /workflows`, `GET /workflows?status=Running`, and `GET /workflows/:id`. See [Operational Status](docs/operational-status.md) for details on the status endpoint.
 
 Current default wiring uses in-memory storage, an in-memory workflow queue, and a `DockerExecutor` backed by `WorkerPool`. The fake executor still exists for tests, but normal local startup now expects TypeScript workers to register, claim task dispatches over HTTP, and post results back to the orchestrator.
 

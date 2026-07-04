@@ -385,6 +385,17 @@ pub async fn get_queue(State(state): State<AppState>) -> Result<Json<Value>, Sta
     }
 }
 
+pub async fn get_orchestrator_status(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    match state
+        .orchestrator
+        .get_orchestrator_status(&state.worker_pool)
+        .await
+    {
+        Ok(status) => Ok(Json(serde_json::to_value(status).unwrap())),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 pub async fn delete_queue_item(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -968,5 +979,114 @@ mod tests {
         assert_eq!(workflows.len(), 1);
         assert_eq!(workflows[0]["id"], "input-needed-workflow");
         assert_eq!(workflows[0]["status"], "InputNeeded");
+    }
+
+    #[tokio::test]
+    async fn get_orchestrator_status_returns_combined_state() {
+        let storage = Arc::new(MemoryStorage::new());
+        let worker_pool = WorkerPool::new();
+        let state = app_state(storage.clone(), worker_pool.clone());
+
+        // Setup some state
+        worker_pool
+            .register_worker(crate::adapters::worker_pool::WorkerRegistration {
+                worker_id: "worker-1".to_string(),
+                host_id: WorkerHostId::new("host-1"),
+            })
+            .await;
+
+        state
+            .orchestrator
+            .enqueue_workflow_instance("pending-1".to_string())
+            .await
+            .unwrap();
+
+        let Json(status) = get_orchestrator_status(State(state.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(status["workflow_queue"]["pending_count"], 1);
+        assert_eq!(status["workflow_queue"]["active_count"], 0);
+        assert_eq!(status["workflow_queue"]["pending_workflow_instance_ids"], json!(["pending-1"]));
+        assert_eq!(status["worker_pool"]["registered_worker_count"], 1);
+        assert_eq!(status["worker_pool"]["pending_task_count"], 0);
+        assert_eq!(status["worker_pool"]["in_flight_task_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn get_orchestrator_status_reflects_active_workflow_and_tasks() {
+        let storage = Arc::new(MemoryStorage::new());
+        let worker_pool = WorkerPool::new();
+        let state = app_state(storage.clone(), worker_pool.clone());
+
+        // 1. Register a worker
+        worker_pool
+            .register_worker(crate::adapters::worker_pool::WorkerRegistration {
+                worker_id: "worker-1".to_string(),
+                host_id: WorkerHostId::new("host-1"),
+            })
+            .await;
+
+        // 2. Manually manipulate the queue to have an active workflow
+        // Instead of running the loop, we can just dequeue from the orchestrator's queue
+        state
+            .orchestrator
+            .enqueue_workflow_instance("wf-active".to_string())
+            .await
+            .unwrap();
+
+        // Dequeue it - this will make it active in MemoryWorkflowQueue
+        let _ = state.orchestrator.workflow_queue_for_test().dequeue().await.unwrap();
+
+        // 3. Enqueue a task to worker pool
+        let task = crate::core::models::TaskDef {
+            id: "task-1".to_string(),
+            kind: crate::core::models::TaskTypeDef::ApiCall {
+                url: "http://example.com".to_string(),
+                method: "GET".to_string(),
+            },
+            control: None,
+            timeout_secs: None,
+            input_schemas: vec![],
+            output_schema: None,
+            workspace: None,
+            required_credentials: vec![],
+        };
+
+        let pool_for_enqueue = worker_pool.clone();
+        tokio::spawn(async move {
+            let _ = pool_for_enqueue
+                .enqueue_task(
+                    "wf-active",
+                    &task,
+                    &[],
+                    Duration::from_secs(5),
+                    crate::core::models::ExecutionMetadata::default(),
+                    crate::core::workflow::models::TaskDispatchConstraints::default(),
+                )
+                .await;
+        });
+
+        // Give it a moment to be enqueued
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let Json(status) = get_orchestrator_status(State(state.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(status["workflow_queue"]["active_count"], 1);
+        assert_eq!(status["workflow_queue"]["active_workflow_instance_ids"], json!(["wf-active"]));
+        assert_eq!(status["worker_pool"]["pending_task_count"], 1);
+
+        // 4. Claim the task
+        worker_pool.claim_task("worker-1", Duration::from_millis(10)).await.unwrap();
+
+        let Json(status2) = get_orchestrator_status(State(state.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(status2["worker_pool"]["pending_task_count"], 0);
+        assert_eq!(status2["worker_pool"]["in_flight_task_count"], 1);
+        assert_eq!(status2["worker_pool"]["in_flight_workflow_instance_ids"], json!(["wf-active"]));
     }
 }
