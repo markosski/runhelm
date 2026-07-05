@@ -7,6 +7,7 @@ The project separates control-plane concerns from execution concerns:
 - The `orchestrator` owns workflow definitions, run state, scheduling, and status APIs.
 - The `worker` executes individual tasks in an isolated runtime with typed inputs and outputs.
 - The `frontend` is the start of an operator UI for workflows, runs, and system visibility.
+- The `website` contains the static project website and documentation, built with Astro and Starlight.
 
 ## Why RunHelm
 
@@ -239,6 +240,16 @@ cd frontend
 npm install
 npm run dev
 ```
+
+### Website
+
+```bash
+cd website
+npm install
+npm run dev
+```
+
+The website serves a custom homepage at `/` and Starlight documentation under `/docs/`. See `docs/website.md` for the site structure and content policy.
 
 ## Direction
 
