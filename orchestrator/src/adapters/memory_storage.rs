@@ -268,9 +268,7 @@ mod tests {
     fn event_record(created_time: u64) -> WorkflowEventRecord {
         WorkflowEventRecord {
             created_time,
-            event: WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Running,
-            },
+            event: WorkflowInstanceEvent::WorkflowRunStarted,
         }
     }
 
@@ -289,9 +287,7 @@ mod tests {
                 0,
                 vec![WorkflowEventRecord {
                     created_time: 42,
-                    event: WorkflowInstanceEvent::WorkflowStatusChanged {
-                        status: WorkflowStatus::Completed,
-                    },
+                    event: WorkflowInstanceEvent::WorkflowRunCompleted,
                 }],
                 instance.clone(),
             )

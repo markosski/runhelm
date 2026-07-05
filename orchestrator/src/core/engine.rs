@@ -5,7 +5,7 @@ use crate::core::models::{
     TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus,
     VerifierControlConfig, VerifierDecision, VerifierExecutionResult,
 };
-use crate::core::workflow::events::{WorkflowInstanceCommand, WorkflowInstanceEvent};
+use crate::core::workflow::events::{TaskVerifierOutcome, WorkflowInstanceCommand};
 use crate::core::workflow::models::{
     TaskDispatchConstraints, VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
     WorkflowDef, WorkflowInstance, WorkflowStatus,
@@ -32,7 +32,7 @@ struct ResolvedTaskInputs {
 }
 
 struct VerifierTransition {
-    events: Vec<WorkflowInstanceEvent>,
+    outcome: Option<TaskVerifierOutcome>,
     error_message: Option<String>,
 }
 
@@ -355,38 +355,22 @@ impl WorkflowEngine {
                             .then_some(TaskSatisfactionStatus::Satisfied);
 
                             let output_data = output_schema.is_some().then_some(output.clone());
-                            let mut verifier_events = vec![];
+                            let mut verifier_outcome = None;
 
                             // Only record output when a schema is declared.
                             if task_verifier(task_def).is_some() {
                                 let verifier_result = match verifier_result_from_output(&output) {
                                     Ok(verifier_result) => verifier_result,
-                                    // TODO: investigate a bit more, looks like we're capturing eventes outside of command processing
                                     Err(error) => {
-                                        verifier_events.extend([
-                                            WorkflowInstanceEvent::TaskStatusChanged {
-                                                task_attempt_id: task_attempt_id.clone(),
-                                                status: TaskStatus::Failed,
+                                        verifier_outcome = Some(TaskVerifierOutcome::Invalid {
+                                            verifier_metadata: VerifierAttemptMetadata {
+                                                status: VerifierAttemptStatus::Invalid,
+                                                decision: None,
+                                                feedback: None,
+                                                verifier_output: Some(output.clone()),
+                                                exit_reason: Some(error.to_string()),
                                             },
-                                            WorkflowInstanceEvent::TaskSatisfactionChanged {
-                                                task_attempt_id: task_attempt_id.clone(),
-                                                satisfaction_status:
-                                                    TaskSatisfactionStatus::Unsatisfied,
-                                            },
-                                            WorkflowInstanceEvent::TaskVerifierMetadataSet {
-                                                task_attempt_id: task_attempt_id.clone(),
-                                                verifier_metadata: Some(VerifierAttemptMetadata {
-                                                    status: VerifierAttemptStatus::Invalid,
-                                                    decision: None,
-                                                    feedback: None,
-                                                    verifier_output: Some(output.clone()),
-                                                    exit_reason: Some(error.to_string()),
-                                                }),
-                                            },
-                                            WorkflowInstanceEvent::WorkflowStatusChanged {
-                                                status: WorkflowStatus::Failed,
-                                            },
-                                        ]);
+                                        });
 
                                         self.commit_in_flight_task_result_preserving_pause(
                                             &state_manager,
@@ -398,7 +382,7 @@ impl WorkflowEngine {
                                                 input_mapping: resolved_inputs.mapping.clone(),
                                                 output_data,
                                                 satisfaction_status,
-                                                verifier_events,
+                                                verifier_outcome,
                                             },
                                         )
                                         .await?;
@@ -415,7 +399,7 @@ impl WorkflowEngine {
                                     verifier_result,
                                 )?;
 
-                                verifier_events.extend(verifier_transition.events);
+                                verifier_outcome = verifier_transition.outcome;
 
                                 workflow_instance = self
                                     .commit_in_flight_task_result_preserving_pause(
@@ -428,7 +412,7 @@ impl WorkflowEngine {
                                             input_mapping: resolved_inputs.mapping.clone(),
                                             output_data,
                                             satisfaction_status,
-                                            verifier_events,
+                                            verifier_outcome,
                                         },
                                     )
                                     .await?;
@@ -459,7 +443,7 @@ impl WorkflowEngine {
                                             input_mapping: resolved_inputs.mapping.clone(),
                                             output_data,
                                             satisfaction_status,
-                                            verifier_events,
+                                            verifier_outcome,
                                         },
                                     )
                                     .await?;
@@ -899,23 +883,20 @@ impl WorkflowEngine {
             .map(|(task_attempt_id, _)| task_attempt_id.clone())
     }
 
-    fn slice_satisfaction_events(
+    fn slice_satisfaction_task_attempt_ids(
         &self,
         instance: &WorkflowInstance,
         slice: &[String],
         generation: u32,
-        satisfaction: TaskSatisfactionStatus,
-    ) -> Vec<WorkflowInstanceEvent> {
+    ) -> Vec<String> {
         slice
             .iter()
             .filter_map(|task_def_id| {
                 let task_attempt_id = TaskInstance::make_task_attempt_id(task_def_id, generation);
-                instance.tasks.contains_key(&task_attempt_id).then_some(
-                    WorkflowInstanceEvent::TaskSatisfactionChanged {
-                        task_attempt_id,
-                        satisfaction_status: satisfaction.clone(),
-                    },
-                )
+                instance
+                    .tasks
+                    .contains_key(&task_attempt_id)
+                    .then_some(task_attempt_id)
             })
             .collect()
     }
@@ -1011,68 +992,50 @@ impl WorkflowEngine {
                 .ok_or_else(|| {
                     anyhow::anyhow!("verifier task attempt {verifier_task_attempt_id} not found")
                 })?;
+
         let generation = verifier_task_attempt.generation_index;
+
         let verifier_task_id = verifier_task_attempt.task_def_id.clone();
         let verifier_task = def
             .tasks
             .iter()
             .find(|task| task.id == verifier_task_id)
             .ok_or_else(|| anyhow::anyhow!("verifier task definition missing"))?;
+
         let verifier = task_verifier(verifier_task)
             .ok_or_else(|| anyhow::anyhow!("task {verifier_task_id} has no verifier config"))?;
+
         let slice = loop_slices
             .get(&verifier_task_id)
             .cloned()
             .unwrap_or_else(|| vec![verifier_task_id.clone()]);
+
         let state = instance
             .verifier_states
             .get(&verifier_task_id)
             .ok_or_else(|| anyhow::anyhow!("verifier state {verifier_task_id} missing"))?;
-        let mut events = Vec::new();
 
         match verifier_result.decision {
-            VerifierDecision::Complete => {
-                events.push(WorkflowInstanceEvent::VerifierStateStatusChanged {
-                    verifier_task_id: verifier_task_id.clone(),
-                    status: VerifierStateStatus::Accepted,
-                    selected_generation: Some(generation),
-                    exit_reason: Some("complete".to_string()),
-                });
-                events.push(WorkflowInstanceEvent::TaskVerifierMetadataSet {
-                    task_attempt_id: verifier_task_attempt_id.to_string(),
-                    verifier_metadata: Some(VerifierAttemptMetadata {
+            VerifierDecision::Complete => Ok(VerifierTransition {
+                outcome: Some(TaskVerifierOutcome::Accepted {
+                    verifier_metadata: VerifierAttemptMetadata {
                         status: VerifierAttemptStatus::Accepted,
                         decision: Some(VerifierDecision::Complete),
                         feedback: verifier_result.feedback,
                         verifier_output: Some(verifier_result.output),
                         exit_reason: Some("complete".to_string()),
-                    }),
-                });
-                events.extend(self.slice_satisfaction_events(
-                    instance,
-                    &slice,
-                    generation,
-                    TaskSatisfactionStatus::Satisfied,
-                ));
-            }
+                    },
+                    satisfied_task_attempt_ids: self
+                        .slice_satisfaction_task_attempt_ids(instance, &slice, generation),
+                }),
+                error_message: None,
+            }),
             VerifierDecision::Continue => {
                 let feedback = verifier_result.feedback.clone().unwrap_or_default();
                 if feedback.trim().is_empty() {
-                    events.extend([
-                        WorkflowInstanceEvent::WorkflowStatusChanged {
-                            status: WorkflowStatus::Failed,
-                        },
-                        WorkflowInstanceEvent::TaskStatusChanged {
-                            task_attempt_id: verifier_task_attempt_id.to_string(),
-                            status: TaskStatus::Failed,
-                        },
-                        WorkflowInstanceEvent::TaskSatisfactionChanged {
-                            task_attempt_id: verifier_task_attempt_id.to_string(),
-                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
-                        },
-                        WorkflowInstanceEvent::TaskVerifierMetadataSet {
-                            task_attempt_id: verifier_task_attempt_id.to_string(),
-                            verifier_metadata: Some(VerifierAttemptMetadata {
+                    return Ok(VerifierTransition {
+                        outcome: Some(TaskVerifierOutcome::Invalid {
+                            verifier_metadata: VerifierAttemptMetadata {
                                 status: VerifierAttemptStatus::Invalid,
                                 decision: Some(VerifierDecision::Continue),
                                 feedback: verifier_result.feedback,
@@ -1080,105 +1043,60 @@ impl WorkflowEngine {
                                 exit_reason: Some(
                                     "continue decision requires non-empty feedback".to_string(),
                                 ),
-                            }),
-                        },
-                    ]);
-                    return Ok(VerifierTransition {
-                        events,
+                            },
+                        }),
                         error_message: Some(
                             "Verifier continue decision requires non-empty feedback".to_string(),
                         ),
                     });
                 }
 
-                events.push(WorkflowInstanceEvent::VerifierFeedbackRecorded {
-                    verifier_task_id: verifier_task_id.clone(),
-                    feedback: VerifierFeedbackEntry {
-                        generation_index: generation,
-                        feedback: feedback.clone(),
-                        verifier_output: verifier_result.output.clone(),
-                    },
-                });
+                let feedback_entry = VerifierFeedbackEntry {
+                    generation_index: generation,
+                    feedback: feedback.clone(),
+                    verifier_output: verifier_result.output.clone(),
+                };
 
                 if generation < verifier.max_iterations {
                     let mut updated_state = state.clone();
-                    updated_state.feedback_history.push(VerifierFeedbackEntry {
-                        generation_index: generation,
-                        feedback: feedback.clone(),
-                        verifier_output: verifier_result.output.clone(),
-                    });
+                    updated_state.feedback_history.push(feedback_entry.clone());
                     updated_state.latest_generation = generation + 1;
                     updated_state.status = VerifierStateStatus::Running;
                     updated_state.selected_generation = None;
                     updated_state.exit_reason = None;
-                    events.push(WorkflowInstanceEvent::VerifierStateUpserted {
-                        verifier_task_id: verifier_task_id.clone(),
-                        state: updated_state,
-                    });
-                    events.push(WorkflowInstanceEvent::TaskVerifierMetadataSet {
-                        task_attempt_id: verifier_task_attempt_id.to_string(),
-                        verifier_metadata: Some(VerifierAttemptMetadata {
-                            status: VerifierAttemptStatus::Rejected,
-                            decision: Some(VerifierDecision::Continue),
-                            feedback: Some(feedback),
-                            verifier_output: Some(verifier_result.output),
-                            exit_reason: None,
-                        }),
-                    });
-                    events.extend(self.slice_satisfaction_events(
-                        instance,
-                        &slice,
-                        generation,
-                        TaskSatisfactionStatus::Unsatisfied,
-                    ));
-                    events.extend(
-                        self.materialize_generation_work(
-                            instance,
-                            &slice,
-                            generation + 1,
-                            &mut HashSet::new(),
-                        )
-                        .into_iter()
-                        .map(|task| {
-                            let task_attempt_id = TaskInstance::make_task_attempt_id(
-                                &task.task_def_id,
-                                task.generation_index,
-                            );
-                            WorkflowInstanceEvent::TaskMaterialized {
-                                task_attempt_id,
-                                task,
-                            }
-                        }),
-                    );
+
                     return Ok(VerifierTransition {
-                        events,
+                        outcome: Some(TaskVerifierOutcome::RejectedWithRerun {
+                            feedback: feedback_entry,
+                            updated_state,
+                            verifier_metadata: VerifierAttemptMetadata {
+                                status: VerifierAttemptStatus::Rejected,
+                                decision: Some(VerifierDecision::Continue),
+                                feedback: Some(feedback),
+                                verifier_output: Some(verifier_result.output),
+                                exit_reason: None,
+                            },
+                            unsatisfied_task_attempt_ids: self
+                                .slice_satisfaction_task_attempt_ids(instance, &slice, generation),
+                            materialized_tasks: self.materialize_generation_work(
+                                instance,
+                                &slice,
+                                generation + 1,
+                                &mut HashSet::new(),
+                            ),
+                        }),
                         error_message: None,
                     });
                 }
 
                 if verifier.on_exhausted_continue {
                     if task_output.is_null() && verifier_task.output_schema.is_none() {
-                        events.extend([
-                            WorkflowInstanceEvent::VerifierStateStatusChanged {
-                                verifier_task_id: verifier_task_id.clone(),
+                        return Ok(VerifierTransition {
+                            outcome: Some(TaskVerifierOutcome::Failed {
                                 status: VerifierStateStatus::Failed,
                                 selected_generation: state.selected_generation,
-                                exit_reason: Some("max_iterations_exhausted".to_string()),
-                            },
-                            WorkflowInstanceEvent::WorkflowStatusChanged {
-                                status: WorkflowStatus::Failed,
-                            },
-                            WorkflowInstanceEvent::TaskStatusChanged {
-                                task_attempt_id: verifier_task_attempt_id.to_string(),
-                                status: TaskStatus::Failed,
-                            },
-                            WorkflowInstanceEvent::TaskSatisfactionChanged {
-                                task_attempt_id: verifier_task_attempt_id.to_string(),
-                                satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
-                            },
-                            WorkflowInstanceEvent::TaskVerifierMetadataSet {
-                                task_attempt_id: verifier_task_attempt_id.to_string(),
-                                verifier_metadata: Some(VerifierAttemptMetadata {
+                                exit_reason: "max_iterations_exhausted".to_string(),
+                                verifier_metadata: VerifierAttemptMetadata {
                                     status: VerifierAttemptStatus::ExhaustedFailed,
                                     decision: Some(VerifierDecision::Continue),
                                     feedback: Some(feedback),
@@ -1186,11 +1104,12 @@ impl WorkflowEngine {
                                     exit_reason: Some(
                                         "no schema-valid latest generation output".to_string(),
                                     ),
-                                }),
-                            },
-                        ]);
-                        return Ok(VerifierTransition {
-                            events,
+                                },
+                                unsatisfied_task_attempt_ids: self
+                                    .slice_satisfaction_task_attempt_ids(
+                                        instance, &slice, generation,
+                                    ),
+                            }),
                             error_message: Some(
                                 "Verifier exhausted with continue policy but no schema-valid output"
                                     .to_string(),
@@ -1198,76 +1117,41 @@ impl WorkflowEngine {
                         });
                     }
 
-                    events.push(WorkflowInstanceEvent::VerifierStateStatusChanged {
-                        verifier_task_id: verifier_task_id.clone(),
-                        status: VerifierStateStatus::ExhaustedAccepted,
-                        selected_generation: Some(generation),
-                        exit_reason: Some("max_iterations_exhausted".to_string()),
-                    });
-                    events.push(WorkflowInstanceEvent::TaskVerifierMetadataSet {
-                        task_attempt_id: verifier_task_attempt_id.to_string(),
-                        verifier_metadata: Some(VerifierAttemptMetadata {
-                            status: VerifierAttemptStatus::ExhaustedAccepted,
-                            decision: Some(VerifierDecision::Continue),
-                            feedback: Some(feedback),
-                            verifier_output: Some(verifier_result.output),
-                            exit_reason: Some("max_iterations_exhausted".to_string()),
+                    Ok(VerifierTransition {
+                        outcome: Some(TaskVerifierOutcome::ExhaustedAccepted {
+                            verifier_metadata: VerifierAttemptMetadata {
+                                status: VerifierAttemptStatus::ExhaustedAccepted,
+                                decision: Some(VerifierDecision::Continue),
+                                feedback: Some(feedback),
+                                verifier_output: Some(verifier_result.output),
+                                exit_reason: Some("max_iterations_exhausted".to_string()),
+                            },
+                            satisfied_task_attempt_ids: self
+                                .slice_satisfaction_task_attempt_ids(instance, &slice, generation),
                         }),
-                    });
-                    events.extend(self.slice_satisfaction_events(
-                        instance,
-                        &slice,
-                        generation,
-                        TaskSatisfactionStatus::Satisfied,
-                    ));
+                        error_message: None,
+                    })
                 } else {
-                    events.extend([
-                        WorkflowInstanceEvent::VerifierStateStatusChanged {
-                            verifier_task_id: verifier_task_id.clone(),
+                    Ok(VerifierTransition {
+                        outcome: Some(TaskVerifierOutcome::Failed {
                             status: VerifierStateStatus::ExhaustedFailed,
                             selected_generation: state.selected_generation,
-                            exit_reason: Some("max_iterations_exhausted".to_string()),
-                        },
-                        WorkflowInstanceEvent::WorkflowStatusChanged {
-                            status: WorkflowStatus::Failed,
-                        },
-                        WorkflowInstanceEvent::TaskStatusChanged {
-                            task_attempt_id: verifier_task_attempt_id.to_string(),
-                            status: TaskStatus::Failed,
-                        },
-                        WorkflowInstanceEvent::TaskSatisfactionChanged {
-                            task_attempt_id: verifier_task_attempt_id.to_string(),
-                            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
-                        },
-                        WorkflowInstanceEvent::TaskVerifierMetadataSet {
-                            task_attempt_id: verifier_task_attempt_id.to_string(),
-                            verifier_metadata: Some(VerifierAttemptMetadata {
+                            exit_reason: "max_iterations_exhausted".to_string(),
+                            verifier_metadata: VerifierAttemptMetadata {
                                 status: VerifierAttemptStatus::ExhaustedFailed,
                                 decision: Some(VerifierDecision::Continue),
                                 feedback: Some(feedback),
                                 verifier_output: Some(verifier_result.output),
                                 exit_reason: Some("max_iterations_exhausted".to_string()),
-                            }),
-                        },
-                    ]);
-                    events.extend(self.slice_satisfaction_events(
-                        instance,
-                        &slice,
-                        generation,
-                        TaskSatisfactionStatus::Unsatisfied,
-                    ));
-                    return Ok(VerifierTransition {
-                        events,
+                            },
+                            unsatisfied_task_attempt_ids: self
+                                .slice_satisfaction_task_attempt_ids(instance, &slice, generation),
+                        }),
                         error_message: Some("Verifier exhausted iteration budget".to_string()),
-                    });
+                    })
                 }
             }
         }
-
-        Ok(VerifierTransition {
-            events,
-            error_message: None,
-        })
     }
 }
 

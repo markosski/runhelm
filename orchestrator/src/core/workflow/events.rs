@@ -12,65 +12,101 @@ use serde::{Deserialize, Serialize};
 pub enum WorkflowInstanceEvent {
     /// Initializes a new workflow instance snapshot.
     WorkflowCreated { instance: WorkflowInstance },
-    /// Changes the overall workflow instance status.
-    WorkflowStatusChanged { status: WorkflowStatus },
-    /// Changes the workflow instance pinned worker host.
-    WorkflowPinnedHostChanged {
+    /// Starts execution for a workflow instance.
+    WorkflowRunStarted,
+    /// Completes execution for a workflow instance.
+    WorkflowRunCompleted,
+    /// Fails execution for a workflow instance.
+    WorkflowRunFailed,
+    /// Pauses workflow execution.
+    WorkflowPaused,
+    /// Resumes workflow execution.
+    WorkflowResumed,
+    /// Adds concrete task attempts and verifier state to the workflow instance.
+    TaskAttemptsMaterialized {
+        tasks: Vec<TaskInstance>,
+        verifier_states: Vec<VerifierGenerationState>,
+    },
+    /// Starts a concrete task attempt.
+    TaskAttemptStarted { task_attempt_id: String },
+    /// Records a task failure caused by invalid resolved input.
+    TaskInputValidationFailed {
+        task_attempt_id: String,
+        input_data: Vec<serde_json::Value>,
+        input_mapping: Vec<TaskInputMapping>,
+    },
+    /// Records a task waiting for human input.
+    TaskInputNeeded {
+        task_attempt_id: String,
+        input_data: Vec<serde_json::Value>,
+        input_mapping: Vec<TaskInputMapping>,
+        input_request: String,
+    },
+    /// Records a failed task attempt.
+    TaskAttemptFailed {
+        task_attempt_id: String,
+        input_data: Vec<serde_json::Value>,
+        input_mapping: Vec<TaskInputMapping>,
+        mark_unsatisfied: bool,
+    },
+    /// Records a successful task attempt and any verifier outcome it produced.
+    TaskAttemptSucceeded {
+        task_attempt_id: String,
+        input_data: Vec<serde_json::Value>,
+        input_mapping: Vec<TaskInputMapping>,
+        output_data: Option<serde_json::Value>,
+        satisfaction_status: Option<TaskSatisfactionStatus>,
+        verifier_outcome: Option<TaskVerifierOutcome>,
+    },
+    /// Records accepted human input and the continuation attempt it materialized.
+    HumanInputSubmitted {
+        task_attempt_id: String,
+        submitted_input: serde_json::Value,
+        continuation_task: TaskInstance,
+    },
+    /// Restarts a failed task attempt on the current pinned host.
+    TaskRetryStarted { task_attempt_id: String },
+    /// Restarts a failed task attempt on a target host.
+    TaskForceRetryStarted {
+        task_attempt_id: String,
         previous_host_id: Option<WorkerHostId>,
         target_host_id: WorkerHostId,
         local_context_may_be_lost: bool,
     },
-    /// Adds a concrete task attempt to the workflow instance.
-    TaskMaterialized {
-        task_attempt_id: String,
-        task: TaskInstance,
+    /// Reopens in-flight work after orchestrator startup.
+    StartupRecoveryApplied {
+        status_reset: bool,
+        task_attempt_ids_reset: Vec<String>,
     },
-    /// Changes the status of an existing task attempt.
-    TaskStatusChanged {
-        task_attempt_id: String,
-        status: TaskStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TaskVerifierOutcome {
+    Accepted {
+        verifier_metadata: VerifierAttemptMetadata,
+        satisfied_task_attempt_ids: Vec<String>,
     },
-    /// Replaces the input data for an existing task attempt.
-    TaskInputDataSet {
-        task_attempt_id: String,
-        input_data: Vec<serde_json::Value>,
-    },
-    /// Replaces the upstream input mapping for an existing task attempt.
-    TaskInputMappingSet {
-        task_attempt_id: String,
-        input_mapping: Vec<TaskInputMapping>,
-    },
-    /// Records or clears output data for an existing task attempt.
-    TaskOutputRecorded {
-        task_attempt_id: String,
-        output_data: Option<serde_json::Value>,
-    },
-    /// Changes whether a task attempt is pending, satisfied, or unsatisfied.
-    TaskSatisfactionChanged {
-        task_attempt_id: String,
-        satisfaction_status: TaskSatisfactionStatus,
-    },
-    /// Sets or clears verifier metadata on a task attempt.
-    TaskVerifierMetadataSet {
-        task_attempt_id: String,
-        verifier_metadata: Option<VerifierAttemptMetadata>,
-    },
-    /// Creates or replaces verifier generation state for a verifier task.
-    VerifierStateUpserted {
-        verifier_task_id: String,
-        state: VerifierGenerationState,
-    },
-    /// Appends verifier feedback history for a verifier task.
-    VerifierFeedbackRecorded {
-        verifier_task_id: String,
+    RejectedWithRerun {
         feedback: VerifierFeedbackEntry,
+        updated_state: VerifierGenerationState,
+        verifier_metadata: VerifierAttemptMetadata,
+        unsatisfied_task_attempt_ids: Vec<String>,
+        materialized_tasks: Vec<TaskInstance>,
     },
-    /// Updates verifier state status, selected generation, and exit reason.
-    VerifierStateStatusChanged {
-        verifier_task_id: String,
+    Invalid {
+        verifier_metadata: VerifierAttemptMetadata,
+    },
+    Failed {
         status: VerifierStateStatus,
         selected_generation: Option<u32>,
-        exit_reason: Option<String>,
+        exit_reason: String,
+        verifier_metadata: VerifierAttemptMetadata,
+        unsatisfied_task_attempt_ids: Vec<String>,
+    },
+    ExhaustedAccepted {
+        verifier_metadata: VerifierAttemptMetadata,
+        satisfied_task_attempt_ids: Vec<String>,
     },
 }
 
@@ -114,7 +150,7 @@ pub enum WorkflowInstanceCommand {
         input_mapping: Vec<TaskInputMapping>,
         output_data: Option<serde_json::Value>,
         satisfaction_status: Option<TaskSatisfactionStatus>,
-        verifier_events: Vec<WorkflowInstanceEvent>,
+        verifier_outcome: Option<TaskVerifierOutcome>,
     },
     SubmitHumanInput {
         task_attempt_id: String,
@@ -134,37 +170,6 @@ pub enum WorkflowInstanceCommand {
 pub struct WorkflowTransition {
     pub instance: WorkflowInstance,
     pub events: Vec<WorkflowInstanceEvent>,
-}
-
-struct WorkflowTransitionBuilder {
-    instance: WorkflowInstance,
-    events: Vec<WorkflowInstanceEvent>,
-}
-
-impl WorkflowTransitionBuilder {
-    fn from_instance(instance: WorkflowInstance) -> Self {
-        Self {
-            instance,
-            events: vec![],
-        }
-    }
-
-    fn instance(&self) -> &WorkflowInstance {
-        &self.instance
-    }
-
-    fn record_event(&mut self, event: WorkflowInstanceEvent) -> anyhow::Result<()> {
-        apply_workflow_instance_event(&mut self.instance, &event)?;
-        self.events.push(event);
-        Ok(())
-    }
-
-    fn finish(self) -> WorkflowTransition {
-        WorkflowTransition {
-            instance: self.instance,
-            events: self.events,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,7 +267,7 @@ pub fn handle_workflow_instance_command(
                 input_mapping,
                 output_data,
                 satisfaction_status,
-                verifier_events,
+                verifier_outcome,
             },
         ) => process_record_task_succeeded_command(
             instance,
@@ -271,7 +276,7 @@ pub fn handle_workflow_instance_command(
             input_mapping,
             output_data,
             satisfaction_status,
-            verifier_events,
+            verifier_outcome,
         ),
         (
             Some(instance),
@@ -304,82 +309,296 @@ pub fn apply_workflow_instance_event(
         WorkflowInstanceEvent::WorkflowCreated { .. } => {
             anyhow::bail!("workflow_created can only initialize an empty workflow snapshot")
         }
-        WorkflowInstanceEvent::WorkflowStatusChanged { status } => {
-            instance.status = status.clone();
+        WorkflowInstanceEvent::WorkflowRunStarted => {
+            instance.status = WorkflowStatus::Running;
         }
-        WorkflowInstanceEvent::WorkflowPinnedHostChanged { target_host_id, .. } => {
-            instance.pinned_worker_host = Some(target_host_id.clone());
+        WorkflowInstanceEvent::WorkflowRunCompleted => {
+            instance.status = WorkflowStatus::Completed;
         }
-        WorkflowInstanceEvent::TaskMaterialized {
-            task_attempt_id,
-            task,
+        WorkflowInstanceEvent::WorkflowRunFailed => {
+            instance.status = WorkflowStatus::Failed;
+        }
+        WorkflowInstanceEvent::WorkflowPaused => {
+            instance.status = WorkflowStatus::Paused;
+        }
+        WorkflowInstanceEvent::WorkflowResumed => {
+            instance.status = WorkflowStatus::Pending;
+        }
+        WorkflowInstanceEvent::TaskAttemptsMaterialized {
+            tasks,
+            verifier_states,
         } => {
-            instance.tasks.insert(task_attempt_id.clone(), task.clone());
+            for state in verifier_states {
+                instance
+                    .verifier_states
+                    .insert(state.verifier_task_id.clone(), state.clone());
+            }
+            for task in tasks {
+                let task_attempt_id =
+                    TaskInstance::make_task_attempt_id(&task.task_def_id, task.generation_index);
+                instance.tasks.insert(task_attempt_id, task.clone());
+            }
         }
-        WorkflowInstanceEvent::TaskStatusChanged {
-            task_attempt_id,
-            status,
-        } => {
-            task_mut(instance, task_attempt_id)?.status = status.clone();
+        WorkflowInstanceEvent::TaskAttemptStarted { task_attempt_id } => {
+            task_mut(instance, task_attempt_id)?.status = TaskStatus::Running;
         }
-        WorkflowInstanceEvent::TaskInputDataSet {
+        WorkflowInstanceEvent::TaskInputValidationFailed {
             task_attempt_id,
             input_data,
-        } => {
-            task_mut(instance, task_attempt_id)?.input_data = input_data.clone();
-        }
-        WorkflowInstanceEvent::TaskInputMappingSet {
-            task_attempt_id,
             input_mapping,
         } => {
-            task_mut(instance, task_attempt_id)?.input_mapping = input_mapping.clone();
+            apply_task_inputs(instance, task_attempt_id, input_data, input_mapping)?;
+            let task = task_mut(instance, task_attempt_id)?;
+            task.status = TaskStatus::Failed;
+            task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
+            instance.status = WorkflowStatus::Failed;
         }
-        WorkflowInstanceEvent::TaskOutputRecorded {
+        WorkflowInstanceEvent::TaskInputNeeded {
             task_attempt_id,
+            input_data,
+            input_mapping,
+            input_request,
+        } => {
+            apply_task_inputs(instance, task_attempt_id, input_data, input_mapping)?;
+            task_mut(instance, task_attempt_id)?.status = TaskStatus::InputNeeded {
+                input_request: input_request.clone(),
+            };
+            instance.status = WorkflowStatus::InputNeeded;
+        }
+        WorkflowInstanceEvent::TaskAttemptFailed {
+            task_attempt_id,
+            input_data,
+            input_mapping,
+            mark_unsatisfied,
+        } => {
+            apply_task_inputs(instance, task_attempt_id, input_data, input_mapping)?;
+            let task = task_mut(instance, task_attempt_id)?;
+            task.status = TaskStatus::Failed;
+            if *mark_unsatisfied {
+                task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
+            }
+            instance.status = WorkflowStatus::Failed;
+        }
+        WorkflowInstanceEvent::TaskAttemptSucceeded {
+            task_attempt_id,
+            input_data,
+            input_mapping,
             output_data,
-        } => {
-            task_mut(instance, task_attempt_id)?.output_data = output_data.clone();
-        }
-        WorkflowInstanceEvent::TaskSatisfactionChanged {
-            task_attempt_id,
             satisfaction_status,
+            verifier_outcome,
         } => {
-            task_mut(instance, task_attempt_id)?.satisfaction_status = satisfaction_status.clone();
+            apply_task_inputs(instance, task_attempt_id, input_data, input_mapping)?;
+            let task = task_mut(instance, task_attempt_id)?;
+            task.status = TaskStatus::Completed;
+            if let Some(satisfaction_status) = satisfaction_status {
+                task.satisfaction_status = satisfaction_status.clone();
+            }
+            if let Some(output_data) = output_data {
+                task.output_data = Some(output_data.clone());
+            }
+            if let Some(verifier_outcome) = verifier_outcome {
+                apply_task_verifier_outcome(instance, task_attempt_id, verifier_outcome)?;
+            }
         }
-        WorkflowInstanceEvent::TaskVerifierMetadataSet {
-            task_attempt_id,
-            verifier_metadata,
+        WorkflowInstanceEvent::HumanInputSubmitted {
+            task_attempt_id: _,
+            submitted_input: _,
+            continuation_task,
         } => {
-            task_mut(instance, task_attempt_id)?.verifier_metadata = verifier_metadata.clone();
-        }
-        WorkflowInstanceEvent::VerifierStateUpserted {
-            verifier_task_id,
-            state,
-        } => {
+            let continuation_task_attempt_id = TaskInstance::make_task_attempt_id(
+                &continuation_task.task_def_id,
+                continuation_task.generation_index,
+            );
             instance
-                .verifier_states
-                .insert(verifier_task_id.clone(), state.clone());
+                .tasks
+                .insert(continuation_task_attempt_id, continuation_task.clone());
+            instance.status = WorkflowStatus::Pending;
         }
-        WorkflowInstanceEvent::VerifierFeedbackRecorded {
-            verifier_task_id,
-            feedback,
-        } => {
-            let state = verifier_state_mut(instance, verifier_task_id)?;
-            state.feedback_history.push(feedback.clone());
+        WorkflowInstanceEvent::TaskRetryStarted { task_attempt_id } => {
+            reset_task_for_retry(instance, task_attempt_id)?;
         }
-        WorkflowInstanceEvent::VerifierStateStatusChanged {
-            verifier_task_id,
-            status,
-            selected_generation,
-            exit_reason,
+        WorkflowInstanceEvent::TaskForceRetryStarted {
+            task_attempt_id,
+            target_host_id,
+            ..
         } => {
-            let state = verifier_state_mut(instance, verifier_task_id)?;
-            state.status = status.clone();
-            state.selected_generation = *selected_generation;
-            state.exit_reason = exit_reason.clone();
+            reset_task_for_retry(instance, task_attempt_id)?;
+            instance.pinned_worker_host = Some(target_host_id.clone());
+        }
+        WorkflowInstanceEvent::StartupRecoveryApplied {
+            status_reset,
+            task_attempt_ids_reset,
+        } => {
+            if *status_reset {
+                instance.status = WorkflowStatus::Pending;
+            }
+            for task_attempt_id in task_attempt_ids_reset {
+                task_mut(instance, task_attempt_id)?.status = TaskStatus::Pending;
+            }
         }
     }
 
+    Ok(())
+}
+
+fn apply_task_verifier_outcome(
+    instance: &mut WorkflowInstance,
+    task_attempt_id: &str,
+    outcome: &TaskVerifierOutcome,
+) -> anyhow::Result<()> {
+    let verifier_task = task_ref(instance, task_attempt_id)?;
+    let verifier_task_id = verifier_task.task_def_id.clone();
+    let generation = verifier_task.generation_index;
+
+    match outcome {
+        TaskVerifierOutcome::Accepted {
+            verifier_metadata,
+            satisfied_task_attempt_ids,
+        } => {
+            set_verifier_state_status(
+                instance,
+                &verifier_task_id,
+                VerifierStateStatus::Accepted,
+                Some(generation),
+                Some("complete".to_string()),
+            )?;
+            task_mut(instance, task_attempt_id)?.verifier_metadata =
+                Some(verifier_metadata.clone());
+            set_task_satisfaction(
+                instance,
+                satisfied_task_attempt_ids,
+                TaskSatisfactionStatus::Satisfied,
+            )?;
+        }
+        TaskVerifierOutcome::RejectedWithRerun {
+            feedback,
+            updated_state,
+            verifier_metadata,
+            unsatisfied_task_attempt_ids,
+            materialized_tasks,
+        } => {
+            verifier_state_mut(instance, &verifier_task_id)?
+                .feedback_history
+                .push(feedback.clone());
+            instance
+                .verifier_states
+                .insert(verifier_task_id, updated_state.clone());
+            task_mut(instance, task_attempt_id)?.verifier_metadata =
+                Some(verifier_metadata.clone());
+            set_task_satisfaction(
+                instance,
+                unsatisfied_task_attempt_ids,
+                TaskSatisfactionStatus::Unsatisfied,
+            )?;
+            for task in materialized_tasks {
+                let task_attempt_id =
+                    TaskInstance::make_task_attempt_id(&task.task_def_id, task.generation_index);
+                instance.tasks.insert(task_attempt_id, task.clone());
+            }
+        }
+        TaskVerifierOutcome::Invalid { verifier_metadata } => {
+            instance.status = WorkflowStatus::Failed;
+            let task = task_mut(instance, task_attempt_id)?;
+            task.status = TaskStatus::Failed;
+            task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
+            task.verifier_metadata = Some(verifier_metadata.clone());
+        }
+        TaskVerifierOutcome::Failed {
+            status,
+            selected_generation,
+            exit_reason,
+            verifier_metadata,
+            unsatisfied_task_attempt_ids,
+        } => {
+            set_verifier_state_status(
+                instance,
+                &verifier_task_id,
+                status.clone(),
+                *selected_generation,
+                Some(exit_reason.clone()),
+            )?;
+            instance.status = WorkflowStatus::Failed;
+            let task = task_mut(instance, task_attempt_id)?;
+            task.status = TaskStatus::Failed;
+            task.satisfaction_status = TaskSatisfactionStatus::Unsatisfied;
+            task.verifier_metadata = Some(verifier_metadata.clone());
+            set_task_satisfaction(
+                instance,
+                unsatisfied_task_attempt_ids,
+                TaskSatisfactionStatus::Unsatisfied,
+            )?;
+        }
+        TaskVerifierOutcome::ExhaustedAccepted {
+            verifier_metadata,
+            satisfied_task_attempt_ids,
+        } => {
+            set_verifier_state_status(
+                instance,
+                &verifier_task_id,
+                VerifierStateStatus::ExhaustedAccepted,
+                Some(generation),
+                Some("max_iterations_exhausted".to_string()),
+            )?;
+            task_mut(instance, task_attempt_id)?.verifier_metadata =
+                Some(verifier_metadata.clone());
+            set_task_satisfaction(
+                instance,
+                satisfied_task_attempt_ids,
+                TaskSatisfactionStatus::Satisfied,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn set_verifier_state_status(
+    instance: &mut WorkflowInstance,
+    verifier_task_id: &str,
+    status: VerifierStateStatus,
+    selected_generation: Option<u32>,
+    exit_reason: Option<String>,
+) -> anyhow::Result<()> {
+    let state = verifier_state_mut(instance, verifier_task_id)?;
+    state.status = status;
+    state.selected_generation = selected_generation;
+    state.exit_reason = exit_reason;
+    Ok(())
+}
+
+fn set_task_satisfaction(
+    instance: &mut WorkflowInstance,
+    task_attempt_ids: &[String],
+    satisfaction_status: TaskSatisfactionStatus,
+) -> anyhow::Result<()> {
+    for task_attempt_id in task_attempt_ids {
+        task_mut(instance, task_attempt_id)?.satisfaction_status = satisfaction_status.clone();
+    }
+    Ok(())
+}
+
+fn apply_task_inputs(
+    instance: &mut WorkflowInstance,
+    task_attempt_id: &str,
+    input_data: &[serde_json::Value],
+    input_mapping: &[TaskInputMapping],
+) -> anyhow::Result<()> {
+    let task = task_mut(instance, task_attempt_id)?;
+    task.input_data = input_data.to_vec();
+    task.input_mapping = input_mapping.to_vec();
+    Ok(())
+}
+
+fn reset_task_for_retry(
+    instance: &mut WorkflowInstance,
+    task_attempt_id: &str,
+) -> anyhow::Result<()> {
+    let task = task_mut(instance, task_attempt_id)?;
+    task.status = TaskStatus::Pending;
+    task.satisfaction_status = TaskSatisfactionStatus::Pending;
+    task.output_data = None;
+    task.verifier_metadata = None;
+    instance.status = WorkflowStatus::Pending;
     Ok(())
 }
 
@@ -392,53 +611,56 @@ fn process_create_workflow_command(
     })
 }
 
+fn workflow_transition(
+    mut instance: WorkflowInstance,
+    event: WorkflowInstanceEvent,
+) -> anyhow::Result<WorkflowTransition> {
+    apply_workflow_instance_event(&mut instance, &event)?;
+    Ok(WorkflowTransition {
+        instance,
+        events: vec![event],
+    })
+}
+
 fn process_workflow_status_command(
     instance: WorkflowInstance,
     status: WorkflowStatus,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-    transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged { status })?;
-    Ok(transition.finish())
+    let event = match status {
+        WorkflowStatus::Running => WorkflowInstanceEvent::WorkflowRunStarted,
+        WorkflowStatus::Completed => WorkflowInstanceEvent::WorkflowRunCompleted,
+        WorkflowStatus::Failed => WorkflowInstanceEvent::WorkflowRunFailed,
+        _ => anyhow::bail!("unsupported workflow status command target"),
+    };
+    workflow_transition(instance, event)
 }
 
 fn process_pause_workflow_command(
     instance: WorkflowInstance,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-
-    match transition.instance().status {
+    match instance.status {
         WorkflowStatus::Pending | WorkflowStatus::Running => {
-            transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Paused,
-            })?;
+            workflow_transition(instance, WorkflowInstanceEvent::WorkflowPaused)
         }
-        WorkflowStatus::Paused => {}
+        WorkflowStatus::Paused => Ok(WorkflowTransition {
+            instance,
+            events: vec![],
+        }),
         _ => anyhow::bail!(
             "workflow instance {} cannot be paused from its current status",
-            transition.instance().id
+            instance.id
         ),
     }
-
-    Ok(transition.finish())
 }
 
 fn process_resume_workflow_command(
     instance: WorkflowInstance,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-
-    if transition.instance().status != WorkflowStatus::Paused {
-        anyhow::bail!(
-            "workflow instance {} is not paused",
-            transition.instance().id
-        );
+    if instance.status != WorkflowStatus::Paused {
+        anyhow::bail!("workflow instance {} is not paused", instance.id);
     }
 
-    transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-        status: WorkflowStatus::Pending,
-    })?;
-
-    Ok(transition.finish())
+    workflow_transition(instance, WorkflowInstanceEvent::WorkflowResumed)
 }
 
 fn process_materialize_task_attempts_command(
@@ -450,46 +672,38 @@ fn process_materialize_task_attempts_command(
         anyhow::bail!("materialize task attempts command must include work");
     }
 
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
     let mut planned_task_attempt_ids = std::collections::HashSet::new();
-    for state in verifier_states {
-        let verifier_task_id = state.verifier_task_id.clone();
-        transition.record_event(WorkflowInstanceEvent::VerifierStateUpserted {
-            verifier_task_id,
-            state,
-        })?;
-    }
-    for task in tasks {
+    for task in &tasks {
         let task_attempt_id =
             TaskInstance::make_task_attempt_id(&task.task_def_id, task.generation_index);
-        if transition.instance().tasks.contains_key(&task_attempt_id)
+        if instance.tasks.contains_key(&task_attempt_id)
             || !planned_task_attempt_ids.insert(task_attempt_id.clone())
         {
             anyhow::bail!("task attempt {task_attempt_id} already exists");
         }
-        transition.record_event(WorkflowInstanceEvent::TaskMaterialized {
-            task_attempt_id,
-            task,
-        })?;
     }
 
-    Ok(transition.finish())
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::TaskAttemptsMaterialized {
+            tasks,
+            verifier_states,
+        },
+    )
 }
 
 fn process_start_task_attempt_command(
     instance: WorkflowInstance,
     task_attempt_id: String,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-    let task = task_ref(transition.instance(), &task_attempt_id)?;
+    let task = task_ref(&instance, &task_attempt_id)?;
     if task.status != TaskStatus::Pending {
         anyhow::bail!("task attempt {task_attempt_id} is not pending");
     }
-    transition.record_event(WorkflowInstanceEvent::TaskStatusChanged {
-        task_attempt_id,
-        status: TaskStatus::Running,
-    })?;
-    Ok(transition.finish())
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::TaskAttemptStarted { task_attempt_id },
+    )
 }
 
 fn process_record_task_input_needed_command(
@@ -499,17 +713,16 @@ fn process_record_task_input_needed_command(
     input_mapping: Vec<TaskInputMapping>,
     input_request: String,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-    task_ref(transition.instance(), &task_attempt_id)?;
-    record_task_inputs(&mut transition, &task_attempt_id, input_data, input_mapping)?;
-    transition.record_event(WorkflowInstanceEvent::TaskStatusChanged {
-        task_attempt_id,
-        status: TaskStatus::InputNeeded { input_request },
-    })?;
-    transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-        status: WorkflowStatus::InputNeeded,
-    })?;
-    Ok(transition.finish())
+    task_ref(&instance, &task_attempt_id)?;
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::TaskInputNeeded {
+            task_attempt_id,
+            input_data,
+            input_mapping,
+            input_request,
+        },
+    )
 }
 
 fn process_record_task_failed_command(
@@ -519,23 +732,22 @@ fn process_record_task_failed_command(
     input_mapping: Vec<TaskInputMapping>,
     mark_unsatisfied: bool,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-    task_ref(transition.instance(), &task_attempt_id)?;
-    record_task_inputs(&mut transition, &task_attempt_id, input_data, input_mapping)?;
-    transition.record_event(WorkflowInstanceEvent::TaskStatusChanged {
-        task_attempt_id: task_attempt_id.clone(),
-        status: TaskStatus::Failed,
-    })?;
-    if mark_unsatisfied {
-        transition.record_event(WorkflowInstanceEvent::TaskSatisfactionChanged {
-            task_attempt_id: task_attempt_id.clone(),
-            satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
-        })?;
-    }
-    transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-        status: WorkflowStatus::Failed,
-    })?;
-    Ok(transition.finish())
+    task_ref(&instance, &task_attempt_id)?;
+    let event = if mark_unsatisfied {
+        WorkflowInstanceEvent::TaskInputValidationFailed {
+            task_attempt_id,
+            input_data,
+            input_mapping,
+        }
+    } else {
+        WorkflowInstanceEvent::TaskAttemptFailed {
+            task_attempt_id,
+            input_data,
+            input_mapping,
+            mark_unsatisfied,
+        }
+    };
+    workflow_transition(instance, event)
 }
 
 fn process_record_task_succeeded_command(
@@ -545,35 +757,20 @@ fn process_record_task_succeeded_command(
     input_mapping: Vec<TaskInputMapping>,
     output_data: Option<serde_json::Value>,
     satisfaction_status: Option<TaskSatisfactionStatus>,
-    verifier_events: Vec<WorkflowInstanceEvent>,
+    verifier_outcome: Option<TaskVerifierOutcome>,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-    task_ref(transition.instance(), &task_attempt_id)?;
-    record_task_inputs(&mut transition, &task_attempt_id, input_data, input_mapping)?;
-
-    transition.record_event(WorkflowInstanceEvent::TaskStatusChanged {
-        task_attempt_id: task_attempt_id.clone(),
-        status: TaskStatus::Completed,
-    })?;
-
-    if let Some(satisfaction_status) = satisfaction_status {
-        transition.record_event(WorkflowInstanceEvent::TaskSatisfactionChanged {
-            task_attempt_id: task_attempt_id.clone(),
-            satisfaction_status,
-        })?;
-    }
-
-    if let Some(output_data) = output_data {
-        transition.record_event(WorkflowInstanceEvent::TaskOutputRecorded {
+    task_ref(&instance, &task_attempt_id)?;
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::TaskAttemptSucceeded {
             task_attempt_id,
-            output_data: Some(output_data),
-        })?;
-    }
-
-    for event in verifier_events {
-        transition.record_event(event)?;
-    }
-    Ok(transition.finish())
+            input_data,
+            input_mapping,
+            output_data,
+            satisfaction_status,
+            verifier_outcome,
+        },
+    )
 }
 
 fn process_submit_human_input_command(
@@ -581,16 +778,11 @@ fn process_submit_human_input_command(
     task_attempt_id: String,
     submitted_input: serde_json::Value,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-
-    if transition.instance().status != WorkflowStatus::InputNeeded {
-        anyhow::bail!(
-            "workflow instance {} is not waiting for input",
-            transition.instance().id
-        );
+    if instance.status != WorkflowStatus::InputNeeded {
+        anyhow::bail!("workflow instance {} is not waiting for input", instance.id);
     }
 
-    let task = task_ref(transition.instance(), &task_attempt_id)?;
+    let task = task_ref(&instance, &task_attempt_id)?;
     if !matches!(task.status, TaskStatus::InputNeeded { .. }) {
         anyhow::bail!("task attempt {task_attempt_id} is not waiting for input");
     }
@@ -599,33 +791,28 @@ fn process_submit_human_input_command(
     let task_def_id = task.task_def_id.clone();
     let continuation_task_attempt_id =
         TaskInstance::make_task_attempt_id(&task.task_def_id, continuation_generation);
-    if transition
-        .instance()
-        .tasks
-        .contains_key(&continuation_task_attempt_id)
-    {
+    if instance.tasks.contains_key(&continuation_task_attempt_id) {
         anyhow::bail!("task attempt {continuation_task_attempt_id} already exists");
     }
 
-    transition.record_event(WorkflowInstanceEvent::TaskMaterialized {
-        task_attempt_id: continuation_task_attempt_id,
-        task: TaskInstance {
-            task_def_id,
-            status: TaskStatus::Pending,
-            satisfaction_status: TaskSatisfactionStatus::Pending,
-            human_input: Some(submitted_input),
-            input_data: vec![],
-            input_mapping: vec![],
-            output_data: None,
-            generation_index: continuation_generation,
-            verifier_metadata: None,
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::HumanInputSubmitted {
+            task_attempt_id,
+            submitted_input: submitted_input.clone(),
+            continuation_task: TaskInstance {
+                task_def_id,
+                status: TaskStatus::Pending,
+                satisfaction_status: TaskSatisfactionStatus::Pending,
+                human_input: Some(submitted_input),
+                input_data: vec![],
+                input_mapping: vec![],
+                output_data: None,
+                generation_index: continuation_generation,
+                verifier_metadata: None,
+            },
         },
-    })?;
-    transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-        status: WorkflowStatus::Pending,
-    })?;
-
-    Ok(transition.finish())
+    )
 }
 
 // TODO: investigate if re-try should also create new attempt/generation
@@ -633,9 +820,11 @@ fn process_retry_task_command(
     instance: WorkflowInstance,
     task_attempt_id: String,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-    record_retry_task_events(&mut transition, task_attempt_id)?;
-    Ok(transition.finish())
+    validate_retry_task(&instance, &task_attempt_id)?;
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::TaskRetryStarted { task_attempt_id },
+    )
 }
 
 fn process_force_retry_task_command(
@@ -643,33 +832,31 @@ fn process_force_retry_task_command(
     task_attempt_id: String,
     target_host_id: WorkerHostId,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
-    let previous_host_id = transition.instance().pinned_worker_host.clone();
+    let previous_host_id = instance.pinned_worker_host.clone();
     let expected_context_may_be_lost = previous_host_id.as_ref() != Some(&target_host_id);
 
-    record_retry_task_events(&mut transition, task_attempt_id)?;
-    transition.record_event(WorkflowInstanceEvent::WorkflowPinnedHostChanged {
-        previous_host_id,
-        target_host_id,
-        local_context_may_be_lost: expected_context_may_be_lost,
-    })?;
-
-    Ok(transition.finish())
+    validate_retry_task(&instance, &task_attempt_id)?;
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::TaskForceRetryStarted {
+            task_attempt_id,
+            previous_host_id,
+            target_host_id,
+            local_context_may_be_lost: expected_context_may_be_lost,
+        },
+    )
 }
 
 fn process_startup_recovery_command(
     instance: WorkflowInstance,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut transition = WorkflowTransitionBuilder::from_instance(instance);
+    let mut status_reset = false;
 
-    if transition.instance().status == WorkflowStatus::Running {
-        transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-            status: WorkflowStatus::Pending,
-        })?;
+    if instance.status == WorkflowStatus::Running {
+        status_reset = true;
     }
 
-    let mut running_task_attempt_ids = transition
-        .instance()
+    let mut running_task_attempt_ids = instance
         .tasks
         .iter()
         .filter_map(|(task_attempt_id, task)| {
@@ -678,66 +865,25 @@ fn process_startup_recovery_command(
         .collect::<Vec<_>>();
     running_task_attempt_ids.sort();
 
-    for task_attempt_id in running_task_attempt_ids {
-        transition.record_event(WorkflowInstanceEvent::TaskStatusChanged {
-            task_attempt_id,
-            status: TaskStatus::Pending,
-        })?;
-    }
-
-    Ok(transition.finish())
+    workflow_transition(
+        instance,
+        WorkflowInstanceEvent::StartupRecoveryApplied {
+            status_reset,
+            task_attempt_ids_reset: running_task_attempt_ids,
+        },
+    )
 }
 
-fn record_retry_task_events(
-    transition: &mut WorkflowTransitionBuilder,
-    task_attempt_id: String,
-) -> anyhow::Result<()> {
-    if transition.instance().status != WorkflowStatus::Failed {
+fn validate_retry_task(instance: &WorkflowInstance, task_attempt_id: &str) -> anyhow::Result<()> {
+    if instance.status != WorkflowStatus::Failed {
         anyhow::bail!("workflow instance is not failed");
     }
 
-    let task = task_ref(transition.instance(), &task_attempt_id)?;
+    let task = task_ref(instance, task_attempt_id)?;
     if task.status != TaskStatus::Failed {
         anyhow::bail!("task attempt {task_attempt_id} is not failed");
     }
 
-    transition.record_event(WorkflowInstanceEvent::TaskStatusChanged {
-        task_attempt_id: task_attempt_id.clone(),
-        status: TaskStatus::Pending,
-    })?;
-    transition.record_event(WorkflowInstanceEvent::TaskSatisfactionChanged {
-        task_attempt_id: task_attempt_id.clone(),
-        satisfaction_status: TaskSatisfactionStatus::Pending,
-    })?;
-    transition.record_event(WorkflowInstanceEvent::TaskOutputRecorded {
-        task_attempt_id: task_attempt_id.clone(),
-        output_data: None,
-    })?;
-    transition.record_event(WorkflowInstanceEvent::TaskVerifierMetadataSet {
-        task_attempt_id,
-        verifier_metadata: None,
-    })?;
-    transition.record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-        status: WorkflowStatus::Pending,
-    })?;
-
-    Ok(())
-}
-
-fn record_task_inputs(
-    transition: &mut WorkflowTransitionBuilder,
-    task_attempt_id: &str,
-    input_data: Vec<serde_json::Value>,
-    input_mapping: Vec<TaskInputMapping>,
-) -> anyhow::Result<()> {
-    transition.record_event(WorkflowInstanceEvent::TaskInputDataSet {
-        task_attempt_id: task_attempt_id.to_string(),
-        input_data,
-    })?;
-    transition.record_event(WorkflowInstanceEvent::TaskInputMappingSet {
-        task_attempt_id: task_attempt_id.to_string(),
-        input_mapping,
-    })?;
     Ok(())
 }
 
@@ -804,52 +950,13 @@ mod tests {
         }
     }
 
-    fn apply_events(
-        mut instance: WorkflowInstance,
-        events: &[WorkflowInstanceEvent],
-    ) -> anyhow::Result<WorkflowInstance> {
-        for event in events {
-            apply_workflow_instance_event(&mut instance, event)?;
-        }
-        Ok(instance)
-    }
-
     #[test]
-    fn reducer_applies_ordered_task_events() {
-        let instance = apply_events(
-            instance(),
-            &[
-                WorkflowInstanceEvent::TaskMaterialized {
-                    task_attempt_id: "task-a[1]".to_string(),
-                    task: task(),
-                },
-                WorkflowInstanceEvent::TaskStatusChanged {
-                    task_attempt_id: "task-a[1]".to_string(),
-                    status: TaskStatus::Running,
-                },
-                WorkflowInstanceEvent::TaskStatusChanged {
-                    task_attempt_id: "task-a[1]".to_string(),
-                    status: TaskStatus::Completed,
-                },
-                WorkflowInstanceEvent::TaskStatusChanged {
-                    task_attempt_id: "task-a[1]".to_string(),
-                    status: TaskStatus::Failed,
-                },
-            ],
-        )
-        .unwrap();
-
-        assert_eq!(instance.tasks["task-a[1]"].status, TaskStatus::Failed);
-    }
-
-    #[test]
-    fn reducer_rejects_missing_task_updates() {
+    fn reducer_rejects_missing_task_operation_targets() {
         let mut instance = instance();
         let result = apply_workflow_instance_event(
             &mut instance,
-            &WorkflowInstanceEvent::TaskStatusChanged {
+            &WorkflowInstanceEvent::TaskAttemptStarted {
                 task_attempt_id: "task-a[1]".to_string(),
-                status: TaskStatus::Running,
             },
         );
 
@@ -857,62 +964,92 @@ mod tests {
     }
 
     #[test]
-    fn transition_builder_record_event_updates_working_instance_immediately() {
-        let mut transition = WorkflowTransitionBuilder::from_instance(instance());
-
-        transition
-            .record_event(WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Running,
-            })
-            .unwrap();
-
-        assert_eq!(transition.instance().status, WorkflowStatus::Running);
-        assert_eq!(transition.events.len(), 1);
-
-        let transition = transition.finish();
+    fn workflow_transition_applies_event_to_returned_instance() {
+        let transition =
+            workflow_transition(instance(), WorkflowInstanceEvent::WorkflowRunStarted).unwrap();
         assert_eq!(transition.instance.status, WorkflowStatus::Running);
         assert_eq!(transition.events.len(), 1);
     }
 
     #[test]
-    fn reducer_applies_verifier_events() {
-        let instance = apply_events(
-            instance(),
-            &[
-                WorkflowInstanceEvent::VerifierStateUpserted {
-                    verifier_task_id: "verify".to_string(),
-                    state: VerifierGenerationState {
-                        verifier_task_id: "verify".to_string(),
-                        rerun_start_task_id: "task-a".to_string(),
-                        latest_generation: 1,
-                        selected_generation: None,
-                        feedback_history: vec![],
-                        status: VerifierStateStatus::Running,
-                        exit_reason: None,
+    fn reducer_applies_task_success_verifier_outcome() {
+        let mut instance = instance();
+        instance.tasks.insert(
+            "verify[1]".to_string(),
+            TaskInstance {
+                task_def_id: "verify".to_string(),
+                ..task()
+            },
+        );
+        instance.verifier_states.insert(
+            "verify".to_string(),
+            VerifierGenerationState {
+                verifier_task_id: "verify".to_string(),
+                rerun_start_task_id: "task-a".to_string(),
+                latest_generation: 1,
+                selected_generation: None,
+                feedback_history: vec![],
+                status: VerifierStateStatus::Running,
+                exit_reason: None,
+            },
+        );
+
+        apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::TaskAttemptSucceeded {
+                task_attempt_id: "verify[1]".to_string(),
+                input_data: vec![serde_json::json!({"input": true})],
+                input_mapping: vec![],
+                output_data: Some(serde_json::json!({"ok": true})),
+                satisfaction_status: Some(TaskSatisfactionStatus::Satisfied),
+                verifier_outcome: Some(TaskVerifierOutcome::Accepted {
+                    verifier_metadata: VerifierAttemptMetadata {
+                        status: crate::core::models::VerifierAttemptStatus::Accepted,
+                        decision: None,
+                        feedback: None,
+                        verifier_output: Some(serde_json::json!({"decision": "complete"})),
+                        exit_reason: Some("complete".to_string()),
                     },
-                },
-                WorkflowInstanceEvent::VerifierFeedbackRecorded {
-                    verifier_task_id: "verify".to_string(),
-                    feedback: VerifierFeedbackEntry {
-                        generation_index: 1,
-                        feedback: "retry".to_string(),
-                        verifier_output: serde_json::json!({"decision": "continue"}),
-                    },
-                },
-                WorkflowInstanceEvent::VerifierStateStatusChanged {
-                    verifier_task_id: "verify".to_string(),
-                    status: VerifierStateStatus::Accepted,
-                    selected_generation: Some(1),
-                    exit_reason: None,
-                },
-            ],
+                    satisfied_task_attempt_ids: vec!["verify[1]".to_string()],
+                }),
+            },
         )
         .unwrap();
 
+        let task = &instance.tasks["verify[1]"];
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(task.satisfaction_status, TaskSatisfactionStatus::Satisfied);
+        assert_eq!(task.output_data, Some(serde_json::json!({"ok": true})));
         let state = &instance.verifier_states["verify"];
         assert_eq!(state.status, VerifierStateStatus::Accepted);
-        assert_eq!(state.feedback_history.len(), 1);
+        assert_eq!(state.feedback_history.len(), 0);
         assert_eq!(state.selected_generation, Some(1));
+    }
+
+    #[test]
+    fn reducer_applies_task_materialization_event() {
+        let mut instance = instance();
+
+        apply_workflow_instance_event(
+            &mut instance,
+            &WorkflowInstanceEvent::TaskAttemptsMaterialized {
+                tasks: vec![task()],
+                verifier_states: vec![VerifierGenerationState {
+                    verifier_task_id: "verify".to_string(),
+                    rerun_start_task_id: "task-a".to_string(),
+                    latest_generation: 1,
+                    selected_generation: None,
+                    feedback_history: vec![],
+                    status: VerifierStateStatus::Running,
+                    exit_reason: None,
+                }],
+            },
+        )
+        .unwrap();
+
+        assert!(instance.tasks.contains_key("task-a[1]"));
+        let state = &instance.verifier_states["verify"];
+        assert_eq!(state.status, VerifierStateStatus::Running);
     }
 
     #[test]
@@ -933,7 +1070,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(transition.events.len(), 2);
+        assert_eq!(transition.events.len(), 1);
+        assert!(matches!(
+            &transition.events[0],
+            WorkflowInstanceEvent::StartupRecoveryApplied {
+                status_reset: true,
+                task_attempt_ids_reset,
+            } if task_attempt_ids_reset == &vec!["task-a[1]".to_string()]
+        ));
         assert_eq!(transition.instance.status, WorkflowStatus::Pending);
         assert_eq!(
             transition.instance.tasks["task-a[1]"].status,
@@ -964,17 +1108,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(transition.events.len(), 2);
+        assert_eq!(transition.events.len(), 1);
         assert!(matches!(
             &transition.events[0],
-            WorkflowInstanceEvent::TaskMaterialized { task_attempt_id, .. }
-                if task_attempt_id == "task-a[2]"
-        ));
-        assert!(matches!(
-            &transition.events[1],
-            WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Pending
-            }
+            WorkflowInstanceEvent::HumanInputSubmitted {
+                task_attempt_id,
+                continuation_task,
+                ..
+            } if task_attempt_id == "task-a[1]" && continuation_task.generation_index == 2
         ));
         let instance = transition.instance;
         assert_eq!(instance.status, WorkflowStatus::Pending);
@@ -1022,7 +1163,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(transition.events.len(), 5);
+        assert_eq!(transition.events.len(), 1);
+        assert!(matches!(
+            &transition.events[0],
+            WorkflowInstanceEvent::TaskRetryStarted { task_attempt_id }
+                if task_attempt_id == "task-a[1]"
+        ));
         let instance = transition.instance;
         let task = &instance.tasks["task-a[1]"];
         assert_eq!(instance.status, WorkflowStatus::Pending);
@@ -1079,7 +1225,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(transition.events.len(), 6);
+        assert_eq!(transition.events.len(), 1);
         let instance = transition.instance;
         assert_eq!(instance.status, WorkflowStatus::Pending);
         assert_eq!(
@@ -1144,26 +1290,37 @@ mod tests {
         )
         .unwrap();
 
-        assert!(transition.events.iter().any(|event| matches!(
-            event,
-            WorkflowInstanceEvent::WorkflowPinnedHostChanged {
+        assert!(matches!(
+            &transition.events[0],
+            WorkflowInstanceEvent::TaskForceRetryStarted {
+                task_attempt_id,
                 previous_host_id,
                 target_host_id,
                 local_context_may_be_lost,
-            } if previous_host_id == &Some(WorkerHostId::new("host-a"))
+            } if task_attempt_id == "task-a[1]"
+                && previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-b")
                 && *local_context_may_be_lost
-        )));
+        ));
     }
 
     #[test]
-    fn reducer_applies_workflow_pin_change() {
+    fn reducer_applies_force_retry_pin_change() {
         let mut instance = instance();
+        instance.status = WorkflowStatus::Failed;
         instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
+        instance.tasks.insert(
+            "task-a[1]".to_string(),
+            TaskInstance {
+                status: TaskStatus::Failed,
+                ..task()
+            },
+        );
 
         apply_workflow_instance_event(
             &mut instance,
-            &WorkflowInstanceEvent::WorkflowPinnedHostChanged {
+            &WorkflowInstanceEvent::TaskForceRetryStarted {
+                task_attempt_id: "task-a[1]".to_string(),
                 previous_host_id: Some(WorkerHostId::new("host-a")),
                 target_host_id: WorkerHostId::new("host-b"),
                 local_context_may_be_lost: true,

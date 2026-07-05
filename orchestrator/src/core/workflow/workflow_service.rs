@@ -1049,15 +1049,11 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[0].event,
-            WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Paused
-            }
+            WorkflowInstanceEvent::WorkflowPaused
         ));
         assert!(matches!(
             &events[1].event,
-            WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Pending
-            }
+            WorkflowInstanceEvent::WorkflowResumed
         ));
     }
 
@@ -1397,17 +1393,14 @@ mod tests {
             .get_workflow_instance_events("input-workflow")
             .await
             .unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0].event,
-            WorkflowInstanceEvent::TaskMaterialized { task_attempt_id, .. }
-                if task_attempt_id == "taska[2]"
-        ));
-        assert!(matches!(
-            &events[1].event,
-            WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Pending
-            }
+            WorkflowInstanceEvent::HumanInputSubmitted {
+                task_attempt_id,
+                continuation_task,
+                ..
+            } if task_attempt_id == "taska[1]" && continuation_task.generation_index == 2
         ));
     }
 
@@ -1517,19 +1510,11 @@ mod tests {
             .get_workflow_instance_events("failed-workflow")
             .await
             .unwrap();
-        assert_eq!(events.len(), 5);
+        assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0].event,
-            WorkflowInstanceEvent::TaskStatusChanged {
-                task_attempt_id,
-                status: TaskStatus::Pending
-            } if task_attempt_id == "taska[1]"
-        ));
-        assert!(matches!(
-            &events[4].event,
-            WorkflowInstanceEvent::WorkflowStatusChanged {
-                status: WorkflowStatus::Pending
-            }
+            WorkflowInstanceEvent::TaskRetryStarted { task_attempt_id }
+                if task_attempt_id == "taska[1]"
         ));
     }
 
@@ -1618,14 +1603,16 @@ mod tests {
             .get_workflow_instance_events("failed-workflow")
             .await
             .unwrap();
-        assert_eq!(events.len(), 6);
+        assert_eq!(events.len(), 1);
         assert!(matches!(
-            &events[5].event,
-            WorkflowInstanceEvent::WorkflowPinnedHostChanged {
+            &events[0].event,
+            WorkflowInstanceEvent::TaskForceRetryStarted {
+                task_attempt_id,
                 previous_host_id,
                 target_host_id,
                 local_context_may_be_lost,
-            } if previous_host_id == &Some(WorkerHostId::new("host-a"))
+            } if task_attempt_id == "taska[1]"
+                && previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-b")
                 && *local_context_may_be_lost
         ));
@@ -1676,12 +1663,14 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            &events[5].event,
-            WorkflowInstanceEvent::WorkflowPinnedHostChanged {
+            &events[0].event,
+            WorkflowInstanceEvent::TaskForceRetryStarted {
+                task_attempt_id,
                 previous_host_id,
                 target_host_id,
                 local_context_may_be_lost,
-            } if previous_host_id == &Some(WorkerHostId::new("host-a"))
+            } if task_attempt_id == "taska[1]"
+                && previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-a")
                 && !*local_context_may_be_lost
         ));

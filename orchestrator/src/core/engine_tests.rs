@@ -1044,17 +1044,27 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
 
     assert!(events.iter().any(|record| matches!(
         &record.event,
-        WorkflowInstanceEvent::VerifierFeedbackRecorded {
-            verifier_task_id,
+        crate::core::workflow::events::WorkflowInstanceEvent::TaskAttemptSucceeded {
+            verifier_outcome: Some(
+                crate::core::workflow::events::TaskVerifierOutcome::RejectedWithRerun {
+                    feedback,
+                    ..
+                }
+            ),
             ..
-        } if verifier_task_id == "verify"
+        } if feedback.feedback == "try again"
     )));
     assert!(events.iter().any(|record| matches!(
         &record.event,
-        WorkflowInstanceEvent::TaskMaterialized {
-            task_attempt_id,
+        crate::core::workflow::events::WorkflowInstanceEvent::TaskAttemptSucceeded {
+            verifier_outcome: Some(
+                crate::core::workflow::events::TaskVerifierOutcome::RejectedWithRerun {
+                    materialized_tasks,
+                    ..
+                }
+            ),
             ..
-        } if task_attempt_id == "task-a[2]"
+        } if materialized_tasks.iter().any(|task| task.task_def_id == "task-a" && task.generation_index == 2)
     )));
 
     for task_id in ["task-a[1]", "task-b[1]", "verify[1]"] {
@@ -1708,9 +1718,18 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
             .contains("no schema-valid output")
     );
     let mut instance = instance;
-    for event in &transition.events {
-        crate::core::workflow::events::apply_workflow_instance_event(&mut instance, event).unwrap();
-    }
+    crate::core::workflow::events::apply_workflow_instance_event(
+        &mut instance,
+        &crate::core::workflow::events::WorkflowInstanceEvent::TaskAttemptSucceeded {
+            task_attempt_id: "verify[1]".to_string(),
+            input_data: vec![],
+            input_mapping: vec![],
+            output_data: None,
+            satisfaction_status: None,
+            verifier_outcome: transition.outcome,
+        },
+    )
+    .unwrap();
     assert_eq!(instance.status, WorkflowStatus::Failed);
     assert_eq!(
         instance.verifier_states["verify"].status,

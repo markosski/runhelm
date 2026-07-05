@@ -303,7 +303,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            3
+            2
         );
     }
 
