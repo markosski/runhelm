@@ -2,7 +2,9 @@ use super::*;
 use crate::adapters::fake_executor::FakeExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::core::models::*;
-use crate::core::workflow::models::{DataBinding, TaskDispatchConstraints, WorkerHostId};
+use crate::core::workflow::models::{
+    DataBinding, TaskDispatchConstraints, VerifierFeedbackEntry, WorkerHostId,
+};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::executor::ExecutionResult;
 use crate::ports::executor::ExecutorPort;
@@ -1047,12 +1049,12 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
         crate::core::workflow::events::WorkflowInstanceEvent::TaskAttemptSucceeded {
             verifier_outcome: Some(
                 crate::core::workflow::events::TaskVerifierOutcome::RejectedWithRerun {
-                    feedback,
+                    verifier_metadata,
                     ..
                 }
             ),
             ..
-        } if feedback.feedback == "try again"
+        } if verifier_metadata.feedback.as_deref() == Some("try again")
     )));
     assert!(events.iter().any(|record| matches!(
         &record.event,

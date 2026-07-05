@@ -7,8 +7,8 @@ use crate::core::models::{
 };
 use crate::core::workflow::events::{TaskVerifierOutcome, WorkflowInstanceCommand};
 use crate::core::workflow::models::{
-    TaskDispatchConstraints, VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
-    WorkflowDef, WorkflowInstance, WorkflowStatus,
+    TaskDispatchConstraints, VerifierGenerationState, VerifierStateStatus, WorkflowDef,
+    WorkflowInstance, WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::executor::{ExecutionResult, ExecutorPort};
@@ -1051,24 +1051,9 @@ impl WorkflowEngine {
                     });
                 }
 
-                let feedback_entry = VerifierFeedbackEntry {
-                    generation_index: generation,
-                    feedback: feedback.clone(),
-                    verifier_output: verifier_result.output.clone(),
-                };
-
                 if generation < verifier.max_iterations {
-                    let mut updated_state = state.clone();
-                    updated_state.feedback_history.push(feedback_entry.clone());
-                    updated_state.latest_generation = generation + 1;
-                    updated_state.status = VerifierStateStatus::Running;
-                    updated_state.selected_generation = None;
-                    updated_state.exit_reason = None;
-
                     return Ok(VerifierTransition {
                         outcome: Some(TaskVerifierOutcome::RejectedWithRerun {
-                            feedback: feedback_entry,
-                            updated_state,
                             verifier_metadata: VerifierAttemptMetadata {
                                 status: VerifierAttemptStatus::Rejected,
                                 decision: Some(VerifierDecision::Continue),

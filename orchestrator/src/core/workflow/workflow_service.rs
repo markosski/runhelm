@@ -1398,9 +1398,8 @@ mod tests {
             &events[0].event,
             WorkflowInstanceEvent::HumanInputSubmitted {
                 task_attempt_id,
-                continuation_task,
                 ..
-            } if task_attempt_id == "taska[1]" && continuation_task.generation_index == 2
+            } if task_attempt_id == "taska[1]"
         ));
     }
 
@@ -1608,13 +1607,9 @@ mod tests {
             &events[0].event,
             WorkflowInstanceEvent::TaskForceRetryStarted {
                 task_attempt_id,
-                previous_host_id,
                 target_host_id,
-                local_context_may_be_lost,
             } if task_attempt_id == "taska[1]"
-                && previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-b")
-                && *local_context_may_be_lost
         ));
     }
 
@@ -1666,13 +1661,9 @@ mod tests {
             &events[0].event,
             WorkflowInstanceEvent::TaskForceRetryStarted {
                 task_attempt_id,
-                previous_host_id,
                 target_host_id,
-                local_context_may_be_lost,
             } if task_attempt_id == "taska[1]"
-                && previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-a")
-                && !*local_context_may_be_lost
         ));
     }
 }

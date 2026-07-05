@@ -62,22 +62,16 @@ pub enum WorkflowInstanceEvent {
     HumanInputSubmitted {
         task_attempt_id: String,
         submitted_input: serde_json::Value,
-        continuation_task: TaskInstance,
     },
     /// Restarts a failed task attempt on the current pinned host.
     TaskRetryStarted { task_attempt_id: String },
     /// Restarts a failed task attempt on a target host.
     TaskForceRetryStarted {
         task_attempt_id: String,
-        previous_host_id: Option<WorkerHostId>,
         target_host_id: WorkerHostId,
-        local_context_may_be_lost: bool,
     },
     /// Reopens in-flight work after orchestrator startup.
-    StartupRecoveryApplied {
-        status_reset: bool,
-        task_attempt_ids_reset: Vec<String>,
-    },
+    StartupRecoveryApplied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,8 +82,6 @@ pub enum TaskVerifierOutcome {
         satisfied_task_attempt_ids: Vec<String>,
     },
     RejectedWithRerun {
-        feedback: VerifierFeedbackEntry,
-        updated_state: VerifierGenerationState,
         verifier_metadata: VerifierAttemptMetadata,
         unsatisfied_task_attempt_ids: Vec<String>,
         materialized_tasks: Vec<TaskInstance>,
@@ -401,17 +393,29 @@ pub fn apply_workflow_instance_event(
             }
         }
         WorkflowInstanceEvent::HumanInputSubmitted {
-            task_attempt_id: _,
-            submitted_input: _,
-            continuation_task,
+            task_attempt_id,
+            submitted_input,
         } => {
+            let current_task = task_ref(instance, task_attempt_id)?;
+            let continuation_generation = current_task.generation_index + 1;
+            let continuation_task = TaskInstance {
+                task_def_id: current_task.task_def_id.clone(),
+                status: TaskStatus::Pending,
+                satisfaction_status: TaskSatisfactionStatus::Pending,
+                human_input: Some(submitted_input.clone()),
+                input_data: vec![],
+                input_mapping: vec![],
+                output_data: None,
+                generation_index: continuation_generation,
+                verifier_metadata: None,
+            };
             let continuation_task_attempt_id = TaskInstance::make_task_attempt_id(
                 &continuation_task.task_def_id,
                 continuation_task.generation_index,
             );
             instance
                 .tasks
-                .insert(continuation_task_attempt_id, continuation_task.clone());
+                .insert(continuation_task_attempt_id, continuation_task);
             instance.status = WorkflowStatus::Pending;
         }
         WorkflowInstanceEvent::TaskRetryStarted { task_attempt_id } => {
@@ -425,15 +429,14 @@ pub fn apply_workflow_instance_event(
             reset_task_for_retry(instance, task_attempt_id)?;
             instance.pinned_worker_host = Some(target_host_id.clone());
         }
-        WorkflowInstanceEvent::StartupRecoveryApplied {
-            status_reset,
-            task_attempt_ids_reset,
-        } => {
-            if *status_reset {
+        WorkflowInstanceEvent::StartupRecoveryApplied => {
+            if instance.status == WorkflowStatus::Running {
                 instance.status = WorkflowStatus::Pending;
             }
-            for task_attempt_id in task_attempt_ids_reset {
-                task_mut(instance, task_attempt_id)?.status = TaskStatus::Pending;
+            for task in instance.tasks.values_mut() {
+                if task.status == TaskStatus::Running {
+                    task.status = TaskStatus::Pending;
+                }
             }
         }
     }
@@ -471,18 +474,25 @@ fn apply_task_verifier_outcome(
             )?;
         }
         TaskVerifierOutcome::RejectedWithRerun {
-            feedback,
-            updated_state,
             verifier_metadata,
             unsatisfied_task_attempt_ids,
             materialized_tasks,
         } => {
-            verifier_state_mut(instance, &verifier_task_id)?
-                .feedback_history
-                .push(feedback.clone());
-            instance
-                .verifier_states
-                .insert(verifier_task_id, updated_state.clone());
+            let feedback_entry = VerifierFeedbackEntry {
+                generation_index: generation,
+                feedback: verifier_metadata.feedback.clone().ok_or_else(|| {
+                    anyhow::anyhow!("rejected verifier outcome must include feedback")
+                })?,
+                verifier_output: verifier_metadata.verifier_output.clone().ok_or_else(|| {
+                    anyhow::anyhow!("rejected verifier outcome must include verifier output")
+                })?,
+            };
+            let state = verifier_state_mut(instance, &verifier_task_id)?;
+            state.feedback_history.push(feedback_entry);
+            state.latest_generation = generation + 1;
+            state.status = VerifierStateStatus::Running;
+            state.selected_generation = None;
+            state.exit_reason = None;
             task_mut(instance, task_attempt_id)?.verifier_metadata =
                 Some(verifier_metadata.clone());
             set_task_satisfaction(
@@ -788,7 +798,6 @@ fn process_submit_human_input_command(
     }
 
     let continuation_generation = task.generation_index + 1;
-    let task_def_id = task.task_def_id.clone();
     let continuation_task_attempt_id =
         TaskInstance::make_task_attempt_id(&task.task_def_id, continuation_generation);
     if instance.tasks.contains_key(&continuation_task_attempt_id) {
@@ -800,17 +809,6 @@ fn process_submit_human_input_command(
         WorkflowInstanceEvent::HumanInputSubmitted {
             task_attempt_id,
             submitted_input: submitted_input.clone(),
-            continuation_task: TaskInstance {
-                task_def_id,
-                status: TaskStatus::Pending,
-                satisfaction_status: TaskSatisfactionStatus::Pending,
-                human_input: Some(submitted_input),
-                input_data: vec![],
-                input_mapping: vec![],
-                output_data: None,
-                generation_index: continuation_generation,
-                verifier_metadata: None,
-            },
         },
     )
 }
@@ -832,17 +830,12 @@ fn process_force_retry_task_command(
     task_attempt_id: String,
     target_host_id: WorkerHostId,
 ) -> anyhow::Result<WorkflowTransition> {
-    let previous_host_id = instance.pinned_worker_host.clone();
-    let expected_context_may_be_lost = previous_host_id.as_ref() != Some(&target_host_id);
-
     validate_retry_task(&instance, &task_attempt_id)?;
     workflow_transition(
         instance,
         WorkflowInstanceEvent::TaskForceRetryStarted {
             task_attempt_id,
-            previous_host_id,
             target_host_id,
-            local_context_may_be_lost: expected_context_may_be_lost,
         },
     )
 }
@@ -850,28 +843,7 @@ fn process_force_retry_task_command(
 fn process_startup_recovery_command(
     instance: WorkflowInstance,
 ) -> anyhow::Result<WorkflowTransition> {
-    let mut status_reset = false;
-
-    if instance.status == WorkflowStatus::Running {
-        status_reset = true;
-    }
-
-    let mut running_task_attempt_ids = instance
-        .tasks
-        .iter()
-        .filter_map(|(task_attempt_id, task)| {
-            (task.status == TaskStatus::Running).then_some(task_attempt_id.clone())
-        })
-        .collect::<Vec<_>>();
-    running_task_attempt_ids.sort();
-
-    workflow_transition(
-        instance,
-        WorkflowInstanceEvent::StartupRecoveryApplied {
-            status_reset,
-            task_attempt_ids_reset: running_task_attempt_ids,
-        },
-    )
+    workflow_transition(instance, WorkflowInstanceEvent::StartupRecoveryApplied)
 }
 
 fn validate_retry_task(instance: &WorkflowInstance, task_attempt_id: &str) -> anyhow::Result<()> {
@@ -1073,10 +1045,7 @@ mod tests {
         assert_eq!(transition.events.len(), 1);
         assert!(matches!(
             &transition.events[0],
-            WorkflowInstanceEvent::StartupRecoveryApplied {
-                status_reset: true,
-                task_attempt_ids_reset,
-            } if task_attempt_ids_reset == &vec!["task-a[1]".to_string()]
+            WorkflowInstanceEvent::StartupRecoveryApplied
         ));
         assert_eq!(transition.instance.status, WorkflowStatus::Pending);
         assert_eq!(
@@ -1113,9 +1082,8 @@ mod tests {
             &transition.events[0],
             WorkflowInstanceEvent::HumanInputSubmitted {
                 task_attempt_id,
-                continuation_task,
                 ..
-            } if task_attempt_id == "task-a[1]" && continuation_task.generation_index == 2
+            } if task_attempt_id == "task-a[1]"
         ));
         let instance = transition.instance;
         assert_eq!(instance.status, WorkflowStatus::Pending);
@@ -1294,13 +1262,9 @@ mod tests {
             &transition.events[0],
             WorkflowInstanceEvent::TaskForceRetryStarted {
                 task_attempt_id,
-                previous_host_id,
                 target_host_id,
-                local_context_may_be_lost,
             } if task_attempt_id == "task-a[1]"
-                && previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-b")
-                && *local_context_may_be_lost
         ));
     }
 
@@ -1321,9 +1285,7 @@ mod tests {
             &mut instance,
             &WorkflowInstanceEvent::TaskForceRetryStarted {
                 task_attempt_id: "task-a[1]".to_string(),
-                previous_host_id: Some(WorkerHostId::new("host-a")),
                 target_host_id: WorkerHostId::new("host-b"),
-                local_context_may_be_lost: true,
             },
         )
         .unwrap();
