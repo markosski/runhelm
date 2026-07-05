@@ -2,7 +2,7 @@ use crate::api::models::{WorkflowEvents, WorkflowList};
 use crate::core::models::{
     TaskDef, TaskInstance, TaskStatus, TaskTypeDef, VerifierControlConfig, verifier_decision_schema,
 };
-use crate::core::workflow::events::WorkflowInstanceEvent;
+use crate::core::workflow::events::{WorkflowInstanceCommand, WorkflowInstanceEvent};
 use crate::core::workflow::models::{WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::{
@@ -13,6 +13,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// WorkflowService owns workflow-domain application operations that are not the
+// engine's execution loop: definition validation, instance creation, workflow
+// listing/read models, task result reads, human-input submission, and retry
+// commands. It may read storage directly to assemble API-facing views, but
+// workflow instance state changes go through WorkflowStateManager commands so
+// transition rules stay in the workflow domain layer.
 pub struct WorkflowService {
     storage: Arc<dyn StoragePort + Send + Sync>,
     state_manager: WorkflowStateManager,
@@ -76,9 +82,9 @@ impl WorkflowService {
         };
 
         self.state_manager
-            .commit_events(
+            .commit_command(
                 &instance_id,
-                vec![WorkflowInstanceEvent::WorkflowCreated { instance }],
+                WorkflowInstanceCommand::CreateWorkflow { instance },
             )
             .await?;
 
@@ -145,12 +151,7 @@ impl WorkflowService {
         match instance.status {
             WorkflowStatus::Pending | WorkflowStatus::Running => {
                 self.state_manager
-                    .commit_events_for_instance(
-                        instance,
-                        vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                            status: WorkflowStatus::Paused,
-                        }],
-                    )
+                    .commit_command_for_instance(instance, WorkflowInstanceCommand::PauseWorkflow)
                     .await?;
                 Ok(())
             }
@@ -173,12 +174,7 @@ impl WorkflowService {
         }
 
         self.state_manager
-            .commit_events_for_instance(
-                instance,
-                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                    status: WorkflowStatus::Pending,
-                }],
-            )
+            .commit_command_for_instance(instance, WorkflowInstanceCommand::ResumeWorkflow)
             .await?;
 
         Ok(())
@@ -298,13 +294,12 @@ impl WorkflowService {
         }
 
         self.state_manager
-            .commit_events_for_instance(
+            .commit_command_for_instance(
                 instance,
-                vec![WorkflowInstanceEvent::HumanInputSubmitted {
+                WorkflowInstanceCommand::SubmitHumanInput {
                     task_attempt_id: task_attempt_id.clone(),
-                    continuation_task_attempt_id: next_task_attempt_id.clone(),
                     submitted_input,
-                }],
+                },
             )
             .await?;
 
@@ -321,11 +316,11 @@ impl WorkflowService {
             .await?;
 
         self.state_manager
-            .commit_events_for_instance(
+            .commit_command_for_instance(
                 instance,
-                vec![WorkflowInstanceEvent::TaskRetryRequested {
+                WorkflowInstanceCommand::RetryTask {
                     task_attempt_id: task_attempt_id.clone(),
-                }],
+                },
             )
             .await?;
 
@@ -352,18 +347,14 @@ impl WorkflowService {
         let (instance, task_attempt_id) = self
             .load_retryable_task_instance(workflow_instance_id, task_id)
             .await?;
-        let previous_host_id = instance.pinned_worker_host.clone();
-        let local_context_may_be_lost = previous_host_id.as_ref() != Some(&target_host_id);
 
         self.state_manager
-            .commit_events_for_instance(
+            .commit_command_for_instance(
                 instance,
-                vec![WorkflowInstanceEvent::TaskForceRetryRequested {
+                WorkflowInstanceCommand::ForceRetryTask {
                     task_attempt_id: task_attempt_id.clone(),
-                    previous_host_id,
                     target_host_id,
-                    local_context_may_be_lost,
-                }],
+                },
             )
             .await?;
 
@@ -1406,16 +1397,17 @@ mod tests {
             .get_workflow_instance_events("input-workflow")
             .await
             .unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[0].event,
-            WorkflowInstanceEvent::HumanInputSubmitted {
-                task_attempt_id,
-                continuation_task_attempt_id,
-                submitted_input
-            } if task_attempt_id == "taska[1]"
-                && continuation_task_attempt_id == "taska[2]"
-                && submitted_input == &json!({"answer": "continue"})
+            WorkflowInstanceEvent::TaskMaterialized { task_attempt_id, .. }
+                if task_attempt_id == "taska[2]"
+        ));
+        assert!(matches!(
+            &events[1].event,
+            WorkflowInstanceEvent::WorkflowStatusChanged {
+                status: WorkflowStatus::Pending
+            }
         ));
     }
 
@@ -1525,11 +1517,19 @@ mod tests {
             .get_workflow_instance_events("failed-workflow")
             .await
             .unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 5);
         assert!(matches!(
             &events[0].event,
-            WorkflowInstanceEvent::TaskRetryRequested { task_attempt_id }
-                if task_attempt_id == "taska[1]"
+            WorkflowInstanceEvent::TaskStatusChanged {
+                task_attempt_id,
+                status: TaskStatus::Pending
+            } if task_attempt_id == "taska[1]"
+        ));
+        assert!(matches!(
+            &events[4].event,
+            WorkflowInstanceEvent::WorkflowStatusChanged {
+                status: WorkflowStatus::Pending
+            }
         ));
     }
 
@@ -1618,16 +1618,14 @@ mod tests {
             .get_workflow_instance_events("failed-workflow")
             .await
             .unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 6);
         assert!(matches!(
-            &events[0].event,
-            WorkflowInstanceEvent::TaskForceRetryRequested {
-                task_attempt_id,
+            &events[5].event,
+            WorkflowInstanceEvent::WorkflowPinnedHostChanged {
                 previous_host_id,
                 target_host_id,
                 local_context_may_be_lost,
-            } if task_attempt_id == "taska[1]"
-                && previous_host_id == &Some(WorkerHostId::new("host-a"))
+            } if previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-b")
                 && *local_context_may_be_lost
         ));
@@ -1678,12 +1676,11 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            &events[0].event,
-            WorkflowInstanceEvent::TaskForceRetryRequested {
+            &events[5].event,
+            WorkflowInstanceEvent::WorkflowPinnedHostChanged {
                 previous_host_id,
                 target_host_id,
                 local_context_may_be_lost,
-                ..
             } if previous_host_id == &Some(WorkerHostId::new("host-a"))
                 && target_host_id == &WorkerHostId::new("host-a")
                 && !*local_context_may_be_lost

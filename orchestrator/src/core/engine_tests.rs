@@ -256,11 +256,9 @@ impl ExecutorPort for PauseDuringTaskExecutor {
     ) -> anyhow::Result<ExecutionResult> {
         self.calls.lock().unwrap().push(task.id.clone());
         WorkflowStateManager::new(self.storage.clone())
-            .commit_events(
+            .commit_command(
                 &self.workflow_instance_id,
-                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                    status: WorkflowStatus::Paused,
-                }],
+                WorkflowInstanceCommand::PauseWorkflow,
             )
             .await?;
 
@@ -1709,11 +1707,10 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
             .unwrap()
             .contains("no schema-valid output")
     );
-    let instance = crate::core::workflow::events::reduce_workflow_instance_events(
-        Some(instance),
-        &transition.events,
-    )
-    .unwrap();
+    let mut instance = instance;
+    for event in &transition.events {
+        crate::core::workflow::events::apply_workflow_instance_event(&mut instance, event).unwrap();
+    }
     assert_eq!(instance.status, WorkflowStatus::Failed);
     assert_eq!(
         instance.verifier_states["verify"].status,

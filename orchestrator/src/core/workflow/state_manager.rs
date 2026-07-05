@@ -1,6 +1,7 @@
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::{
-    WorkflowEventRecord, WorkflowInstanceEvent, reduce_workflow_instance_events,
+    WorkflowEventRecord, WorkflowInstanceCommand, WorkflowTransition,
+    handle_workflow_instance_command,
 };
 use crate::core::workflow::models::WorkflowInstance;
 use crate::ports::storage::StoragePort;
@@ -18,48 +19,57 @@ impl WorkflowStateManager {
         Self { storage }
     }
 
-    pub async fn commit_events(
+    pub async fn commit_command(
         &self,
         workflow_instance_id: &str,
-        events: Vec<WorkflowInstanceEvent>,
+        command: WorkflowInstanceCommand,
     ) -> anyhow::Result<WorkflowInstance> {
         let current = self
             .storage
             .get_workflow_instance(workflow_instance_id)
             .await?;
-        self.commit_events_for_current(current, events).await
+        self.commit_command_for_current(current, command).await
     }
 
-    pub async fn commit_events_for_instance(
+    pub async fn commit_command_for_instance(
         &self,
         current: WorkflowInstance,
-        events: Vec<WorkflowInstanceEvent>,
+        command: WorkflowInstanceCommand,
     ) -> anyhow::Result<WorkflowInstance> {
-        self.commit_events_for_current(Some(current), events).await
+        self.commit_command_for_current(Some(current), command)
+            .await
     }
 
-    async fn commit_events_for_current(
+    async fn commit_command_for_current(
         &self,
         current: Option<WorkflowInstance>,
-        events: Vec<WorkflowInstanceEvent>,
+        command: WorkflowInstanceCommand,
     ) -> anyhow::Result<WorkflowInstance> {
-        if events.is_empty() {
-            anyhow::bail!("event batch must not be empty");
-        }
-
         let expected_version = current
             .as_ref()
             .map(|instance| instance.version)
             .unwrap_or(0);
-        let event_count = events.len() as u64;
-        let updated = reduce_workflow_instance_events(current, &events)?;
+        let transition = handle_workflow_instance_command(current, command)?;
+        self.commit_transition(expected_version, transition).await
+    }
+
+    async fn commit_transition(
+        &self,
+        expected_version: u64,
+        transition: WorkflowTransition,
+    ) -> anyhow::Result<WorkflowInstance> {
+        if transition.events.is_empty() {
+            return Ok(transition.instance);
+        }
+
         let updated = WorkflowInstance {
-            version: expected_version + event_count,
-            ..updated
+            version: expected_version + 1,
+            ..transition.instance
         };
 
         let created_time = unix_timestamp_ms()?;
-        let records = events
+        let event_records = transition
+            .events
             .into_iter()
             .map(|event| WorkflowEventRecord {
                 created_time,
@@ -68,7 +78,7 @@ impl WorkflowStateManager {
             .collect();
 
         self.storage
-            .save_workflow_instance(expected_version, records, updated.clone())
+            .save_workflow_instance(expected_version, event_records, updated.clone())
             .await?;
 
         Ok(updated)
@@ -80,7 +90,7 @@ mod tests {
     use super::*;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus};
-    use crate::core::workflow::events::WorkflowInstanceEvent;
+    use crate::core::workflow::events::WorkflowInstanceCommand;
     use crate::core::workflow::models::{WorkflowInstance, WorkflowStatus};
     use crate::ports::storage::{
         StorageError, WorkflowInfoListRequest, WorkflowInfoPageRequest, WorkflowVersionConflict,
@@ -153,11 +163,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_manager_rejects_empty_batches() {
+    async fn state_manager_rejects_empty_materialization_commands() {
         let storage = Arc::new(MemoryStorage::new());
         let manager = WorkflowStateManager::new(storage);
+        let instance = workflow_instance("wf-1", WorkflowStatus::Pending);
 
-        let result = manager.commit_events("wf-1", vec![]).await;
+        let result = manager
+            .commit_command_for_instance(
+                instance,
+                WorkflowInstanceCommand::MaterializeTaskAttempts {
+                    tasks: vec![],
+                    verifier_states: vec![],
+                },
+            )
+            .await;
 
         assert!(result.is_err());
     }
@@ -169,11 +188,11 @@ mod tests {
         let instance = workflow_instance("wf-1", WorkflowStatus::Pending);
 
         manager
-            .commit_events(
+            .commit_command(
                 "wf-1",
-                vec![WorkflowInstanceEvent::WorkflowCreated {
+                WorkflowInstanceCommand::CreateWorkflow {
                     instance: instance.clone(),
-                }],
+                },
             )
             .await
             .unwrap();
@@ -198,18 +217,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_manager_commits_events_for_existing_instance_without_loading_first() {
+    async fn state_manager_commits_command_for_existing_instance_without_loading_first() {
         let storage = Arc::new(MemoryStorage::new());
         let manager = WorkflowStateManager::new(storage.clone());
         let instance = workflow_instance("wf-1", WorkflowStatus::Pending);
 
         manager
-            .commit_events_for_instance(
-                instance,
-                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                    status: WorkflowStatus::Running,
-                }],
-            )
+            .commit_command_for_instance(instance, WorkflowInstanceCommand::StartWorkflowRun)
             .await
             .unwrap();
 
@@ -235,11 +249,11 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let manager = WorkflowStateManager::new(storage.clone());
         manager
-            .commit_events(
+            .commit_command(
                 "wf-1",
-                vec![WorkflowInstanceEvent::WorkflowCreated {
+                WorkflowInstanceCommand::CreateWorkflow {
                     instance: input_needed_instance("wf-1"),
-                }],
+                },
             )
             .await
             .unwrap();
@@ -250,24 +264,22 @@ mod tests {
             .unwrap();
 
         manager
-            .commit_events(
+            .commit_command(
                 "wf-1",
-                vec![WorkflowInstanceEvent::HumanInputSubmitted {
+                WorkflowInstanceCommand::SubmitHumanInput {
                     task_attempt_id: "ask[1]".to_string(),
-                    continuation_task_attempt_id: "ask[2]".to_string(),
                     submitted_input: serde_json::json!("ready"),
-                }],
+                },
             )
             .await
             .unwrap();
 
         let result = manager
-            .commit_events_for_instance(
+            .commit_command_for_instance(
                 stale_engine_snapshot,
-                vec![WorkflowInstanceEvent::TaskStatusChanged {
+                WorkflowInstanceCommand::StartTaskAttempt {
                     task_attempt_id: "independent[1]".to_string(),
-                    status: TaskStatus::Running,
-                }],
+                },
             )
             .await;
 
@@ -291,7 +303,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            2
+            3
         );
     }
 
@@ -300,11 +312,11 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let manager = WorkflowStateManager::new(storage.clone());
         manager
-            .commit_events(
+            .commit_command(
                 "wf-1",
-                vec![WorkflowInstanceEvent::WorkflowCreated {
+                WorkflowInstanceCommand::CreateWorkflow {
                     instance: workflow_instance("wf-1", WorkflowStatus::Pending),
-                }],
+                },
             )
             .await
             .unwrap();
@@ -315,22 +327,15 @@ mod tests {
             .unwrap();
 
         manager
-            .commit_events_for_instance(
+            .commit_command_for_instance(
                 stale_api_snapshot.clone(),
-                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                    status: WorkflowStatus::Running,
-                }],
+                WorkflowInstanceCommand::StartWorkflowRun,
             )
             .await
             .unwrap();
 
         let stale_result = manager
-            .commit_events_for_instance(
-                stale_api_snapshot,
-                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                    status: WorkflowStatus::Paused,
-                }],
-            )
+            .commit_command_for_instance(stale_api_snapshot, WorkflowInstanceCommand::PauseWorkflow)
             .await;
         let stale_error = stale_result.unwrap_err();
         workflow_version_conflict(&stale_error);
@@ -341,12 +346,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let retried = manager
-            .commit_events_for_instance(
-                latest,
-                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                    status: WorkflowStatus::Paused,
-                }],
-            )
+            .commit_command_for_instance(latest, WorkflowInstanceCommand::PauseWorkflow)
             .await
             .unwrap();
 

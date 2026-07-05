@@ -5,7 +5,7 @@ use crate::core::models::{
     TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus,
     VerifierControlConfig, VerifierDecision, VerifierExecutionResult,
 };
-use crate::core::workflow::events::WorkflowInstanceEvent;
+use crate::core::workflow::events::{WorkflowInstanceCommand, WorkflowInstanceEvent};
 use crate::core::workflow::models::{
     TaskDispatchConstraints, VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
     WorkflowDef, WorkflowInstance, WorkflowStatus,
@@ -130,11 +130,9 @@ impl WorkflowEngine {
 
         let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
         workflow_instance = state_manager
-            .commit_events_for_instance(
+            .commit_command_for_instance(
                 workflow_instance,
-                vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                    status: WorkflowStatus::Running,
-                }],
+                WorkflowInstanceCommand::StartWorkflowRun,
             )
             .await?;
 
@@ -142,29 +140,34 @@ impl WorkflowEngine {
 
         // Initialize tasks if not already done
         if workflow_instance.tasks.is_empty() {
-            let mut events = Vec::with_capacity(workflow_def.tasks.len());
+            let mut tasks = Vec::with_capacity(workflow_def.tasks.len());
+
             for task_def in &workflow_def.tasks {
-                let task_attempt_id = TaskInstance::make_task_attempt_id(&task_def.id, 1);
                 let input_data =
                     initial_task_input_data(&workflow_instance, &workflow_def, task_def);
-                events.push(WorkflowInstanceEvent::TaskMaterialized {
-                    task_attempt_id,
-                    task: TaskInstance {
-                        task_def_id: task_def.id.clone(),
-                        status: TaskStatus::Pending,
-                        satisfaction_status: TaskSatisfactionStatus::Pending,
-                        human_input: None,
-                        input_data,
-                        input_mapping: vec![],
-                        output_data: None,
-                        generation_index: 1,
-                        verifier_metadata: None,
-                    },
+
+                tasks.push(TaskInstance {
+                    task_def_id: task_def.id.clone(),
+                    status: TaskStatus::Pending,
+                    satisfaction_status: TaskSatisfactionStatus::Pending,
+                    human_input: None,
+                    input_data,
+                    input_mapping: vec![],
+                    output_data: None,
+                    generation_index: 1,
+                    verifier_metadata: None,
                 });
             }
-            if !events.is_empty() {
+
+            if !tasks.is_empty() {
                 workflow_instance = state_manager
-                    .commit_events_for_instance(workflow_instance, events)
+                    .commit_command_for_instance(
+                        workflow_instance,
+                        WorkflowInstanceCommand::MaterializeTaskAttempts {
+                            tasks,
+                            verifier_states: vec![],
+                        },
+                    )
                     .await?;
             }
         }
@@ -174,14 +177,21 @@ impl WorkflowEngine {
         while progress_made {
             progress_made = false;
 
-            let generation_events = self.materialize_eligible_generation_events(
-                &workflow_instance,
-                &workflow_def,
-                &loop_slices,
-            );
-            if !generation_events.is_empty() {
+            let (generation_tasks, generation_verifier_states) = self
+                .materialize_eligible_generation_work(
+                    &workflow_instance,
+                    &workflow_def,
+                    &loop_slices,
+                );
+            if !generation_tasks.is_empty() || !generation_verifier_states.is_empty() {
                 workflow_instance = state_manager
-                    .commit_events_for_instance(workflow_instance, generation_events)
+                    .commit_command_for_instance(
+                        workflow_instance,
+                        WorkflowInstanceCommand::MaterializeTaskAttempts {
+                            tasks: generation_tasks,
+                            verifier_states: generation_verifier_states,
+                        },
+                    )
                     .await?;
                 progress_made = true;
             }
@@ -222,12 +232,11 @@ impl WorkflowEngine {
                 }
 
                 workflow_instance = state_manager
-                    .commit_events_for_instance(
+                    .commit_command_for_instance(
                         workflow_instance,
-                        vec![WorkflowInstanceEvent::TaskStatusChanged {
+                        WorkflowInstanceCommand::StartTaskAttempt {
                             task_attempt_id: task_attempt_id.clone(),
-                            status: TaskStatus::Running,
-                        }],
+                        },
                     )
                     .await?;
                 progress_made = true;
@@ -258,29 +267,13 @@ impl WorkflowEngine {
 
                 if let Err(error) = validate_inputs(task_def, &inputs) {
                     state_manager
-                        .commit_events_for_instance(
+                        .commit_command_for_instance(
                             workflow_instance,
-                            vec![
-                                WorkflowInstanceEvent::TaskInputDataSet {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    input_data: inputs.clone(),
-                                },
-                                WorkflowInstanceEvent::TaskInputMappingSet {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    input_mapping: resolved_inputs.mapping.clone(),
-                                },
-                                WorkflowInstanceEvent::TaskStatusChanged {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    status: TaskStatus::Failed,
-                                },
-                                WorkflowInstanceEvent::TaskSatisfactionChanged {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
-                                },
-                                WorkflowInstanceEvent::WorkflowStatusChanged {
-                                    status: WorkflowStatus::Failed,
-                                },
-                            ],
+                            WorkflowInstanceCommand::RecordTaskInputValidationFailed {
+                                task_attempt_id: task_attempt_id.clone(),
+                                input_data: inputs.clone(),
+                                input_mapping: resolved_inputs.mapping.clone(),
+                            },
                         )
                         .await?;
                     return Err(error);
@@ -315,58 +308,31 @@ impl WorkflowEngine {
                             // TODO: Consider reducing granularity of those events
                             // i.e. InputNeeded should issue TaskReturnedInputNeeded this should perform all needed internal mutations to task and workflow, statuses etc.
                             ExecutionResult::InputNeeded(input_request) => {
-                                self.commit_task_result_events_preserving_pause(
+                                self.commit_in_flight_task_result_preserving_pause(
                                     &state_manager,
                                     &workflow_inst_id,
                                     workflow_instance,
-                                    vec![
-                                        WorkflowInstanceEvent::TaskInputDataSet {
-                                            task_attempt_id: task_attempt_id.clone(),
-                                            input_data: inputs.clone(),
-                                        },
-                                        WorkflowInstanceEvent::TaskInputMappingSet {
-                                            task_attempt_id: task_attempt_id.clone(),
-                                            input_mapping: resolved_inputs.mapping.clone(),
-                                        },
-                                        WorkflowInstanceEvent::TaskStatusChanged {
-                                            task_attempt_id: task_attempt_id.clone(),
-                                            status: TaskStatus::InputNeeded { input_request },
-                                        },
-                                        WorkflowInstanceEvent::WorkflowStatusChanged {
-                                            status: WorkflowStatus::InputNeeded,
-                                        },
-                                    ],
+                                    WorkflowInstanceCommand::RecordTaskInputNeeded {
+                                        task_attempt_id: task_attempt_id.clone(),
+                                        input_data: inputs.clone(),
+                                        input_mapping: resolved_inputs.mapping.clone(),
+                                        input_request,
+                                    },
                                 )
                                 .await?;
                                 return Ok(());
                             }
                             ExecutionResult::Failure(reason) => {
-                                self.commit_task_result_events_preserving_pause(
+                                self.commit_in_flight_task_result_preserving_pause(
                                     &state_manager,
                                     &workflow_inst_id,
                                     workflow_instance,
-                                    vec![
-                                        WorkflowInstanceEvent::TaskInputDataSet {
-                                            task_attempt_id: task_attempt_id.clone(),
-                                            input_data: inputs.clone(),
-                                        },
-                                        WorkflowInstanceEvent::TaskInputMappingSet {
-                                            task_attempt_id: task_attempt_id.clone(),
-                                            input_mapping: resolved_inputs.mapping.clone(),
-                                        },
-                                        WorkflowInstanceEvent::TaskStatusChanged {
-                                            task_attempt_id: task_attempt_id.clone(),
-                                            status: TaskStatus::Failed,
-                                        },
-                                        WorkflowInstanceEvent::TaskSatisfactionChanged {
-                                            task_attempt_id: task_attempt_id.clone(),
-                                            satisfaction_status:
-                                                TaskSatisfactionStatus::Unsatisfied,
-                                        },
-                                        WorkflowInstanceEvent::WorkflowStatusChanged {
-                                            status: WorkflowStatus::Failed,
-                                        },
-                                    ],
+                                    WorkflowInstanceCommand::RecordTaskFailed {
+                                        task_attempt_id: task_attempt_id.clone(),
+                                        input_data: inputs.clone(),
+                                        input_mapping: resolved_inputs.mapping.clone(),
+                                        mark_unsatisfied: true,
+                                    },
                                 )
                                 .await?;
                                 anyhow::bail!("Task execution failed: {}", reason);
@@ -384,38 +350,20 @@ impl WorkflowEngine {
                         };
 
                         if schema_ok {
-                            let mut events = vec![
-                                WorkflowInstanceEvent::TaskInputDataSet {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    input_data: inputs.clone(),
-                                },
-                                WorkflowInstanceEvent::TaskInputMappingSet {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    input_mapping: resolved_inputs.mapping.clone(),
-                                },
-                                WorkflowInstanceEvent::TaskStatusChanged {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    status: TaskStatus::Completed,
-                                },
-                            ];
-                            if !self.is_task_in_loop_slice(&loop_slices, &task_def.id) {
-                                events.push(WorkflowInstanceEvent::TaskSatisfactionChanged {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    satisfaction_status: TaskSatisfactionStatus::Satisfied,
-                                });
-                            }
+                            let satisfaction_status = (!self
+                                .is_task_in_loop_slice(&loop_slices, &task_def.id))
+                            .then_some(TaskSatisfactionStatus::Satisfied);
+
+                            let output_data = output_schema.is_some().then_some(output.clone());
+                            let mut verifier_events = vec![];
+
                             // Only record output when a schema is declared.
-                            if output_schema.is_some() {
-                                events.push(WorkflowInstanceEvent::TaskOutputRecorded {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    output_data: Some(output.clone()),
-                                });
-                            }
                             if task_verifier(task_def).is_some() {
                                 let verifier_result = match verifier_result_from_output(&output) {
                                     Ok(verifier_result) => verifier_result,
+                                    // TODO: investigate a bit more, looks like we're capturing eventes outside of command processing
                                     Err(error) => {
-                                        events.extend([
+                                        verifier_events.extend([
                                             WorkflowInstanceEvent::TaskStatusChanged {
                                                 task_attempt_id: task_attempt_id.clone(),
                                                 status: TaskStatus::Failed,
@@ -439,16 +387,25 @@ impl WorkflowEngine {
                                                 status: WorkflowStatus::Failed,
                                             },
                                         ]);
-                                        self.commit_task_result_events_preserving_pause(
+
+                                        self.commit_in_flight_task_result_preserving_pause(
                                             &state_manager,
                                             &workflow_inst_id,
                                             workflow_instance,
-                                            events,
+                                            WorkflowInstanceCommand::RecordTaskSucceeded {
+                                                task_attempt_id: task_attempt_id.clone(),
+                                                input_data: inputs.clone(),
+                                                input_mapping: resolved_inputs.mapping.clone(),
+                                                output_data,
+                                                satisfaction_status,
+                                                verifier_events,
+                                            },
                                         )
                                         .await?;
                                         return Err(error);
                                     }
                                 };
+
                                 let verifier_transition = self.verifier_result_transition(
                                     &workflow_instance,
                                     &workflow_def,
@@ -457,17 +414,27 @@ impl WorkflowEngine {
                                     &output,
                                     verifier_result,
                                 )?;
-                                events.extend(verifier_transition.events);
+
+                                verifier_events.extend(verifier_transition.events);
+
                                 workflow_instance = self
-                                    .commit_task_result_events_preserving_pause(
+                                    .commit_in_flight_task_result_preserving_pause(
                                         &state_manager,
                                         &workflow_inst_id,
                                         workflow_instance,
-                                        events,
+                                        WorkflowInstanceCommand::RecordTaskSucceeded {
+                                            task_attempt_id: task_attempt_id.clone(),
+                                            input_data: inputs.clone(),
+                                            input_mapping: resolved_inputs.mapping.clone(),
+                                            output_data,
+                                            satisfaction_status,
+                                            verifier_events,
+                                        },
                                     )
                                     .await?;
+
                                 if self
-                                    .pause_boundary_reached(
+                                    .commit_pause_boundary_after_task_result(
                                         &state_manager,
                                         &workflow_instance,
                                         &workflow_def,
@@ -476,20 +443,29 @@ impl WorkflowEngine {
                                 {
                                     return Ok(());
                                 }
+
                                 if let Some(error_message) = verifier_transition.error_message {
                                     anyhow::bail!(error_message);
                                 }
                             } else {
                                 workflow_instance = self
-                                    .commit_task_result_events_preserving_pause(
+                                    .commit_in_flight_task_result_preserving_pause(
                                         &state_manager,
                                         &workflow_inst_id,
                                         workflow_instance,
-                                        events,
+                                        WorkflowInstanceCommand::RecordTaskSucceeded {
+                                            task_attempt_id: task_attempt_id.clone(),
+                                            input_data: inputs.clone(),
+                                            input_mapping: resolved_inputs.mapping.clone(),
+                                            output_data,
+                                            satisfaction_status,
+                                            verifier_events,
+                                        },
                                     )
                                     .await?;
+
                                 if self
-                                    .pause_boundary_reached(
+                                    .commit_pause_boundary_after_task_result(
                                         &state_manager,
                                         &workflow_instance,
                                         &workflow_def,
@@ -500,58 +476,32 @@ impl WorkflowEngine {
                                 }
                             }
                         } else {
-                            self.commit_task_result_events_preserving_pause(
+                            self.commit_in_flight_task_result_preserving_pause(
                                 &state_manager,
                                 &workflow_inst_id,
                                 workflow_instance,
-                                vec![
-                                    WorkflowInstanceEvent::TaskInputDataSet {
-                                        task_attempt_id: task_attempt_id.clone(),
-                                        input_data: inputs.clone(),
-                                    },
-                                    WorkflowInstanceEvent::TaskInputMappingSet {
-                                        task_attempt_id: task_attempt_id.clone(),
-                                        input_mapping: resolved_inputs.mapping.clone(),
-                                    },
-                                    WorkflowInstanceEvent::TaskStatusChanged {
-                                        task_attempt_id: task_attempt_id.clone(),
-                                        status: TaskStatus::Failed,
-                                    },
-                                    WorkflowInstanceEvent::TaskSatisfactionChanged {
-                                        task_attempt_id: task_attempt_id.clone(),
-                                        satisfaction_status: TaskSatisfactionStatus::Unsatisfied,
-                                    },
-                                    WorkflowInstanceEvent::WorkflowStatusChanged {
-                                        status: WorkflowStatus::Failed,
-                                    },
-                                ],
+                                WorkflowInstanceCommand::RecordTaskFailed {
+                                    task_attempt_id: task_attempt_id.clone(),
+                                    input_data: inputs.clone(),
+                                    input_mapping: resolved_inputs.mapping.clone(),
+                                    mark_unsatisfied: true,
+                                },
                             )
                             .await?;
                             anyhow::bail!("Task output failed schema validation");
                         }
                     }
                     Err(e) => {
-                        self.commit_task_result_events_preserving_pause(
+                        self.commit_in_flight_task_result_preserving_pause(
                             &state_manager,
                             &workflow_inst_id,
                             workflow_instance,
-                            vec![
-                                WorkflowInstanceEvent::TaskInputDataSet {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    input_data: inputs.clone(),
-                                },
-                                WorkflowInstanceEvent::TaskInputMappingSet {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    input_mapping: resolved_inputs.mapping.clone(),
-                                },
-                                WorkflowInstanceEvent::TaskStatusChanged {
-                                    task_attempt_id: task_attempt_id.clone(),
-                                    status: TaskStatus::Failed,
-                                },
-                                WorkflowInstanceEvent::WorkflowStatusChanged {
-                                    status: WorkflowStatus::Failed,
-                                },
-                            ],
+                            WorkflowInstanceCommand::RecordTaskFailed {
+                                task_attempt_id: task_attempt_id.clone(),
+                                input_data: inputs.clone(),
+                                input_mapping: resolved_inputs.mapping.clone(),
+                                mark_unsatisfied: false,
+                            },
                         )
                         .await?;
                         return Err(e.context("Task execution failed"));
@@ -562,11 +512,9 @@ impl WorkflowEngine {
 
         if self.workflow_all_completed(&workflow_instance, &workflow_def) {
             state_manager
-                .commit_events_for_instance(
+                .commit_command_for_instance(
                     workflow_instance,
-                    vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                        status: WorkflowStatus::Completed,
-                    }],
+                    WorkflowInstanceCommand::CompleteWorkflowRun,
                 )
                 .await?;
         }
@@ -585,12 +533,12 @@ impl WorkflowEngine {
     // If a pause races with an in-flight task, record the task result on top of
     // the latest paused snapshot so pause state is preserved. Optimistic
     // locking still rejects any other stale base snapshot.
-    async fn commit_task_result_events_preserving_pause(
+    async fn commit_in_flight_task_result_preserving_pause(
         &self,
         state_manager: &WorkflowStateManager,
         workflow_inst_id: &str,
         workflow_instance: WorkflowInstance,
-        events: Vec<WorkflowInstanceEvent>,
+        command: WorkflowInstanceCommand,
     ) -> anyhow::Result<WorkflowInstance> {
         let current = self.storage.get_workflow_instance(workflow_inst_id).await?;
         let commit_base = match current {
@@ -599,11 +547,12 @@ impl WorkflowEngine {
         };
 
         state_manager
-            .commit_events_for_instance(commit_base, events)
+            .commit_command_for_instance(commit_base, command)
             .await
     }
 
-    async fn pause_boundary_reached(
+    // Commit and pause engine pass if workflow is paused
+    async fn commit_pause_boundary_after_task_result(
         &self,
         state_manager: &WorkflowStateManager,
         workflow_instance: &WorkflowInstance,
@@ -615,11 +564,9 @@ impl WorkflowEngine {
 
         if self.workflow_all_completed(workflow_instance, workflow_def) {
             state_manager
-                .commit_events_for_instance(
+                .commit_command_for_instance(
                     workflow_instance.clone(),
-                    vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                        status: WorkflowStatus::Completed,
-                    }],
+                    WorkflowInstanceCommand::CompleteWorkflowRun,
                 )
                 .await?;
         }
@@ -704,13 +651,14 @@ impl WorkflowEngine {
         seen
     }
 
-    fn materialize_eligible_generation_events(
+    fn materialize_eligible_generation_work(
         &self,
         instance: &WorkflowInstance,
         def: &WorkflowDef,
         loop_slices: &HashMap<String, Vec<String>>,
-    ) -> Vec<WorkflowInstanceEvent> {
-        let mut events = Vec::new();
+    ) -> (Vec<TaskInstance>, Vec<VerifierGenerationState>) {
+        let mut tasks = Vec::new();
+        let mut verifier_states = Vec::new();
         let mut planned_verifier_states = HashSet::new();
         let mut planned_task_attempts = HashSet::new();
 
@@ -720,13 +668,16 @@ impl WorkflowEngine {
             {
                 continue;
             }
+
             let Some(verifier_task) = def.tasks.iter().find(|task| task.id == *verifier_task_id)
             else {
                 continue;
             };
+
             let Some(verifier) = task_verifier(verifier_task) else {
                 continue;
             };
+
             let Some(start_task) = def
                 .tasks
                 .iter()
@@ -745,27 +696,27 @@ impl WorkflowEngine {
                 continue;
             }
 
-            events.push(WorkflowInstanceEvent::VerifierStateUpserted {
+            verifier_states.push(VerifierGenerationState {
                 verifier_task_id: verifier_task_id.clone(),
-                state: VerifierGenerationState {
-                    verifier_task_id: verifier_task_id.clone(),
-                    rerun_start_task_id: verifier_rerun_start_task_id(verifier, verifier_task_id),
-                    latest_generation: 1,
-                    selected_generation: None,
-                    feedback_history: vec![],
-                    status: VerifierStateStatus::Running,
-                    exit_reason: None,
-                },
+                rerun_start_task_id: verifier_rerun_start_task_id(verifier, verifier_task_id),
+                latest_generation: 1,
+                selected_generation: None,
+                feedback_history: vec![],
+                status: VerifierStateStatus::Running,
+                exit_reason: None,
             });
+
             planned_verifier_states.insert(verifier_task_id.clone());
-            events.extend(self.materialize_generation_events(
+
+            tasks.extend(self.materialize_generation_work(
                 instance,
                 slice,
                 1,
                 &mut planned_task_attempts,
             ));
         }
-        events
+
+        (tasks, verifier_states)
     }
 
     fn logical_task_ready_outside_slice(
@@ -789,14 +740,14 @@ impl WorkflowEngine {
             })
     }
 
-    fn materialize_generation_events(
+    fn materialize_generation_work(
         &self,
         workflow_instance: &WorkflowInstance,
         slice: &[String],
         generation_index: u32,
         planned_task_attempts: &mut HashSet<String>,
-    ) -> Vec<WorkflowInstanceEvent> {
-        let mut events = Vec::new();
+    ) -> Vec<TaskInstance> {
+        let mut tasks = Vec::new();
         for task_def_id in slice {
             let task_attempt_id = TaskInstance::make_task_attempt_id(task_def_id, generation_index);
 
@@ -806,22 +757,19 @@ impl WorkflowEngine {
                 continue;
             }
 
-            events.push(WorkflowInstanceEvent::TaskMaterialized {
-                task_attempt_id,
-                task: TaskInstance {
-                    task_def_id: task_def_id.clone(),
-                    status: TaskStatus::Pending,
-                    satisfaction_status: TaskSatisfactionStatus::Pending,
-                    human_input: None,
-                    input_data: vec![],
-                    input_mapping: vec![],
-                    output_data: None,
-                    generation_index,
-                    verifier_metadata: None,
-                },
+            tasks.push(TaskInstance {
+                task_def_id: task_def_id.clone(),
+                status: TaskStatus::Pending,
+                satisfaction_status: TaskSatisfactionStatus::Pending,
+                human_input: None,
+                input_data: vec![],
+                input_mapping: vec![],
+                output_data: None,
+                generation_index,
+                verifier_metadata: None,
             });
         }
-        events
+        tasks
     }
 
     // Responsible for evaluating whether or not this task can be executed,
@@ -1183,12 +1131,25 @@ impl WorkflowEngine {
                         generation,
                         TaskSatisfactionStatus::Unsatisfied,
                     ));
-                    events.extend(self.materialize_generation_events(
-                        instance,
-                        &slice,
-                        generation + 1,
-                        &mut HashSet::new(),
-                    ));
+                    events.extend(
+                        self.materialize_generation_work(
+                            instance,
+                            &slice,
+                            generation + 1,
+                            &mut HashSet::new(),
+                        )
+                        .into_iter()
+                        .map(|task| {
+                            let task_attempt_id = TaskInstance::make_task_attempt_id(
+                                &task.task_def_id,
+                                task.generation_index,
+                            );
+                            WorkflowInstanceEvent::TaskMaterialized {
+                                task_attempt_id,
+                                task,
+                            }
+                        }),
+                    );
                     return Ok(VerifierTransition {
                         events,
                         error_message: None,

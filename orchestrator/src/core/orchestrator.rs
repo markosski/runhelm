@@ -3,7 +3,7 @@ use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
-use crate::core::workflow::events::WorkflowInstanceEvent;
+use crate::core::workflow::events::WorkflowInstanceCommand;
 use crate::core::workflow::models::{
     StartupWorkflowDiscovery, TaskDispatchConstraints, WorkerHostId, WorkflowInfo, WorkflowStatus,
 };
@@ -282,10 +282,7 @@ impl Orchestrator {
 
             if changed {
                 state_manager
-                    .commit_events(
-                        &info.id,
-                        vec![WorkflowInstanceEvent::StartupRecoveryApplied],
-                    )
+                    .commit_command(&info.id, WorkflowInstanceCommand::ApplyStartupRecovery)
                     .await?;
                 recovered += 1;
             }
@@ -335,12 +332,7 @@ impl Orchestrator {
             let pinned_host_id = pinned_host.0.clone();
 
             state_manager
-                .commit_events_for_instance(
-                    instance,
-                    vec![WorkflowInstanceEvent::WorkflowStatusChanged {
-                        status: WorkflowStatus::Failed,
-                    }],
-                )
+                .commit_command_for_instance(instance, WorkflowInstanceCommand::FailWorkflowRun)
                 .await?;
             failed += 1;
             warn!(
