@@ -25,12 +25,24 @@ export default defineConfig({
           items: [
             { label: 'Overview', slug: 'docs' },
             { label: 'Install', slug: 'docs/install' },
+            { label: 'API Reference', slug: 'docs/api-reference' },
           ],
         },
         {
           label: 'Concepts',
           items: [
             { label: 'Workflows', slug: 'docs/concepts/workflows' },
+            {
+              label: 'Tasks',
+              items: [
+                { label: 'Overview', slug: 'docs/concepts/tasks' },
+                { label: 'Agent Tasks', slug: 'docs/concepts/tasks/agents' },
+                { label: 'Function Tasks', slug: 'docs/concepts/tasks/functions' },
+                { label: 'API Call Tasks', slug: 'docs/concepts/tasks/api-calls' },
+              ],
+            },
+            { label: 'Bounded Loops', slug: 'docs/concepts/bounded-loops' },
+            { label: 'Human Input', slug: 'docs/concepts/human-input' },
             { label: 'Architecture', slug: 'docs/concepts/architecture' },
           ],
         },
