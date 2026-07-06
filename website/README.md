@@ -73,6 +73,17 @@ npm run build
 
 No server-side runtime is required for the website or docs search. The site is static HTML, CSS, JavaScript, images, and Pagefind search assets.
 
+Example S3 upload:
+
+```bash
+cd website
+npm install
+npm run build
+aws s3 sync dist/ s3://your-bucket-name/ --delete
+```
+
+Configure the bucket, or CloudFront distribution in front of it, to serve `index.html` as the index document. The generated site should be accessed over HTTP, for example through an S3 website endpoint or CloudFront URL. Opening `dist/index.html` directly with `file://` is not a supported preview path because routing, module scripts, assets, and search files expect an HTTP origin.
+
 ## Content Policy
 
 Keep the website docs focused on user-facing setup, concepts, operations, and examples. The repository-level `docs/` directory remains the source for internal design notes and deeper implementation records. Copy or curate content into Starlight when it is useful for website readers rather than mirroring every internal document.
