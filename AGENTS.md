@@ -17,14 +17,16 @@ This is instructions to the agent on how to do work in this project.
     * Notes - additional information or context that will help with implementation
 
 ## Important!
-- Always update existing documents in docs/ directory with most recent changes made.
+- Always update existing website documentation with most recent changes made, contents are located in website/ directory, using Starling framework for documentation hosting.
+    - Have in mind the website is geared towards software developers who are users of RunHelm and not the RunHelm code contributors - it should not include too much details about internals unless those details are needed to use RunHelm effectively.
+- Any changes to the project that deviate from established specification defined in openspec/specs/ directory, should be called out and with agreements from user specs should be updated together with code change
 - Focus on minimum or reasonable necessary code changes and functionality, i.e. do not add code to future proof design
 - When making changes to existing code favor simplicity over backwards compatibility
 - Do not make assumptions about critical decisions, ask to clarify underspecified information
 - When creating data contracts between modules, APIs, etc. don't future proof models, create models that only include information that is needed and not what may be needed in the future
 
 ## Design Principles
-- TypeScript is prefered to be used due to type safety, wide adoption, ease of integration and dynamic nature (executing arbitrary task code) .
 - Code is organized into highly cohesive modules for ease of maintenance and testing.
 - Components that perform side effects, e.g. persisting data, making network calls are exposed behind interfaces for testability and plugability.
 - Code that does not perform any side effects is organized as functions, optionally taking component interface if they need to perform a side effect.
+- Refrain from duplicating logic in multiple places

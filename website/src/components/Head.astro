@@ -1,0 +1,91 @@
+---
+import DefaultHead from '@astrojs/starlight/components/Head.astro';
+---
+
+<DefaultHead />
+<style>
+  .mermaid,
+  .mermaid-diagram {
+    margin-block: 1.5rem;
+    padding: 1rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    background: var(--sl-color-bg-sidebar);
+  }
+
+  .mermaid {
+    overflow-x: auto;
+  }
+
+  .mermaid-diagram {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+  }
+
+  .mermaid-diagram svg {
+    max-width: 100%;
+    height: auto;
+  }
+</style>
+<script>
+  const getTheme = () =>
+    document.documentElement.dataset.theme === 'light' ? 'default' : 'dark';
+
+  function collectMermaidSources() {
+    const sources = Array.from(document.querySelectorAll('.mermaid'));
+    const codeBlocks = Array.from(
+      document.querySelectorAll('pre > code.language-mermaid, pre[data-language="mermaid"] code')
+    );
+
+    for (const codeBlock of codeBlocks) {
+      const wrapper = document.createElement('pre');
+      wrapper.className = 'mermaid';
+      wrapper.textContent = codeBlock.textContent ?? '';
+      codeBlock.closest('pre')?.replaceWith(wrapper);
+      sources.push(wrapper);
+    }
+
+    return sources;
+  }
+
+  async function renderMermaid() {
+    const sources = collectMermaidSources();
+    if (sources.length === 0) return;
+
+    const { default: mermaid } = await import('mermaid');
+
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: getTheme(),
+    });
+
+    for (const [index, source] of sources.entries()) {
+      if (source.getAttribute('data-processed') === 'true') continue;
+
+      const diagram = source.textContent?.trim();
+      if (!diagram) continue;
+
+      const id = `runhelm-mermaid-${Date.now()}-${index}`;
+      const { svg, bindFunctions } = await mermaid.render(id, diagram);
+      const wrapper = document.createElement('div');
+      wrapper.className = 'mermaid-diagram';
+      wrapper.innerHTML = svg;
+      source.replaceWith(wrapper);
+      bindFunctions?.(wrapper);
+    }
+  }
+
+  function startMermaidRendering() {
+    renderMermaid().catch((error) => {
+      console.error('Failed to render Mermaid diagrams', error);
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startMermaidRendering, { once: true });
+  } else {
+    startMermaidRendering();
+  }
+</script>

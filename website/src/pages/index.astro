@@ -1,0 +1,458 @@
+---
+const installCommand = `curl -fsSL https://raw.githubusercontent.com/markosski/runhelm/main/packaging/install.sh | sh
+runhelm init
+runhelm up`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="RunHelm is an agentic workflow orchestrator for reliable, observable multi-step AI and automation runs."
+    />
+    <title>RunHelm</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #15202b;
+        --muted: #526070;
+        --line: #d9e1ea;
+        --page: #f6f8fb;
+        --panel: #ffffff;
+        --accent: #c54d36;
+        --accent-dark: #963724;
+        --blue: #256da8;
+        --green: #14735f;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: var(--page);
+        line-height: 1.5;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .site-header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        border-bottom: 1px solid rgba(217, 225, 234, 0.82);
+        background: rgba(246, 248, 251, 0.92);
+        backdrop-filter: blur(14px);
+      }
+
+      .nav,
+      main {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding-inline: 24px;
+      }
+
+      .nav {
+        min-height: 68px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .brand img {
+        height: 60px;
+        border-radius: 8px;
+        object-fit: cover;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .nav-links a {
+        padding: 8px 10px;
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .nav-links a:hover {
+        color: var(--ink);
+      }
+
+      main {
+        padding-block: 56px 80px;
+      }
+
+      .hero {
+        min-height: 520px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+        gap: 44px;
+        align-items: center;
+      }
+
+      .eyebrow {
+        margin: 0 0 12px;
+        color: var(--green);
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 720px;
+        font-size: clamp(44px, 7vw, 78px);
+        line-height: 1.04;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: clamp(30px, 4vw, 44px);
+        line-height: 1.1;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        font-size: 18px;
+        line-height: 1.2;
+      }
+
+      .hero-copy {
+        max-width: 680px;
+        margin-top: 22px;
+        color: var(--muted);
+        font-size: 20px;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 30px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 10px 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+
+      .button.primary:hover {
+        background: var(--accent-dark);
+      }
+
+      .system-panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 18px 48px rgba(21, 32, 43, 0.08);
+        overflow: hidden;
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .nodes {
+        display: grid;
+        gap: 12px;
+        padding: 18px;
+      }
+
+      .node {
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-left: 4px solid var(--blue);
+        border-radius: 8px;
+        background: #fbfcfe;
+      }
+
+      .node:nth-child(2) {
+        border-left-color: var(--green);
+      }
+
+      .node:nth-child(3) {
+        border-left-color: var(--accent);
+      }
+
+      .node strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .node span {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .section {
+        padding-top: 72px;
+      }
+
+      .section > p {
+        max-width: 760px;
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+        margin-top: 28px;
+      }
+
+      .feature {
+        min-height: 190px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .feature p {
+        margin-top: 10px;
+        color: var(--muted);
+      }
+
+      .install {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(320px, 1fr);
+        gap: 24px;
+        align-items: start;
+        margin-top: 30px;
+      }
+
+      pre {
+        margin: 0;
+        padding: 18px;
+        overflow-x: auto;
+        border-radius: 8px;
+        background: #111923;
+        color: #eef5fb;
+        font-size: 14px;
+        line-height: 1.65;
+      }
+
+      .install-note {
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .install-note p {
+        color: var(--muted);
+      }
+
+      @media (max-width: 900px) {
+        .hero,
+        .install {
+          grid-template-columns: 1fr;
+        }
+
+        .feature-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 620px) {
+        .nav,
+        main {
+          padding-inline: 18px;
+        }
+
+        .nav {
+          align-items: flex-start;
+          flex-direction: column;
+          padding-block: 14px;
+        }
+
+        main {
+          padding-block-start: 36px;
+        }
+
+        .hero {
+          min-height: auto;
+        }
+
+        .feature-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="/">
+          <img src="/runhelm-logo.png" alt="" />
+          <span>Agentic workflow orchestrator</span>
+        </a>
+        <div class="nav-links">
+          <a href="/docs/">Docs</a>
+          <a href="/docs/install/">Install</a>
+          <a href="https://github.com/markosski/runhelm">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <h1>Run reliable multi-step AI and automation workflows.</h1>
+          <p class="hero-copy">
+            RunHelm composes AI agents, API calls, and code execution into
+            observable, reusable workflow runs with explicit data flow, typed task
+            contracts, resumable state, and isolated workers.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="/docs/">Read the docs</a>
+            <a class="button" href="/docs/install/">Install locally</a>
+          </div>
+        </div>
+
+        <aside class="system-panel" aria-label="RunHelm system model">
+          <div class="panel-head">
+            <span>workflow run</span>
+            <span>observable state</span>
+          </div>
+          <div class="nodes">
+            <div class="node">
+              <strong>Orchestrator</strong>
+              <span>Owns definitions, scheduling, run state, and APIs.</span>
+            </div>
+            <div class="node">
+              <strong>Workers</strong>
+              <span>Execute agents, functions, and API calls in isolated runtimes.</span>
+            </div>
+            <div class="node">
+              <strong>Contracts</strong>
+              <span>Bind task inputs and outputs through schemas and data flow.</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="section">
+        <h2>Built for workflows, not one-off prompts.</h2>
+        <p>
+          RunHelm treats agents as workflow nodes. The same execution model
+          applies to agent tasks, function tasks, and API-call tasks, so each
+          step can be scheduled, inspected, retried, and wired to downstream
+          work.
+        </p>
+
+        <div class="feature-grid">
+          <article class="feature">
+            <h3>Workflow orchestration</h3>
+            <p>
+              Define tasks, dependencies, data bindings, and optional schemas
+              so each run has a deterministic control plane.
+            </p>
+          </article>
+          <article class="feature">
+            <h3>Isolated workers</h3>
+            <p>
+              Workers claim queued tasks and execute agent, function, or API
+              payloads behind a replaceable executor boundary.
+            </p>
+          </article>
+          <article class="feature">
+            <h3>Observable runs</h3>
+            <p>
+              Run state tracks pending, running, input-needed, completed, and
+              failed tasks so operators can understand what happened.
+            </p>
+          </article>
+          <article class="feature">
+            <h3>Resumable model</h3>
+            <p>
+              The orchestrator persists progress events and state transitions
+              so workflows can pause, resume, and continue after feedback.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Start locally with Docker.</h2>
+        <p>
+          The local install path uses a small wrapper and Docker Compose so
+          users can run RunHelm without installing Rust or Node.js.
+        </p>
+        <div class="install">
+          <pre><code>{installCommand}</code></pre>
+          <div class="install-note">
+            <h3>What starts</h3>
+            <p>
+              The generated local environment starts the orchestrator, worker,
+              and frontend services and stores local configuration under
+              <code>~/.runhelm</code>.
+            </p>
+            <div class="actions">
+              <a class="button primary" href="/docs/install/">Install guide</a>
+              <a class="button" href="/docs/concepts/architecture/">Architecture</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
