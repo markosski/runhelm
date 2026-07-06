@@ -22,18 +22,56 @@ The custom homepage lives at `/`. Starlight documentation pages live under `/doc
 
 ## Development
 
+Install dependencies:
+
 ```bash
 cd website
 npm install
+```
+
+Run the local development server:
+
+```bash
 npm run dev
 ```
 
-Build and preview the static site:
+Astro prints the local URL, usually `http://localhost:4321`. The custom homepage is available at `/`, and the documentation site is available at `/docs/`.
+
+## Static Build With Search
+
+Generate the static site:
 
 ```bash
 npm run build
+```
+
+The build writes static output to:
+
+```text
+website/dist/
+```
+
+Starlight builds the documentation search index during `npm run build` using Pagefind. The generated search assets are included in `website/dist/`, so the deployed static site has client-side documentation search without a separate search service.
+
+Preview the generated static site locally:
+
+```bash
 npm run preview
 ```
+
+`npm run preview` serves the already-built `dist/` output. Run `npm run build` again after content or configuration changes before previewing production output.
+
+## Deployment
+
+Deploy the contents of `website/dist/` to any static host after running:
+
+```bash
+cd website
+npm install
+npm run build
+```
+
+No server-side runtime is required for the website or docs search. The site is static HTML, CSS, JavaScript, images, and Pagefind search assets.
 
 ## Content Policy
 
