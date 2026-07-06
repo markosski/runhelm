@@ -28,4 +28,4 @@ RunHelm treats an agent the same way it treats a function or API task: as a node
 
 RunHelm is in an early implementation stage. The repository already includes the core workflow engine, orchestration API skeleton, in-memory storage and queue adapters, a worker-pool-backed executor path, a TypeScript worker runtime, and a frontend dashboard prototype.
 
-Start with the [install guide](/docs/install/) for local setup, then read the [workflow concepts](/docs/concepts/workflows/), [task concepts](/docs/concepts/tasks/), [API reference](/docs/api-reference/), and [architecture overview](/docs/concepts/architecture/).
+Start with the [install guide](/docs/install/) for local setup, then try [Register and Run a Workflow](/docs/guides/register-and-run-workflow/). After that, read the [workflow concepts](/docs/concepts/workflows/), [task concepts](/docs/concepts/tasks/), [workflow YAML reference](/docs/concepts/workflow-yaml/), [API reference](/docs/api-reference/), and [architecture overview](/docs/concepts/architecture/).

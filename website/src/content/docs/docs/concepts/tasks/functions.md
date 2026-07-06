@@ -74,6 +74,8 @@ tasks:
 
 Use registered functions for integrations or helpers that multiple workflows share. A registered function definition contains the same `code` and `dependencies` shape as an inline function, but workflows refer to it by `ref`.
 
+See the [Function Registry](/docs/guides/function-registry/) guide for registration, deletion, and build artifact examples.
+
 ## Dependencies
 
 Function dependencies are npm packages declared by name and version:

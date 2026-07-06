@@ -58,3 +58,7 @@ See [Human Input](/docs/concepts/human-input/) for the `ask_user` flow, API call
 ## Verifier loops
 
 Agent tasks can participate in [bounded loops](/docs/concepts/bounded-loops/) as either the task being revised or the verifier task. Use an Agent verifier when the acceptance decision requires judgment, such as reviewing a generated report, assessing a code change, or deciding whether output satisfies ambiguous requirements.
+
+## Sessions
+
+Agent tasks can reuse conversation state across attempts. See [Agent Sessions](/docs/concepts/agent-sessions/) for `reuse_session` behavior and guidance on when verifier Agents should start fresh.

@@ -48,6 +48,8 @@ The workflow run state is promoted as tasks move through these states. This keep
 
 When a task enters `InputNeeded`, the workflow pauses for human input. See [Human Input](/docs/concepts/human-input/) for the operator flow and API request.
 
+See [Workflow Lifecycle](/docs/concepts/workflow-lifecycle/) for pause, resume, retry, events, and queue behavior.
+
 ## Bounded loops
 
 RunHelm supports bounded verifier-style loops for workflows such as implementation and review. A verifier task can ask the workflow to continue with feedback, causing a previous step to run again up to a configured limit.

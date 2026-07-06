@@ -43,6 +43,9 @@ export default defineConfig({
             },
             { label: 'Bounded Loops', slug: 'docs/concepts/bounded-loops' },
             { label: 'Human Input', slug: 'docs/concepts/human-input' },
+            { label: 'Agent Sessions', slug: 'docs/concepts/agent-sessions' },
+            { label: 'Workflow Lifecycle', slug: 'docs/concepts/workflow-lifecycle' },
+            { label: 'Workflow YAML Reference', slug: 'docs/concepts/workflow-yaml' },
             { label: 'Architecture', slug: 'docs/concepts/architecture' },
           ],
         },
@@ -51,11 +54,28 @@ export default defineConfig({
           items: [
             { label: 'Workspaces', slug: 'docs/operations/workspaces' },
             { label: 'Credentials', slug: 'docs/operations/credentials' },
+            { label: 'Reliability and Side Effects', slug: 'docs/operations/reliability' },
+            { label: 'Worker Host Pinning', slug: 'docs/operations/worker-host-pinning' },
+          ],
+        },
+        {
+          label: 'Guides',
+          items: [
+            { label: 'Register and Run a Workflow', slug: 'docs/guides/register-and-run-workflow' },
+            { label: 'Function Registry', slug: 'docs/guides/function-registry' },
           ],
         },
         {
           label: 'Examples',
           items: [
+            {
+              label: 'Simple Function Workflow',
+              slug: 'docs/examples/simple-function-workflow',
+            },
+            {
+              label: 'Human Input Workflow',
+              slug: 'docs/examples/human-input-workflow',
+            },
             {
               label: 'GitHub Issue to PR',
               slug: 'docs/examples/github-issue-pr-workflow',
