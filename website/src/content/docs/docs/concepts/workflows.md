@@ -7,7 +7,7 @@ A RunHelm workflow is a structured definition of tasks and the data flow between
 
 ## Workflow definitions
 
-A workflow contains:
+A workflow definition contains:
 
 - tasks
 - data bindings between task outputs and downstream task inputs
@@ -54,4 +54,4 @@ See [Workflow Lifecycle](/docs/concepts/workflow-lifecycle/) for pause, resume, 
 
 RunHelm supports bounded verifier-style loops for workflows such as implementation and review. A verifier task can ask the workflow to continue with feedback, causing a previous step to run again up to a configured limit.
 
-Verifier tasks can be Agents, Functions, or API calls. See [Bounded Loops](/docs/concepts/bounded-loops/) for the control-flow contract and guidance on choosing Agent versus Function verifiers.
+Any task kind can be declared as verifier. See [Bounded Loops](/docs/concepts/bounded-loops/) for the control-flow contract and guidance on choosing the type of task as verifier.
