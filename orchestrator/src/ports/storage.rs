@@ -66,6 +66,18 @@ impl From<anyhow::Error> for StorageError {
     }
 }
 
+impl From<serde_json::Error> for StorageError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Backend(value.into())
+    }
+}
+
+impl From<sqlx::Error> for StorageError {
+    fn from(value: sqlx::Error) -> Self {
+        Self::Backend(value.into())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowInstanceFilter {
     Statuses(Vec<WorkflowStatus>),

@@ -346,6 +346,19 @@ Storage adapters SHALL be responsible for persistence mechanics and SHALL NOT ow
 - **THEN** the snapshot has already been produced by core logic
 - **THEN** any summary projection is derived from the committed snapshot, not from event payload semantics
 
+#### Scenario: SQL storage reconstructs aggregate state
+- **WHEN** SQL storage persists workflow instance state across workflow, task, verifier, and event tables
+- **THEN** full workflow instance reads reconstruct the same `WorkflowInstance` aggregate shape used by core workflow code
+- **THEN** memory storage may continue storing the aggregate directly
+
+#### Scenario: SQL storage derives summaries
+- **WHEN** SQL storage serves workflow summary list requests
+- **THEN** it may derive summary fields from workflow instance and task attempt tables instead of storing a separate summary projection table
+
+#### Scenario: SQL storage keeps task status detail
+- **WHEN** SQL storage persists a task attempt whose status carries additional data such as an input request
+- **THEN** the persisted task row stores enough task status detail to reconstruct the full task attempt
+
 ### Requirement: Atomic Transition Batches
 The orchestrator SHALL treat an ordered event batch from one workflow decision as a single transition.
 
