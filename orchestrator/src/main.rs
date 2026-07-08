@@ -12,11 +12,13 @@ use tracing_subscriber::EnvFilter;
 use crate::adapters::docker_executor::DockerExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+use crate::adapters::sql_storage::SqlStorage;
 use crate::adapters::worker_pool::{self, WorkerPool};
 use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
+use crate::ports::storage::StoragePort;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting RunHelm Orchestrator...");
 
     // Initialize dependencies (Adapters)
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = create_storage().await?;
     let worker_pool = WorkerPool::new();
     let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
@@ -94,6 +96,22 @@ fn workflow_queue_capacity() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1024)
+}
+
+async fn create_storage() -> anyhow::Result<Arc<dyn StoragePort + Send + Sync>> {
+    match std::env::var("RUNHELM_STORAGE")
+        .unwrap_or_else(|_| "memory".to_string())
+        .as_str()
+    {
+        "memory" => Ok(Arc::new(MemoryStorage::new())),
+        "sql" => {
+            let database_url = std::env::var("RUNHELM_DATABASE_URL").map_err(|_| {
+                anyhow::anyhow!("RUNHELM_DATABASE_URL is required when RUNHELM_STORAGE=sql")
+            })?;
+            Ok(Arc::new(SqlStorage::connect(&database_url).await?))
+        }
+        value => anyhow::bail!("unsupported RUNHELM_STORAGE value {value}"),
+    }
 }
 
 fn resolve_public_http_addr() -> String {
