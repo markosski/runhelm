@@ -1,6 +1,6 @@
 .workflow-flow {
   width: 100%;
-  height: 390px;
+  height: 430px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(246, 248, 251, 0.9)),
     #f7f9fc;
@@ -12,6 +12,48 @@
 
 .workflow-flow .react-flow__node {
   cursor: default;
+}
+
+.workflow-group {
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  border: 1px solid #cad6e2;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 249, 252, 0.86)),
+    #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.74);
+}
+
+.workflow-group--orchestrator {
+  border-color: color-mix(in srgb, #256da8, #d8e1eb 58%);
+}
+
+.workflow-group--worker {
+  border-color: color-mix(in srgb, #14735f, #d8e1eb 58%);
+}
+
+.workflow-group__label {
+  color: #15202b;
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.workflow-group__detail {
+  max-width: 250px;
+  margin-top: 4px;
+  color: #526070;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.workflow-group-handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #ffffff;
+  background: #526070;
 }
 
 .workflow-node {
@@ -109,7 +151,7 @@
 
 @media (max-width: 620px) {
   .workflow-flow {
-    height: 460px;
+    height: 500px;
   }
 
   .workflow-node {

@@ -20,8 +20,21 @@ type WorkflowNodeData = {
   tone: 'input' | 'function' | 'agent' | 'verify' | 'email';
   targetPosition?: Position;
   sourcePosition?: Position;
+  hasTarget?: boolean;
   hasSource?: boolean;
 };
+
+type GroupNodeData = {
+  label: string;
+  detail: string;
+  tone: 'orchestrator' | 'worker';
+  targetPosition?: Position;
+  sourcePosition?: Position;
+  hasTarget?: boolean;
+  hasSource?: boolean;
+};
+
+type FlowNodeData = WorkflowNodeData | GroupNodeData;
 
 const steps = [
   'input',
@@ -31,33 +44,68 @@ const steps = [
   'email',
 ] as const;
 
-const nodeData: Array<Node<WorkflowNodeData>> = [
+const nodeData: Array<Node<FlowNodeData>> = [
+  {
+    id: 'orchestrator',
+    type: 'groupNode',
+    position: { x: 24, y: 70 },
+    style: { width: 230, height: 210 },
+    data: {
+      label: 'Orchestrator',
+      detail: 'Captures trigger input and schedules work',
+      tone: 'orchestrator',
+      sourcePosition: Position.Top,
+      hasTarget: false,
+    },
+  },
+  {
+    id: 'worker',
+    type: 'groupNode',
+    position: { x: 300, y: 30 },
+    style: { width: 600, height: 300 },
+    data: {
+      label: 'Remote Worker',
+      detail: 'Executes tasks and returns observed results',
+      tone: 'worker',
+      targetPosition: Position.Top,
+      hasSource: false,
+    },
+  },
   {
     id: 'input',
     type: 'workflow',
-    position: { x: 24, y: 116 },
+    parentId: 'orchestrator',
+    extent: 'parent',
+    position: { x: 25, y: 72 },
     data: {
       title: 'User input',
       kind: 'Trigger',
       detail: 'Ticker symbols',
       tone: 'input',
+      hasTarget: false,
+      hasSource: false,
     },
   },
   {
     id: 'stock-data',
     type: 'workflow',
-    position: { x: 274, y: 42 },
+    parentId: 'worker',
+    extent: 'parent',
+    position: { x: 38, y: 74 },
     data: {
       title: 'Pull stock data',
       kind: 'Function Task',
       detail: 'Calls market data URLs',
       tone: 'function',
+      hasTarget: false,
     },
   },
   {
     id: 'summarize',
     type: 'workflow',
-    position: { x: 524, y: 42 },
+    parentId: 'worker',
+    extent: 'parent',
+    position: { x: 285, y: 74 },
     data: {
       title: 'Summarize data',
       kind: 'Agent Task',
@@ -68,7 +116,9 @@ const nodeData: Array<Node<WorkflowNodeData>> = [
   {
     id: 'verify',
     type: 'workflow',
-    position: { x: 524, y: 198 },
+    parentId: 'worker',
+    extent: 'parent',
+    position: { x: 285, y: 186 },
     data: {
       title: 'Verify summary',
       kind: 'Verifier Agent Task',
@@ -81,7 +131,9 @@ const nodeData: Array<Node<WorkflowNodeData>> = [
   {
     id: 'email',
     type: 'workflow',
-    position: { x: 274, y: 198 },
+    parentId: 'worker',
+    extent: 'parent',
+    position: { x: 38, y: 186 },
     data: {
       title: 'Send email',
       kind: 'Function Task',
@@ -95,9 +147,11 @@ const nodeData: Array<Node<WorkflowNodeData>> = [
 
 const edgeData: Edge[] = [
   {
-    id: 'input-stock-data',
-    source: 'input',
-    target: 'stock-data',
+    id: 'orchestrator-worker',
+    source: 'orchestrator',
+    sourceHandle: 'source-top',
+    target: 'worker',
+    targetHandle: 'target-top',
     type: 'smoothstep',
     markerEnd: { type: MarkerType.ArrowClosed },
   },
@@ -128,20 +182,55 @@ const edgeData: Edge[] = [
   },
 ];
 
+function GroupNode({ data }: NodeProps<Node<GroupNodeData>>) {
+  const targetPosition = data.targetPosition ?? Position.Left;
+  const sourcePosition = data.sourcePosition ?? Position.Right;
+  const hasTarget = data.hasTarget ?? true;
+  const hasSource = data.hasSource ?? true;
+
+  return (
+    <div className={`workflow-group workflow-group--${data.tone}`}>
+      {hasTarget ? (
+        <Handle
+          id={`target-${targetPosition.toLowerCase()}`}
+          className="workflow-group-handle"
+          type="target"
+          position={targetPosition}
+          isConnectable={false}
+        />
+      ) : null}
+      {hasSource ? (
+        <Handle
+          id={`source-${sourcePosition.toLowerCase()}`}
+          className="workflow-group-handle"
+          type="source"
+          position={sourcePosition}
+          isConnectable={false}
+        />
+      ) : null}
+      <div className="workflow-group__label">{data.label}</div>
+      <div className="workflow-group__detail">{data.detail}</div>
+    </div>
+  );
+}
+
 function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
   const targetPosition = data.targetPosition ?? Position.Left;
   const sourcePosition = data.sourcePosition ?? Position.Right;
+  const hasTarget = data.hasTarget ?? true;
   const hasSource = data.hasSource ?? true;
 
   return (
     <div className={`workflow-node workflow-node--${data.tone} ${selected ? 'is-active' : ''}`}>
-      <Handle
-        id={`target-${targetPosition.toLowerCase()}`}
-        className="workflow-handle"
-        type="target"
-        position={targetPosition}
-        isConnectable={false}
-      />
+      {hasTarget ? (
+        <Handle
+          id={`target-${targetPosition.toLowerCase()}`}
+          className="workflow-handle"
+          type="target"
+          position={targetPosition}
+          isConnectable={false}
+        />
+      ) : null}
       {hasSource ? (
         <Handle
           id={`source-${sourcePosition.toLowerCase()}`}
@@ -159,6 +248,7 @@ function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
 }
 
 const nodeTypes = {
+  groupNode: GroupNode,
   workflow: WorkflowNode,
 };
 
@@ -177,7 +267,9 @@ export default function WorkflowFlow() {
   const activeEdgeId =
     activeStep === steps.length - 1
       ? undefined
-      : `${steps[activeStep]}-${steps[activeStep + 1]}`;
+      : activeStep === 0
+        ? 'orchestrator-worker'
+        : `${steps[activeStep]}-${steps[activeStep + 1]}`;
 
   const nodes = useMemo(
     () =>
