@@ -1,4 +1,4 @@
-use crate::adapters::worker_pool::WorkerPool;
+use crate::adapters::worker_registry::WorkerRegistry;
 use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
@@ -9,11 +9,11 @@ use crate::core::workflow::models::{
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::core::workflow::workflow_service::WorkflowService;
-use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{
     StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPageRequest,
     WorkflowInstanceFilter,
 };
+use crate::ports::task_dispatch::TaskDispatchPort;
 use crate::ports::workflow_queue::WorkflowQueuePort;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -26,11 +26,11 @@ use tracing::{error, info, warn};
 mod tests;
 
 /// The application layer for the orchestrator.
-/// It coordinates between the workflow engine, storage, and executors.
+/// It coordinates between the workflow engine, storage, task dispatch, and queues.
 pub struct Orchestrator {
     engine: WorkflowEngine,
     storage: Arc<dyn StoragePort + Send + Sync>,
-    executor: Arc<dyn ExecutorPort + Send + Sync>,
+    task_dispatcher: Arc<dyn TaskDispatchPort + Send + Sync>,
     workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
 }
 
@@ -44,15 +44,15 @@ pub struct RetryWorkflowTaskResult {
 impl Orchestrator {
     pub fn new(
         storage: Arc<dyn StoragePort + Send + Sync>,
-        executor: Arc<dyn ExecutorPort + Send + Sync>,
+        task_dispatcher: Arc<dyn TaskDispatchPort + Send + Sync>,
         workflow_queue: Arc<dyn WorkflowQueuePort + Send + Sync>,
     ) -> Self {
-        let engine = WorkflowEngine::new(storage.clone(), executor.clone());
+        let engine = WorkflowEngine::new(storage.clone(), task_dispatcher.clone());
 
         Self {
             engine,
             storage,
-            executor,
+            task_dispatcher,
             workflow_queue,
         }
     }
@@ -63,7 +63,7 @@ impl Orchestrator {
         workflow_def_id: &str,
         task_id: &str,
         inputs: &[serde_json::Value],
-    ) -> anyhow::Result<Option<crate::ports::executor::ExecutionResult>> {
+    ) -> anyhow::Result<Option<crate::ports::task_dispatch::ExecutionResult>> {
         let Some(def) = self.storage.get_workflow_def(workflow_def_id).await? else {
             return Ok(None);
         };
@@ -112,14 +112,14 @@ impl Orchestrator {
         &self,
         workflow_instance_id: &str,
         task_id: &str,
-        worker_pool: &WorkerPool,
+        worker_registry: &WorkerRegistry,
     ) -> anyhow::Result<RetryWorkflowTaskResult> {
         let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
         let pinned_worker_host = workflow_service
             .load_retryable_task_pin(workflow_instance_id, task_id)
             .await?;
 
-        let Some(target_host_id) = worker_pool
+        let Some(target_host_id) = worker_registry
             .select_force_retry_host(pinned_worker_host.as_ref())
             .await
         else {
@@ -358,10 +358,10 @@ impl Orchestrator {
         isolated_execution_id: String,
         task: &TaskDef,
         inputs: &[serde_json::Value],
-    ) -> anyhow::Result<crate::ports::executor::ExecutionResult> {
+    ) -> anyhow::Result<crate::ports::task_dispatch::ExecutionResult> {
         let task = self.resolve_task_function_ref(task).await?;
-        self.executor
-            .execute(
+        self.task_dispatcher
+            .dispatch_task(
                 &isolated_execution_id,
                 &task,
                 inputs,

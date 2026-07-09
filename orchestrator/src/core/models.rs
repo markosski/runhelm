@@ -203,7 +203,7 @@ fn default_generation_index() -> u32 {
     1
 }
 
-/// Transient context passed to the executor for one concrete task attempt.
+/// Transient context passed through task dispatch for one concrete task attempt.
 /// Durable workflow state remains on `TaskInstance`; this model carries the
 /// attempt details the worker needs while executing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

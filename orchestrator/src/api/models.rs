@@ -1,3 +1,4 @@
+use crate::adapters::task_dispatcher::TaskDispatch;
 use crate::core::{
     models::{TaskInputMapping, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata},
     workflow::events::WorkflowEventRecord,
@@ -32,6 +33,17 @@ pub struct WorkflowEvents {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowQueueStatus {
     pub pending: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkerResponse {
+    RegistrationAck {
+        worker_id: String,
+        heartbeat_interval_ms: u64,
+    },
+    NoTask,
+    TaskDispatch(TaskDispatch),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

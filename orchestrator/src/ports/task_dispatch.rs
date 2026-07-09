@@ -12,8 +12,8 @@ pub enum ExecutionResult {
 }
 
 #[async_trait]
-pub trait ExecutorPort {
-    async fn execute(
+pub trait TaskDispatchPort {
+    async fn dispatch_task(
         &self,
         workflow_inst_id: &str,
         task: &TaskDef,

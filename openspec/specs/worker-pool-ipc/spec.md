@@ -42,7 +42,7 @@ Workers SHALL connect to the Orchestrator's socket and provide a registration me
 
 #### Scenario: Successful worker registration
 - **WHEN** a Worker process connects to the socket and sends a valid registration JSON with worker ID and host ID
-- **THEN** the Orchestrator adds that connection to its active worker pool and marks it as "Idle"
+- **THEN** the Orchestrator records that worker identity in the worker registry
 - **AND** the Orchestrator returns the heartbeat interval the worker must use
 
 #### Scenario: Worker registers stable host identity
@@ -82,23 +82,23 @@ Workers SHALL maintain registration by sending heartbeat messages that join or r
 
 #### Scenario: Multiple workers share host
 - **WHEN** multiple registered workers advertise the same host ID
-- **THEN** each worker is eligible to execute tasks for workflow instances pinned to that host ID
+- **THEN** each worker is eligible to claim tasks for workflow instances pinned to that host ID
 
 ### Requirement: Exclusive Task Dispatching
-The Orchestrator SHALL dispatch a task to exactly one idle worker from the pool whose registration satisfies the task's workflow pin and capability constraints.
+The Orchestrator SHALL dispatch a task to exactly one claiming worker whose registration satisfies the task's workflow pin and capability constraints.
 
-#### Scenario: Dispatching a task to an idle worker
-- **WHEN** the Workflow Engine needs to execute a task
-- **AND** there is at least one "Idle" worker in the pool that satisfies the task constraints
-- **THEN** the Orchestrator sends the task JSON to one matching worker's socket and marks that worker as "Busy"
+#### Scenario: Dispatching a task to a matching worker
+- **WHEN** the Workflow Engine needs to dispatch a task
+- **AND** a worker that satisfies the task constraints claims work
+- **THEN** the Orchestrator sends the task JSON to that matching worker and records an active dispatch lease
 
 #### Scenario: No matching worker is available
-- **WHEN** the Workflow Engine needs to execute a task
-- **AND** no idle worker satisfies the task constraints
+- **WHEN** the Workflow Engine needs to dispatch a task
+- **AND** no claiming worker satisfies the task constraints
 - **THEN** the Orchestrator leaves the task undispatched and observable as waiting for eligible capacity
 
 #### Scenario: Pinned workflow host is unavailable
-- **WHEN** the Workflow Engine needs to execute a task for a pinned workflow instance
+- **WHEN** the Workflow Engine needs to dispatch_task a task for a pinned workflow instance
 - **AND** no eligible registered worker currently advertises the pinned host ID
 - **THEN** the Orchestrator does not dispatch the task to another host
 

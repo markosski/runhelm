@@ -3,7 +3,7 @@ title: Tasks
 description: Understand the task types that make up RunHelm workflows.
 ---
 
-Tasks are the executable nodes in a RunHelm workflow. Each task receives structured inputs, runs through a worker executor, and returns structured output for downstream tasks.
+Tasks are the executable nodes in a RunHelm workflow. Each task receives structured inputs, runs on a worker runtime, and returns structured output for downstream tasks.
 
 A workflow can combine different task kinds in one run:
 
@@ -39,7 +39,7 @@ tasks:
 Common task fields include:
 
 - `id`: the task identifier used by data bindings, results, and status views.
-- `kind`: the executor-specific task configuration.
+- `kind`: the task-kind-specific configuration.
 - `input_schemas`: optional JSON Schemas for the task inputs.
 - `output_schema`: optional JSON Schema for the task output.
 - `required_credentials`: named credentials the worker must resolve before execution.

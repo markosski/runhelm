@@ -1,8 +1,9 @@
 use super::*;
-use crate::adapters::fake_executor::FakeExecutor;
+use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-use crate::adapters::worker_pool::{WorkerPool, WorkerRegistration};
+use crate::adapters::worker_registry::WorkerRegistration;
+use crate::adapters::worker_registry::WorkerRegistry;
 use crate::api::models::WorkflowQueueStatus;
 use crate::core::function_service::FunctionService;
 use crate::core::models::{
@@ -11,9 +12,9 @@ use crate::core::models::{
 };
 use crate::core::workflow::models::{DataBinding, WorkerHostId, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
-use crate::ports::executor::ExecutionResult;
-use crate::ports::executor::ExecutorPort;
 use crate::ports::storage::{StoragePort, TaskResult};
+use crate::ports::task_dispatch::ExecutionResult;
+use crate::ports::task_dispatch::TaskDispatchPort;
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
@@ -24,7 +25,7 @@ use tokio::time::{Duration, sleep};
 fn orchestrator() -> Orchestrator {
     Orchestrator::new(
         Arc::new(MemoryStorage::new()),
-        Arc::new(FakeExecutor::new()),
+        Arc::new(FakeTaskDispatcher::new()),
         Arc::new(MemoryWorkflowQueue::new(10)),
     )
 }
@@ -34,7 +35,7 @@ fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionServi
     (
         Orchestrator::new(
             storage.clone(),
-            Arc::new(FakeExecutor::new()),
+            Arc::new(FakeTaskDispatcher::new()),
             Arc::new(MemoryWorkflowQueue::new(10)),
         ),
         WorkflowService::new(storage.clone()),
@@ -42,13 +43,13 @@ fn orchestrator_with_services() -> (Orchestrator, WorkflowService, FunctionServi
     )
 }
 
-struct CountingExecutor {
+struct CountingDispatcher {
     active: AtomicUsize,
     max_active: AtomicUsize,
     delay: Duration,
 }
 
-impl CountingExecutor {
+impl CountingDispatcher {
     fn new(delay: Duration) -> Self {
         Self {
             active: AtomicUsize::new(0),
@@ -63,8 +64,8 @@ impl CountingExecutor {
 }
 
 #[async_trait]
-impl ExecutorPort for CountingExecutor {
-    async fn execute(
+impl TaskDispatchPort for CountingDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         _task: &TaskDef,
@@ -86,11 +87,11 @@ struct RecordedIsolatedExecution {
     task_id: String,
 }
 
-struct RecordingIsolatedExecutor {
+struct RecordingIsolatedDispatcher {
     records: StdMutex<Vec<RecordedIsolatedExecution>>,
 }
 
-impl RecordingIsolatedExecutor {
+impl RecordingIsolatedDispatcher {
     fn new() -> Self {
         Self {
             records: StdMutex::new(vec![]),
@@ -103,8 +104,8 @@ impl RecordingIsolatedExecutor {
 }
 
 #[async_trait]
-impl ExecutorPort for RecordingIsolatedExecutor {
-    async fn execute(
+impl TaskDispatchPort for RecordingIsolatedDispatcher {
+    async fn dispatch_task(
         &self,
         workflow_inst_id: &str,
         task: &TaskDef,
@@ -262,11 +263,11 @@ async fn execute_workflow_task_isolated_resolves_registered_function_ref() {
 #[tokio::test]
 async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
     let storage = Arc::new(MemoryStorage::new());
-    let executor = Arc::new(RecordingIsolatedExecutor::new());
+    let dispatcher = Arc::new(RecordingIsolatedDispatcher::new());
     let workflow_service = WorkflowService::new(storage.clone());
     let orchestrator = Orchestrator::new(
         storage,
-        executor.clone(),
+        dispatcher.clone(),
         Arc::new(MemoryWorkflowQueue::new(10)),
     );
 
@@ -280,7 +281,7 @@ async fn execute_workflow_task_isolated_uses_generated_isolated_execution_id() {
         .await
         .unwrap();
 
-    let records = executor.records();
+    let records = dispatcher.records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].task_id, "taska");
     assert!(
@@ -317,9 +318,13 @@ async fn execute_workflow_task_isolated_errors_for_missing_function_ref() {
 #[tokio::test]
 async fn scheduler_limits_concurrent_workflow_execution() {
     let storage = Arc::new(MemoryStorage::new());
-    let executor = Arc::new(CountingExecutor::new(Duration::from_millis(50)));
+    let dispatcher = Arc::new(CountingDispatcher::new(Duration::from_millis(50)));
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor.clone(), queue));
+    let orchestrator = Arc::new(Orchestrator::new(
+        storage.clone(),
+        dispatcher.clone(),
+        queue,
+    ));
     let scheduler = tokio::spawn(orchestrator.clone().run_workflow_queue(2));
 
     for id in ["workflow-1", "workflow-2", "workflow-3"] {
@@ -357,7 +362,7 @@ async fn scheduler_limits_concurrent_workflow_execution() {
         sleep(Duration::from_millis(20)).await;
     }
 
-    assert_eq!(executor.max_active(), 2);
+    assert_eq!(dispatcher.max_active(), 2);
     scheduler.abort();
 }
 
@@ -810,7 +815,8 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
 async fn queue_status_lists_pending_workflows() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
 
     let mut running = workflow_instance("running-workflow", "workflow-1");
     running.status = WorkflowStatus::Running;
@@ -836,7 +842,8 @@ async fn queue_status_lists_pending_workflows() {
 async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
 
     for (id, status) in [
         ("pending-workflow", WorkflowStatus::Pending),
@@ -897,7 +904,8 @@ async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
 async fn pause_and_resume_workflow_update_status_and_queue() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let mut instance = workflow_instance("workflow-1", "workflow-def");
     instance.status = WorkflowStatus::Pending;
     storage
@@ -956,7 +964,8 @@ async fn pause_and_resume_workflow_update_status_and_queue() {
 async fn bulk_pause_and_resume_update_queue_for_matching_workflows() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
 
     for (id, status) in [
         ("pending-workflow", WorkflowStatus::Pending),
@@ -1030,7 +1039,8 @@ async fn bulk_pause_and_resume_update_queue_for_matching_workflows() {
 async fn startup_recovery_preserves_workflow_pins_when_reloading_runnable_work() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let pinned_host = WorkerHostId::new("host-a");
 
     for (id, status) in [
@@ -1103,7 +1113,8 @@ async fn startup_recovery_requeues_abandoned_running_task_attempts() {
     // task attempt were Running, but the in-memory dispatch lease is gone.
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let pinned_host = WorkerHostId::new("host-a");
     let task_attempt_id = TaskInstance::make_task_attempt_id("taska", 1);
 
@@ -1163,7 +1174,8 @@ async fn startup_recovery_requeues_abandoned_running_task_attempts() {
 async fn lost_pinned_host_marks_nonterminal_workflows_failed() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let lost_host = WorkerHostId::new("host-a");
     let other_host = WorkerHostId::new("host-b");
 
@@ -1273,7 +1285,8 @@ async fn lost_pinned_host_marks_nonterminal_workflows_failed() {
 async fn retry_workflow_task_commits_retry_and_enqueues_workflow() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let mut instance = workflow_instance("failed-workflow", "workflow-1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
@@ -1322,20 +1335,21 @@ async fn retry_workflow_task_commits_retry_and_enqueues_workflow() {
 async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let worker_pool = WorkerPool::new();
-    worker_pool
+    let worker_registry = WorkerRegistry::new();
+    worker_registry
         .register_worker(WorkerRegistration {
             worker_id: "worker-1".to_string(),
             host_id: WorkerHostId::new("host-a"),
         })
         .await;
-    worker_pool
+    worker_registry
         .register_worker(WorkerRegistration {
             worker_id: "worker-2".to_string(),
             host_id: WorkerHostId::new("host-b"),
         })
         .await;
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let mut instance = workflow_instance("failed-workflow", "workflow-1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
@@ -1359,7 +1373,7 @@ async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
         .unwrap();
 
     let result = orchestrator
-        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_registry)
         .await
         .unwrap();
 
@@ -1377,14 +1391,15 @@ async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
 async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let worker_pool = WorkerPool::new();
-    worker_pool
+    let worker_registry = WorkerRegistry::new();
+    worker_registry
         .register_worker(WorkerRegistration {
             worker_id: "worker-1".to_string(),
             host_id: WorkerHostId::new("host-b"),
         })
         .await;
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let mut instance = workflow_instance("failed-workflow", "workflow-1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
@@ -1408,7 +1423,7 @@ async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable()
         .unwrap();
 
     let result = orchestrator
-        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_registry)
         .await
         .unwrap();
 
@@ -1430,8 +1445,9 @@ async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable()
 async fn force_retry_workflow_task_rejects_when_no_host_is_eligible() {
     let storage = Arc::new(MemoryStorage::new());
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
-    let worker_pool = WorkerPool::new();
-    let orchestrator = Orchestrator::new(storage.clone(), Arc::new(FakeExecutor::new()), queue);
+    let worker_registry = WorkerRegistry::new();
+    let orchestrator =
+        Orchestrator::new(storage.clone(), Arc::new(FakeTaskDispatcher::new()), queue);
     let mut instance = workflow_instance("failed-workflow", "workflow-1");
     instance.status = WorkflowStatus::Failed;
     instance.pinned_worker_host = Some(WorkerHostId::new("host-a"));
@@ -1455,7 +1471,7 @@ async fn force_retry_workflow_task_rejects_when_no_host_is_eligible() {
         .unwrap();
 
     let error = orchestrator
-        .force_retry_workflow_task("failed-workflow", "taska", &worker_pool)
+        .force_retry_workflow_task("failed-workflow", "taska", &worker_registry)
         .await
         .unwrap_err();
 

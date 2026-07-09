@@ -7,6 +7,8 @@ services:
       - "0.0.0.0:3000:3000"
     environment:
       RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
+      RUNHELM_STORAGE: sql
+      RUNHELM_DATABASE_URL: sqlite:///data/runhelm.db
     read_only: true
     tmpfs:
       - /tmp
@@ -17,6 +19,8 @@ services:
       interval: 5s
       timeout: 2s
       retries: 12
+    volumes:
+      - ${HOME}/.runhelm/sqlite:/data
 
   worker:
     build:
