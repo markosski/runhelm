@@ -9,11 +9,11 @@ use tokio::time::{self, Duration};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use crate::adapters::docker_executor::DockerExecutor;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::adapters::sql_storage::SqlStorage;
-use crate::adapters::worker_pool::{self, WorkerPool};
+use crate::adapters::task_dispatcher::{self, TaskDispatcher};
+use crate::adapters::worker_registry::WorkerRegistry;
 use crate::api::router;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
@@ -29,14 +29,20 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize dependencies (Adapters)
     let storage = create_storage().await?;
-    let worker_pool = WorkerPool::new();
-    let executor = Arc::new(DockerExecutor::new(worker_pool.clone()));
+    let worker_registry = WorkerRegistry::new();
+    let task_dispatcher = Arc::new(TaskDispatcher::new());
     let workflow_queue = Arc::new(MemoryWorkflowQueue::new(workflow_queue_capacity()));
 
     // Initialize Orchestrator (Application Layer)
-    let orchestrator = Arc::new(Orchestrator::new(storage.clone(), executor, workflow_queue));
+    let orchestrator = Arc::new(Orchestrator::new(
+        storage.clone(),
+        task_dispatcher.clone(),
+        workflow_queue,
+    ));
+
     let workflow_service = Arc::new(WorkflowService::new(storage.clone()));
     let function_service = Arc::new(FunctionService::new(storage.clone()));
+
     let recovered = orchestrator.synchronize_startup_tasks().await?;
     info!(recovered, "Startup task synchronization complete");
 
@@ -54,13 +60,15 @@ async fn main() -> anyhow::Result<()> {
         orchestrator.clone(),
         workflow_service.clone(),
         function_service.clone(),
-        worker_pool.clone(),
+        worker_registry.clone(),
+        task_dispatcher.clone(),
     );
     let worker_app = router::create_worker_router(
         orchestrator.clone(),
         workflow_service,
         function_service,
-        worker_pool.clone(),
+        worker_registry.clone(),
+        task_dispatcher.clone(),
     );
 
     let public_addr = resolve_public_http_addr();
@@ -71,8 +79,12 @@ async fn main() -> anyhow::Result<()> {
     info!("Public API listening on {}", public_listener.local_addr()?);
     info!("Worker API listening on {}", worker_listener.local_addr()?);
 
-    let _ = worker_pool::start_task_timeout_monitor(worker_pool.clone());
-    let _ = start_pinned_host_loss_monitor(orchestrator.clone(), worker_pool.clone());
+    let _ = task_dispatcher::start_task_timeout_monitor(task_dispatcher.clone());
+    let _ = start_pinned_host_loss_monitor(
+        orchestrator.clone(),
+        worker_registry.clone(),
+        task_dispatcher.clone(),
+    );
 
     tokio::try_join!(
         axum::serve(public_listener, public_app),
@@ -124,16 +136,20 @@ fn resolve_worker_http_addr() -> String {
 
 fn start_pinned_host_loss_monitor(
     orchestrator: Arc<Orchestrator>,
-    worker_pool: WorkerPool,
+    worker_registry: WorkerRegistry,
+    task_dispatcher: Arc<TaskDispatcher>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = time::interval(Duration::from_millis(100));
         loop {
             ticker.tick().await;
-            let lost_hosts = worker_pool.update_worker_liveness().await;
+            let lost_hosts = worker_registry.update_worker_liveness().await;
             if lost_hosts.is_empty() {
                 continue;
             }
+            task_dispatcher
+                .cancel_pending_tasks_for_lost_hosts(&lost_hosts)
+                .await;
 
             match orchestrator
                 .fail_workflows_pinned_to_lost_hosts(&lost_hosts)

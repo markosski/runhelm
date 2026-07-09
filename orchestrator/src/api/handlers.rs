@@ -6,12 +6,12 @@ use axum::{
 use std::time::Duration;
 use tracing::{error, info};
 
-use crate::adapters::worker_pool::{
-    TaskResult, WorkerExecutionResult, WorkerRegistration, WorkerResponse,
-};
+use crate::adapters::task_dispatcher::{WorkerExecutionResult, WorkerTaskResult};
+use crate::adapters::worker_registry::WorkerRegistration;
+use crate::api::models::WorkerResponse;
 use crate::core::models::FunctionDef;
 use crate::core::workflow::models::{WorkflowDef, WorkflowStatus};
-use crate::ports::executor::ExecutionResult;
+use crate::ports::task_dispatch::ExecutionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -98,7 +98,7 @@ pub async fn trigger_workflow_instance(
     Path(workflow_def_id): Path<String>,
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let Some(pinned_worker_host) = state.worker_pool.select_eligible_host().await else {
+    let Some(pinned_worker_host) = state.worker_registry.select_eligible_host().await else {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
 
@@ -322,7 +322,7 @@ pub async fn retry_task(
     let result = if query.force.unwrap_or(false) {
         state
             .orchestrator
-            .force_retry_workflow_task(&workflow_instance_id, &task_id, &state.worker_pool)
+            .force_retry_workflow_task(&workflow_instance_id, &task_id, &state.worker_registry)
             .await
     } else {
         state
@@ -479,8 +479,8 @@ pub async fn register_worker(
     Json(registration): Json<WorkerRegistration>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
-    state.worker_pool.register_worker(registration).await;
-    let heartbeat_policy = state.worker_pool.heartbeat_policy();
+    state.worker_registry.register_worker(registration).await;
+    let heartbeat_policy = state.worker_registry.heartbeat_policy();
 
     Ok(Json(
         serde_json::to_value(WorkerResponse::RegistrationAck {
@@ -496,7 +496,10 @@ pub async fn heartbeat_worker(
     Json(registration): Json<WorkerRegistration>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
-    state.worker_pool.tick_worker_heartbeat(registration).await;
+    state
+        .worker_registry
+        .tick_worker_heartbeat(registration)
+        .await;
 
     Ok(Json(json!({
         "status": "accepted",
@@ -508,19 +511,30 @@ pub async fn claim_worker_task(
     State(state): State<AppState>,
     Json(payload): Json<WorkerClaimRequest>,
 ) -> Result<Json<Value>, StatusCode> {
+    let worker = state
+        .worker_registry
+        .worker_identity_for_claim(&payload.worker_id)
+        .await
+        .map_err(|error| {
+            if error.to_string().contains("not registered") {
+                StatusCode::NOT_FOUND
+            } else if error.to_string().contains("missed heartbeat") {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                tracing::error!(worker_id = %payload.worker_id, %error, "worker failed claim validation");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
+
     match state
-        .worker_pool
-        .claim_task(&payload.worker_id, Duration::from_secs(30))
+        .task_dispatcher
+        .claim_task(worker, Duration::from_secs(30))
         .await
     {
         Ok(Some(dispatch)) => Ok(Json(
             serde_json::to_value(WorkerResponse::TaskDispatch(dispatch)).unwrap(),
         )),
         Ok(None) => Ok(Json(serde_json::to_value(WorkerResponse::NoTask).unwrap())),
-        Err(error) if error.to_string().contains("not registered") => Err(StatusCode::NOT_FOUND),
-        Err(error) if error.to_string().contains("missed heartbeat") => {
-            Err(StatusCode::SERVICE_UNAVAILABLE)
-        }
         Err(error) => {
             tracing::error!(worker_id = %payload.worker_id, %error, "worker failed to claim task");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -533,12 +547,15 @@ pub async fn complete_worker_task(
     Path(task_id): Path<String>,
     Json(result): Json<WorkerExecutionResult>,
 ) -> Result<Json<Value>, StatusCode> {
-    let worker_id = state.worker_pool.worker_for_active_dispatch(&task_id).await;
+    let worker_id = state
+        .task_dispatcher
+        .worker_for_active_dispatch(&task_id)
+        .await;
 
     if let Some(worker_id) = worker_id {
         state
-            .worker_pool
-            .complete_task_result(&worker_id, TaskResult { task_id, result })
+            .task_dispatcher
+            .complete_task_result(&worker_id, WorkerTaskResult { task_id, result })
             .await
             .map_err(|error| {
                 tracing::error!(%worker_id, %error, "worker failed to complete task");
@@ -583,10 +600,11 @@ fn parse_workflow_status(status: &str) -> Result<WorkflowStatus, StatusCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::fake_executor::FakeExecutor;
+    use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-    use crate::adapters::worker_pool::WorkerPool;
+    use crate::adapters::task_dispatcher::TaskDispatcher;
+    use crate::adapters::worker_registry::WorkerRegistry;
     use crate::api::router::AppState;
     use crate::core::function_service::FunctionService;
     use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
@@ -647,16 +665,17 @@ mod tests {
         }
     }
 
-    fn app_state(storage: Arc<MemoryStorage>, worker_pool: WorkerPool) -> AppState {
+    fn app_state(storage: Arc<MemoryStorage>, worker_registry: WorkerRegistry) -> AppState {
         AppState {
             orchestrator: Arc::new(Orchestrator::new(
                 storage.clone(),
-                Arc::new(FakeExecutor::new()),
+                Arc::new(FakeTaskDispatcher::new()),
                 Arc::new(MemoryWorkflowQueue::new(10)),
             )),
             workflow_service: Arc::new(WorkflowService::new(storage.clone())),
             function_service: Arc::new(FunctionService::new(storage)),
-            worker_pool,
+            worker_registry,
+            task_dispatcher: Arc::new(TaskDispatcher::new()),
         }
     }
 
@@ -680,7 +699,7 @@ mod tests {
     async fn retry_task_api_returns_queued_state_and_preserves_pin() {
         let storage = Arc::new(MemoryStorage::new());
         save_failed_workflow(&storage).await;
-        let state = app_state(storage.clone(), WorkerPool::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
 
         let Json(response) = retry_task(
             State(state.clone()),
@@ -709,7 +728,7 @@ mod tests {
     async fn force_retry_task_api_without_capacity_leaves_workflow_in_failed_state() {
         let storage = Arc::new(MemoryStorage::new());
         save_failed_workflow(&storage).await;
-        let state = app_state(storage.clone(), WorkerPool::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
 
         let error = retry_task(
             State(state.clone()),
@@ -739,7 +758,7 @@ mod tests {
     #[tokio::test]
     async fn pause_and_resume_workflow_api_update_queue() {
         let storage = Arc::new(MemoryStorage::new());
-        let state = app_state(storage.clone(), WorkerPool::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
         storage
             .save_workflow_instance(
                 0,
@@ -801,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn bulk_pause_and_resume_workflows_api_returns_affected_ids() {
         let storage = Arc::new(MemoryStorage::new());
-        let state = app_state(storage.clone(), WorkerPool::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
         for (id, status) in [
             ("pending-workflow", WorkflowStatus::Pending),
             ("running-workflow", WorkflowStatus::Running),
@@ -859,7 +878,7 @@ mod tests {
     #[tokio::test]
     async fn submit_human_input_api_materializes_continuation_and_queues_workflow() {
         let storage = Arc::new(MemoryStorage::new());
-        let state = app_state(storage.clone(), WorkerPool::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
         state
             .workflow_service
             .create_workflow_def(WorkflowDef {
@@ -934,7 +953,7 @@ mod tests {
     #[tokio::test]
     async fn list_workflows_api_filters_by_valid_status_query() {
         let storage = Arc::new(MemoryStorage::new());
-        let state = app_state(storage.clone(), WorkerPool::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
         storage
             .save_workflow_instance(
                 0,

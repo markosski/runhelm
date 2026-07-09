@@ -21,14 +21,14 @@ See [Tasks](/docs/concepts/tasks/) for how Agent, Function, and API Call tasks d
 
 ## Task execution model
 
-At runtime, the orchestrator repeatedly finds tasks whose dependencies are satisfied and dispatches them through an executor backend. Workers claim queued task payloads, execute the work, and post results back to the orchestrator.
+At runtime, the orchestrator repeatedly finds tasks whose dependencies are satisfied and queues them for task dispatch. Workers claim queued task payloads, execute the work, and post results back to the orchestrator.
 
 The high-level flow is:
 
 1. Register a workflow definition.
 2. Create a workflow instance for a run.
 3. Identify runnable tasks.
-4. Queue runnable tasks behind an executor backend.
+4. Queue runnable tasks for dispatch.
 5. Let workers claim and execute tasks.
 6. Validate task outputs when schemas are declared.
 7. Propagate outputs through data bindings.

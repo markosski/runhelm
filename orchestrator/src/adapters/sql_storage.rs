@@ -4,9 +4,9 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use crate::core::models::{FunctionDef, TaskInstance, TaskStatus, VerifierAttemptMetadata};
+use crate::core::models::{FunctionDef, TaskInstance, TaskStatus};
 use crate::core::util::unix_timestamp_ms;
-use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
+use crate::core::workflow::events::WorkflowEventRecord;
 use crate::core::workflow::models::{
     WorkerHostId, WorkflowDef, WorkflowInfo, WorkflowInstance, WorkflowStatus,
 };
@@ -747,7 +747,8 @@ const INITIAL_SCHEMA_SQL: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::{TaskInputMapping, TaskSatisfactionStatus};
+    use crate::core::models::{TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata};
+    use crate::core::workflow::events::WorkflowInstanceEvent;
     use crate::core::workflow::models::{
         VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
     };

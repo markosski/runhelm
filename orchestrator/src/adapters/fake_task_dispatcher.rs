@@ -1,22 +1,22 @@
 use crate::core::models::{ExecutionMetadata, TaskDef};
 use crate::core::workflow::models::TaskDispatchConstraints;
-use crate::ports::executor::{ExecutionResult, ExecutorPort};
+use crate::ports::task_dispatch::{ExecutionResult, TaskDispatchPort};
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// A deterministic, in-process executor that generates schema-conformant default
+/// A deterministic, in-process dispatcher that generates schema-conformant default
 /// output from a `TaskDef`'s `output_schema`. Used in unit tests and dry-runs.
 #[allow(dead_code)]
-pub struct FakeExecutor;
+pub struct FakeTaskDispatcher;
 
-impl FakeExecutor {
+impl FakeTaskDispatcher {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        FakeExecutor
+        FakeTaskDispatcher
     }
 }
 
-impl Default for FakeExecutor {
+impl Default for FakeTaskDispatcher {
     fn default() -> Self {
         Self::new()
     }
@@ -82,8 +82,8 @@ fn schema_default(schema: &Value) -> Value {
 }
 
 #[async_trait]
-impl ExecutorPort for FakeExecutor {
-    async fn execute(
+impl TaskDispatchPort for FakeTaskDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         task: &TaskDef,
@@ -103,8 +103,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn fake() -> FakeExecutor {
-        FakeExecutor::new()
+    fn fake() -> FakeTaskDispatcher {
+        FakeTaskDispatcher::new()
     }
 
     fn task_with_schema(schema: Value) -> TaskDef {
@@ -127,7 +127,7 @@ mod tests {
     async fn test_empty_object_schema() {
         let task = task_with_schema(json!({"type": "object"}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -153,7 +153,7 @@ mod tests {
             }
         }));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -174,7 +174,7 @@ mod tests {
     async fn test_string_schema() {
         let task = task_with_schema(json!({"type": "string"}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -193,7 +193,7 @@ mod tests {
     async fn test_integer_schema() {
         let task = task_with_schema(json!({"type": "integer"}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -212,7 +212,7 @@ mod tests {
     async fn test_number_schema() {
         let task = task_with_schema(json!({"type": "number"}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -231,7 +231,7 @@ mod tests {
     async fn test_boolean_schema() {
         let task = task_with_schema(json!({"type": "boolean"}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -250,7 +250,7 @@ mod tests {
     async fn test_array_schema() {
         let task = task_with_schema(json!({"type": "array"}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -269,7 +269,7 @@ mod tests {
     async fn test_null_schema() {
         let task = task_with_schema(json!({"type": "null"}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -288,7 +288,7 @@ mod tests {
     async fn test_no_type_schema() {
         let task = task_with_schema(json!({}));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -309,7 +309,7 @@ mod tests {
             "oneOf": [{"type": "string"}, {"type": "integer"}]
         }));
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -328,7 +328,7 @@ mod tests {
     async fn test_inputs_do_not_affect_output() {
         let task = task_with_schema(json!({"type": "string"}));
         let res1 = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],
@@ -338,7 +338,7 @@ mod tests {
             .await
             .unwrap();
         let res2 = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[json!("anything"), json!(42)],
@@ -366,7 +366,7 @@ mod tests {
         });
         let task = task_with_schema(schema.clone());
         let result = fake()
-            .execute(
+            .dispatch_task(
                 "123",
                 &task,
                 &[],

@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use super::handlers;
 
+use crate::adapters::task_dispatcher::TaskDispatcher;
+use crate::adapters::worker_registry::WorkerRegistry;
 use crate::core::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
-use crate::{adapters::worker_pool::WorkerPool, core::workflow::workflow_service::WorkflowService};
+use crate::core::workflow::workflow_service::WorkflowService;
 
 // AppState holds the injected dependencies
 #[derive(Clone)]
@@ -16,20 +18,23 @@ pub struct AppState {
     pub orchestrator: Arc<Orchestrator>,
     pub workflow_service: Arc<WorkflowService>,
     pub function_service: Arc<FunctionService>,
-    pub worker_pool: WorkerPool,
+    pub worker_registry: WorkerRegistry,
+    pub task_dispatcher: Arc<TaskDispatcher>,
 }
 
 pub fn create_public_router(
     orchestrator: Arc<Orchestrator>,
     workflow_service: Arc<WorkflowService>,
     function_service: Arc<FunctionService>,
-    worker_pool: WorkerPool,
+    worker_registry: WorkerRegistry,
+    task_dispatcher: Arc<TaskDispatcher>,
 ) -> Router {
     let state = AppState {
         orchestrator,
         workflow_service,
         function_service,
-        worker_pool,
+        worker_registry,
+        task_dispatcher,
     };
 
     Router::new()
@@ -88,13 +93,15 @@ pub fn create_worker_router(
     orchestrator: Arc<Orchestrator>,
     workflow_service: Arc<WorkflowService>,
     function_service: Arc<FunctionService>,
-    worker_pool: WorkerPool,
+    worker_registry: WorkerRegistry,
+    task_dispatcher: Arc<TaskDispatcher>,
 ) -> Router {
     let state = AppState {
         orchestrator,
         workflow_service,
         function_service,
-        worker_pool,
+        worker_registry,
+        task_dispatcher,
     };
 
     Router::new()
@@ -113,7 +120,7 @@ pub fn create_worker_router(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::fake_executor::FakeExecutor;
+    use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 
@@ -122,7 +129,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let orchestrator = Arc::new(Orchestrator::new(
             storage.clone(),
-            Arc::new(FakeExecutor::new()),
+            Arc::new(FakeTaskDispatcher::new()),
             Arc::new(MemoryWorkflowQueue::new(10)),
         ));
 
@@ -130,7 +137,8 @@ mod tests {
             orchestrator,
             Arc::new(WorkflowService::new(storage.clone())),
             Arc::new(FunctionService::new(storage)),
-            WorkerPool::new(),
+            WorkerRegistry::new(),
+            Arc::new(TaskDispatcher::new()),
         );
     }
 }

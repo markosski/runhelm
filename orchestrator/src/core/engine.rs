@@ -11,8 +11,8 @@ use crate::core::workflow::models::{
     WorkflowDef, WorkflowInstance, WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
-use crate::ports::executor::{ExecutionResult, ExecutorPort};
 use crate::ports::storage::StoragePort;
+use crate::ports::task_dispatch::{ExecutionResult, TaskDispatchPort};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ mod tests;
 
 pub struct WorkflowEngine {
     storage: Arc<dyn StoragePort + Send + Sync>,
-    executor: Arc<dyn ExecutorPort + Send + Sync>,
+    task_dispatcher: Arc<dyn TaskDispatchPort + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -38,14 +38,17 @@ struct VerifierTransition {
 
 /// State machine for a workflow instance.
 /// Its main responsibility is: take a persisted WorkflowInstance, read its WorkflowDef,
-/// decide which task attempts are runnable, execute them through ExecutorPort, update task/workflow state,
+/// decide which task attempts are runnable, dispatch them through TaskDispatchPort, update task/workflow state,
 /// and persist progress back through StoragePort.
 impl WorkflowEngine {
     pub fn new(
         storage: Arc<dyn StoragePort + Send + Sync>,
-        executor: Arc<dyn ExecutorPort + Send + Sync>,
+        task_dispatcher: Arc<dyn TaskDispatchPort + Send + Sync>,
     ) -> Self {
-        Self { storage, executor }
+        Self {
+            storage,
+            task_dispatcher,
+        }
     }
 
     /// Returns a lightweight status snapshot of a workflow instance.
@@ -295,8 +298,8 @@ impl WorkflowEngine {
                 let execution_result =
                     match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
                         Ok(resolved_task_def) => {
-                            self.executor
-                                .execute(
+                            self.task_dispatcher
+                                .dispatch_task(
                                     &workflow_inst_id,
                                     &resolved_task_def,
                                     &inputs,

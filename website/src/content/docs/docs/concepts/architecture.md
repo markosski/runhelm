@@ -15,10 +15,10 @@ Key responsibilities include:
 - creating workflow instances
 - tracking task and run state
 - selecting runnable tasks
-- dispatching work through executor ports
+- dispatching runnable task payloads
 - exposing HTTP endpoints for status and workflow operations
 
-The current default wiring uses in-memory storage, an in-memory workflow queue, and a worker-pool-backed executor path.
+The current default wiring uses in-memory storage, an in-memory workflow queue, a worker registry for heartbeat and host eligibility, and a task dispatcher that queues work for registered workers.
 
 ## Worker
 
@@ -41,4 +41,4 @@ The frontend is the start of an operator UI for workflows, runs, and system visi
 
 ## Ports and adapters
 
-Side effects live behind ports and adapters. Storage, workflow queues, executors, credentials, and worker dispatch are modeled as replaceable boundaries so the core orchestration logic can remain testable and cohesive.
+Side effects live behind ports and adapters. Storage, workflow queues, task dispatch, credentials, and worker execution are modeled as replaceable boundaries so the core orchestration logic can remain testable and cohesive.

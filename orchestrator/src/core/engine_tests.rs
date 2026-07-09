@@ -1,11 +1,11 @@
 use super::*;
-use crate::adapters::fake_executor::FakeExecutor;
+use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::core::models::*;
 use crate::core::workflow::models::{DataBinding, TaskDispatchConstraints, WorkerHostId};
 use crate::core::workflow::state_manager::WorkflowStateManager;
-use crate::ports::executor::ExecutionResult;
-use crate::ports::executor::ExecutorPort;
+use crate::ports::task_dispatch::ExecutionResult;
+use crate::ports::task_dispatch::TaskDispatchPort;
 use async_trait::async_trait;
 use serde_json::Number;
 use serde_json::json;
@@ -16,19 +16,21 @@ use std::sync::Mutex as StdMutex;
 fn make_engine() -> WorkflowEngine {
     WorkflowEngine::new(
         Arc::new(MemoryStorage::new()),
-        Arc::new(FakeExecutor::new()),
+        Arc::new(FakeTaskDispatcher::new()),
     )
 }
 
-fn make_engine_with_executor(executor: Arc<dyn ExecutorPort + Send + Sync>) -> WorkflowEngine {
-    WorkflowEngine::new(Arc::new(MemoryStorage::new()), executor)
+fn make_engine_with_dispatcher(
+    dispatcher: Arc<dyn TaskDispatchPort + Send + Sync>,
+) -> WorkflowEngine {
+    WorkflowEngine::new(Arc::new(MemoryStorage::new()), dispatcher)
 }
 
-struct ContinueThenCompleteExecutor;
+struct ContinueThenCompleteDispatcher;
 
 #[async_trait]
-impl ExecutorPort for ContinueThenCompleteExecutor {
-    async fn execute(
+impl TaskDispatchPort for ContinueThenCompleteDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         task: &TaskDef,
@@ -55,11 +57,11 @@ impl ExecutorPort for ContinueThenCompleteExecutor {
     }
 }
 
-struct CompleteVerifierExecutor;
+struct CompleteVerifierDispatcher;
 
 #[async_trait]
-impl ExecutorPort for CompleteVerifierExecutor {
-    async fn execute(
+impl TaskDispatchPort for CompleteVerifierDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         task: &TaskDef,
@@ -75,11 +77,11 @@ impl ExecutorPort for CompleteVerifierExecutor {
     }
 }
 
-struct AlwaysContinueVerifierExecutor;
+struct AlwaysContinueVerifierDispatcher;
 
 #[async_trait]
-impl ExecutorPort for AlwaysContinueVerifierExecutor {
-    async fn execute(
+impl TaskDispatchPort for AlwaysContinueVerifierDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         task: &TaskDef,
@@ -109,11 +111,11 @@ struct RecordedExecution {
     human_input_provided: Option<String>,
 }
 
-struct RecordingContinueExecutor {
+struct RecordingContinueDispatcher {
     records: StdMutex<Vec<RecordedExecution>>,
 }
 
-impl RecordingContinueExecutor {
+impl RecordingContinueDispatcher {
     fn new() -> Self {
         Self {
             records: StdMutex::new(vec![]),
@@ -126,8 +128,8 @@ impl RecordingContinueExecutor {
 }
 
 #[async_trait]
-impl ExecutorPort for RecordingContinueExecutor {
-    async fn execute(
+impl TaskDispatchPort for RecordingContinueDispatcher {
+    async fn dispatch_task(
         &self,
         workflow_inst_id: &str,
         task: &TaskDef,
@@ -167,11 +169,11 @@ impl ExecutorPort for RecordingContinueExecutor {
     }
 }
 
-struct InputNeededExecutor;
+struct InputNeededDispatcher;
 
 #[async_trait]
-impl ExecutorPort for InputNeededExecutor {
-    async fn execute(
+impl TaskDispatchPort for InputNeededDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         _task: &TaskDef,
@@ -185,12 +187,12 @@ impl ExecutorPort for InputNeededExecutor {
     }
 }
 
-struct InputNeededForTaskExecutor {
+struct InputNeededForTaskDispatcher {
     input_needed_task_id: String,
     calls: StdMutex<Vec<String>>,
 }
 
-impl InputNeededForTaskExecutor {
+impl InputNeededForTaskDispatcher {
     fn new(input_needed_task_id: &str) -> Self {
         Self {
             input_needed_task_id: input_needed_task_id.to_string(),
@@ -204,8 +206,8 @@ impl InputNeededForTaskExecutor {
 }
 
 #[async_trait]
-impl ExecutorPort for InputNeededForTaskExecutor {
-    async fn execute(
+impl TaskDispatchPort for InputNeededForTaskDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         task: &TaskDef,
@@ -224,13 +226,13 @@ impl ExecutorPort for InputNeededForTaskExecutor {
     }
 }
 
-struct PauseDuringTaskExecutor {
+struct PauseDuringTaskDispatcher {
     storage: Arc<MemoryStorage>,
     workflow_instance_id: String,
     calls: StdMutex<Vec<String>>,
 }
 
-impl PauseDuringTaskExecutor {
+impl PauseDuringTaskDispatcher {
     fn new(storage: Arc<MemoryStorage>, workflow_instance_id: &str) -> Self {
         Self {
             storage,
@@ -245,8 +247,8 @@ impl PauseDuringTaskExecutor {
 }
 
 #[async_trait]
-impl ExecutorPort for PauseDuringTaskExecutor {
-    async fn execute(
+impl TaskDispatchPort for PauseDuringTaskDispatcher {
+    async fn dispatch_task(
         &self,
         _workflow_inst_id: &str,
         task: &TaskDef,
@@ -563,7 +565,7 @@ fn test_workspace_group_tasks_still_wait_for_data_binding() {
 
 #[tokio::test]
 async fn test_input_needed_workflow_retains_pinned_host() {
-    let engine = make_engine_with_executor(Arc::new(InputNeededExecutor));
+    let engine = make_engine_with_dispatcher(Arc::new(InputNeededDispatcher));
     let def = WorkflowDef {
         id: "def-input-needed-pin-retention".to_string(),
         tasks: vec![agent_task("ask-user", true)],
@@ -594,8 +596,8 @@ async fn test_input_needed_workflow_retains_pinned_host() {
 
 #[tokio::test]
 async fn test_input_needed_stops_current_engine_pass() {
-    let executor = Arc::new(InputNeededForTaskExecutor::new("ask-user"));
-    let engine = make_engine_with_executor(executor.clone());
+    let dispatcher = Arc::new(InputNeededForTaskDispatcher::new("ask-user"));
+    let engine = make_engine_with_dispatcher(dispatcher.clone());
     let def = WorkflowDef {
         id: "def-input-needed-stops-pass".to_string(),
         tasks: vec![
@@ -627,7 +629,7 @@ async fn test_input_needed_stops_current_engine_pass() {
         instance.tasks["independent-work[1]"].status,
         TaskStatus::Pending
     );
-    assert_eq!(executor.calls(), vec!["ask-user".to_string()]);
+    assert_eq!(dispatcher.calls(), vec!["ask-user".to_string()]);
 }
 
 #[test]
@@ -838,8 +840,11 @@ async fn test_single_task_workflow_completes() {
 #[tokio::test]
 async fn paused_workflow_records_in_flight_nonfinal_task_and_stops() {
     let storage = Arc::new(MemoryStorage::new());
-    let executor = Arc::new(PauseDuringTaskExecutor::new(storage.clone(), "inst-paused"));
-    let engine = WorkflowEngine::new(storage.clone(), executor.clone());
+    let dispatcher = Arc::new(PauseDuringTaskDispatcher::new(
+        storage.clone(),
+        "inst-paused",
+    ));
+    let engine = WorkflowEngine::new(storage.clone(), dispatcher.clone());
     let def = WorkflowDef {
         id: "def-paused-nonfinal".to_string(),
         tasks: vec![
@@ -883,14 +888,17 @@ async fn paused_workflow_records_in_flight_nonfinal_task_and_stops() {
     assert_eq!(saved.status, WorkflowStatus::Paused);
     assert_eq!(saved.tasks["task-a[1]"].status, TaskStatus::Completed);
     assert_eq!(saved.tasks["task-b[1]"].status, TaskStatus::Pending);
-    assert_eq!(executor.calls(), vec!["task-a".to_string()]);
+    assert_eq!(dispatcher.calls(), vec!["task-a".to_string()]);
 }
 
 #[tokio::test]
 async fn paused_workflow_records_in_flight_final_task_and_completes() {
     let storage = Arc::new(MemoryStorage::new());
-    let executor = Arc::new(PauseDuringTaskExecutor::new(storage.clone(), "inst-paused"));
-    let engine = WorkflowEngine::new(storage.clone(), executor.clone());
+    let dispatcher = Arc::new(PauseDuringTaskDispatcher::new(
+        storage.clone(),
+        "inst-paused",
+    ));
+    let engine = WorkflowEngine::new(storage.clone(), dispatcher.clone());
     let def = WorkflowDef {
         id: "def-paused-final".to_string(),
         tasks: vec![task_def("task-a", json!({ "type": "object" }))],
@@ -927,7 +935,7 @@ async fn paused_workflow_records_in_flight_final_task_and_completes() {
         .unwrap();
     assert_eq!(saved.status, WorkflowStatus::Completed);
     assert_eq!(saved.tasks["task-a[1]"].status, TaskStatus::Completed);
-    assert_eq!(executor.calls(), vec!["task-a".to_string()]);
+    assert_eq!(dispatcher.calls(), vec!["task-a".to_string()]);
 }
 
 /// Two independent tasks (A and B) feed into a third (C) via data bindings.
@@ -1007,7 +1015,7 @@ async fn test_fan_in_workflow_completes_with_propagation() {
 
 #[tokio::test]
 async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
-    let engine = make_engine_with_executor(Arc::new(ContinueThenCompleteExecutor));
+    let engine = make_engine_with_dispatcher(Arc::new(ContinueThenCompleteDispatcher));
     let def = WorkflowDef {
         id: "def-loop-satisfaction".to_string(),
         tasks: vec![
@@ -1087,8 +1095,8 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
 
 #[tokio::test]
 async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
-    let executor = Arc::new(RecordingContinueExecutor::new());
-    let engine = make_engine_with_executor(executor.clone());
+    let dispatcher = Arc::new(RecordingContinueDispatcher::new());
+    let engine = make_engine_with_dispatcher(dispatcher.clone());
     let def = WorkflowDef {
         id: "def-agent-session-identity".to_string(),
         tasks: vec![
@@ -1108,7 +1116,7 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
         .await
         .unwrap();
 
-    let agent_records: Vec<_> = executor
+    let agent_records: Vec<_> = dispatcher
         .records()
         .into_iter()
         .filter(|record| record.task_id == "task-a")
@@ -1143,8 +1151,8 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
 
 #[tokio::test]
 async fn test_human_input_continuation_dispatches_same_logical_agent_identity() {
-    let executor = Arc::new(RecordingContinueExecutor::new());
-    let engine = make_engine_with_executor(executor.clone());
+    let dispatcher = Arc::new(RecordingContinueDispatcher::new());
+    let engine = make_engine_with_dispatcher(dispatcher.clone());
     let def = WorkflowDef {
         id: "def-human-input-continuation".to_string(),
         tasks: vec![agent_task("task-a", true)],
@@ -1206,7 +1214,7 @@ async fn test_human_input_continuation_dispatches_same_logical_agent_identity() 
         .unwrap();
 
     assert_eq!(
-        executor.records(),
+        dispatcher.records(),
         vec![RecordedExecution {
             workflow_inst_id: instance_id.clone(),
             task_id: "task-a".to_string(),
@@ -1433,7 +1441,7 @@ fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
 
 #[tokio::test]
 async fn test_verifier_complete_accepts_first_generation() {
-    let engine = make_engine_with_executor(Arc::new(CompleteVerifierExecutor));
+    let engine = make_engine_with_dispatcher(Arc::new(CompleteVerifierDispatcher));
     let def = WorkflowDef {
         id: "def-first-generation-accepted".to_string(),
         tasks: vec![
@@ -1494,7 +1502,7 @@ async fn test_verifier_complete_accepts_first_generation() {
 
 #[tokio::test]
 async fn test_function_verifier_can_drive_bounded_rerun() {
-    let engine = make_engine_with_executor(Arc::new(ContinueThenCompleteExecutor));
+    let engine = make_engine_with_dispatcher(Arc::new(ContinueThenCompleteDispatcher));
     let def = WorkflowDef {
         id: "def-function-verifier".to_string(),
         tasks: vec![
@@ -1536,7 +1544,7 @@ async fn test_function_verifier_can_drive_bounded_rerun() {
 
 #[tokio::test]
 async fn test_exhausted_verifier_fails_when_continue_policy_is_false() {
-    let engine = make_engine_with_executor(Arc::new(AlwaysContinueVerifierExecutor));
+    let engine = make_engine_with_dispatcher(Arc::new(AlwaysContinueVerifierDispatcher));
     let def = WorkflowDef {
         id: "def-exhaustion-fail".to_string(),
         tasks: vec![
@@ -1584,7 +1592,7 @@ async fn test_exhausted_verifier_fails_when_continue_policy_is_false() {
 
 #[tokio::test]
 async fn test_exhausted_verifier_accepts_latest_generation_when_continue_policy_is_true() {
-    let engine = make_engine_with_executor(Arc::new(AlwaysContinueVerifierExecutor));
+    let engine = make_engine_with_dispatcher(Arc::new(AlwaysContinueVerifierDispatcher));
     let def = WorkflowDef {
         id: "def-exhaustion-accept".to_string(),
         tasks: vec![
@@ -1732,7 +1740,7 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
 
 #[tokio::test]
 async fn test_downstream_uses_latest_satisfied_generation_after_verifier() {
-    let engine = make_engine_with_executor(Arc::new(ContinueThenCompleteExecutor));
+    let engine = make_engine_with_dispatcher(Arc::new(ContinueThenCompleteDispatcher));
     let mut task_c = task_def("task-c", json!({ "type": "object" }));
     task_c.input_schemas = vec![json!({ "type": "object" }), json!({ "type": "object" })];
     let def = WorkflowDef {
@@ -1799,7 +1807,7 @@ async fn test_downstream_uses_latest_satisfied_generation_after_verifier() {
 async fn test_schema_validation_failure_marks_workflow_failed() {
     let engine = make_engine();
 
-    // FakeExecutor cannot satisfy a `const` schema — it returns `{}` for unknown constructs,
+    // FakeTaskDispatcher cannot satisfy a `const` schema — it returns `{}` for unknown constructs,
     // which will always fail this constraint.
     let strict_schema = json!({
         "const": "only-this-value"
