@@ -2,7 +2,7 @@ use crate::adapters::task_dispatcher::TaskDispatch;
 use crate::core::{
     models::{TaskInputMapping, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata},
     workflow::events::WorkflowEventRecord,
-    workflow::models::{VerifierStateStatus, WorkflowInfo, WorkflowStatus},
+    workflow::models::{VerifierStateStatus, WorkflowDefSummary, WorkflowInfo, WorkflowStatus},
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,11 @@ pub struct WorkflowStatusReport {
 pub struct WorkflowList {
     pub workflows: Vec<WorkflowInfo>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowDefList {
+    pub workflow_defs: Vec<WorkflowDefSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

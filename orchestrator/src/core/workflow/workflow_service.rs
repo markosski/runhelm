@@ -1,9 +1,11 @@
-use crate::api::models::{WorkflowEvents, WorkflowList};
 use crate::core::models::{
     TaskDef, TaskInstance, TaskStatus, TaskTypeDef, VerifierControlConfig, verifier_decision_schema,
 };
-use crate::core::workflow::events::WorkflowInstanceEvent;
-use crate::core::workflow::models::{WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus};
+use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
+use crate::core::workflow::models::{
+    WorkerHostId, WorkflowDef, WorkflowDefSummary, WorkflowInstance, WorkflowListPage,
+    WorkflowStatus,
+};
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::{
     StoragePort, TaskResult, TaskResultMetadata, WorkflowInfoCursor, WorkflowInfoListRequest,
@@ -54,6 +56,10 @@ impl WorkflowService {
         Ok(())
     }
 
+    pub async fn list_workflow_defs(&self) -> anyhow::Result<Vec<WorkflowDefSummary>> {
+        Ok(self.storage.list_workflow_defs().await?)
+    }
+
     pub async fn create_workflow_instance_for_def(
         &self,
         workflow_def_id: &str,
@@ -91,7 +97,7 @@ impl WorkflowService {
         status: Option<WorkflowStatus>,
         limit: Option<usize>,
         cursor: Option<&str>,
-    ) -> anyhow::Result<WorkflowList> {
+    ) -> anyhow::Result<WorkflowListPage> {
         let cursor = cursor.map(decode_workflow_info_cursor).transpose()?;
         let page = self
             .storage
@@ -106,7 +112,7 @@ impl WorkflowService {
             })
             .await?;
 
-        Ok(WorkflowList {
+        Ok(WorkflowListPage {
             workflows: page.workflows,
             next_cursor: page.next_cursor.map(encode_workflow_info_cursor),
         })
@@ -115,7 +121,7 @@ impl WorkflowService {
     pub async fn list_workflow_events(
         &self,
         workflow_instance_id: &str,
-    ) -> anyhow::Result<Option<WorkflowEvents>> {
+    ) -> anyhow::Result<Option<Vec<WorkflowEventRecord>>> {
         if self
             .storage
             .get_workflow_instance(workflow_instance_id)
@@ -130,10 +136,7 @@ impl WorkflowService {
             .get_workflow_instance_events(workflow_instance_id)
             .await?;
 
-        Ok(Some(WorkflowEvents {
-            workflow_instance_id: workflow_instance_id.to_string(),
-            events,
-        }))
+        Ok(Some(events))
     }
 
     pub async fn pause_workflow(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
@@ -886,6 +889,7 @@ mod tests {
     fn workflow_def_with_task(id: &str, task_id: &str) -> WorkflowDef {
         WorkflowDef {
             id: id.to_string(),
+            description: String::new(),
             tasks: vec![TaskDef {
                 id: task_id.to_string(),
                 kind: TaskTypeDef::Function(FunctionTaskDef::Inline {
@@ -1178,9 +1182,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(events.workflow_instance_id, instance_id);
-        assert_eq!(events.events.len(), 1);
-        assert!(events.events[0].created_time > 0);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].created_time > 0);
     }
 
     #[tokio::test]
@@ -1259,17 +1262,67 @@ mod tests {
             .await
             .unwrap();
 
-        let workflows = service
+        let page = service
             .list_workflows(Some(WorkflowStatus::Running), None, None)
             .await
             .unwrap();
 
-        assert_eq!(workflows.workflows.len(), 1);
-        assert_eq!(workflows.workflows[0].id, "running-workflow");
-        assert_eq!(workflows.workflows[0].workflow_def_id, "workflow-1");
-        assert_eq!(workflows.workflows[0].status, WorkflowStatus::Running);
-        assert_eq!(workflows.workflows[0].total_task_count, 0);
-        assert_eq!(workflows.workflows[0].completed_task_count, 0);
+        assert_eq!(page.workflows.len(), 1);
+        assert_eq!(page.workflows[0].id, "running-workflow");
+        assert_eq!(page.workflows[0].workflow_def_id, "workflow-1");
+        assert_eq!(page.workflows[0].status, WorkflowStatus::Running);
+        assert_eq!(page.workflows[0].total_task_count, 0);
+        assert_eq!(page.workflows[0].completed_task_count, 0);
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[tokio::test]
+    async fn list_workflow_defs_includes_invoked_and_never_invoked_definitions() {
+        let storage = Arc::new(MemoryStorage::new());
+        let service = WorkflowService::new(storage.clone());
+        let mut invoked = workflow_def("invoked");
+        invoked.description = "Has been run".to_string();
+        let mut never_invoked = workflow_def("neverinvoked");
+        never_invoked.description = "Ready to run".to_string();
+        service.create_workflow_def(invoked).await.unwrap();
+        service.create_workflow_def(never_invoked).await.unwrap();
+
+        storage
+            .save_workflow_instance(
+                0,
+                vec![],
+                WorkflowInstance {
+                    id: "invoked-1".to_string(),
+                    workflow_def_id: "invoked".to_string(),
+                    version: 0,
+                    status: WorkflowStatus::Completed,
+                    trigger_input: None,
+                    pinned_worker_host: None,
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = service.list_workflow_defs().await.unwrap();
+        assert_eq!(result.len(), 2);
+
+        let invoked = result
+            .iter()
+            .find(|summary| summary.id == "invoked")
+            .unwrap();
+        assert_eq!(invoked.description, "Has been run");
+        assert!(invoked.created_at_epoch_ms > 0);
+        assert!(invoked.last_invoked_at_epoch_ms.is_some());
+
+        let never_invoked = result
+            .iter()
+            .find(|summary| summary.id == "neverinvoked")
+            .unwrap();
+        assert_eq!(never_invoked.description, "Ready to run");
+        assert!(never_invoked.created_at_epoch_ms > 0);
+        assert_eq!(never_invoked.last_invoked_at_epoch_ms, None);
     }
 
     #[tokio::test]
@@ -1288,6 +1341,7 @@ mod tests {
         service
             .create_workflow_def(WorkflowDef {
                 id: "workflow1".to_string(),
+                description: String::new(),
                 tasks: vec![agent_task_def("taska")],
                 data_bindings: vec![],
             })
@@ -1361,6 +1415,7 @@ mod tests {
         service
             .create_workflow_def(WorkflowDef {
                 id: "workflow1".to_string(),
+                description: String::new(),
                 tasks: vec![agent_task_def("taska")],
                 data_bindings: vec![],
             })

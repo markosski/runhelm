@@ -8,7 +8,7 @@ use crate::core::models::{FunctionDef, TaskInstance, TaskStatus};
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::WorkflowEventRecord;
 use crate::core::workflow::models::{
-    WorkerHostId, WorkflowDef, WorkflowInfo, WorkflowInstance, WorkflowStatus,
+    WorkerHostId, WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::storage::{
     StoragePort, StorageResult, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPage,
@@ -16,6 +16,7 @@ use crate::ports::storage::{
 };
 
 const INITIAL_SCHEMA_MIGRATION: &str = "001_initial_sql_storage_schema";
+const WORKFLOW_DEF_DESCRIPTION_MIGRATION: &str = "002_workflow_def_description";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlDialect {
@@ -97,6 +98,27 @@ impl SqlStorage {
             .await?;
         }
 
+        let description_migration_applied =
+            sqlx::query("SELECT version FROM schema_migrations WHERE version = ?")
+                .bind(WORKFLOW_DEF_DESCRIPTION_MIGRATION)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+        if description_migration_applied.is_none() {
+            sqlx::query(
+                "ALTER TABLE workflow_defs ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO schema_migrations (version, applied_at_epoch_ms) VALUES (?, ?)",
+            )
+            .bind(WORKFLOW_DEF_DESCRIPTION_MIGRATION)
+            .bind(i64_from_u64(unix_timestamp_ms()?)?)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         tx.commit().await?;
         Ok(())
     }
@@ -108,13 +130,15 @@ impl StoragePort for SqlStorage {
         let now = i64_from_u64(unix_timestamp_ms()?)?;
         let definition_json = serde_json::to_string(&def)?;
         sqlx::query(
-            "INSERT INTO workflow_defs (id, definition_json, created_at_epoch_ms, updated_at_epoch_ms)
-             VALUES (?, ?, ?, ?)
+            "INSERT INTO workflow_defs (id, description, definition_json, created_at_epoch_ms, updated_at_epoch_ms)
+             VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
+                description = excluded.description,
                 definition_json = excluded.definition_json,
                 updated_at_epoch_ms = excluded.updated_at_epoch_ms",
         )
         .bind(&def.id)
+        .bind(&def.description)
         .bind(definition_json)
         .bind(now)
         .bind(now)
@@ -131,6 +155,36 @@ impl StoragePort for SqlStorage {
         Ok(row
             .map(|row| deserialize_json(row.get::<String, _>("definition_json").as_str()))
             .transpose()?)
+    }
+
+    async fn list_workflow_defs(&self) -> StorageResult<Vec<WorkflowDefSummary>> {
+        let rows = sqlx::query(
+            "SELECT
+                wd.id,
+                wd.description,
+                wd.created_at_epoch_ms,
+                MAX(wi.created_at_epoch_ms) AS last_invoked_at_epoch_ms
+             FROM workflow_defs wd
+             LEFT JOIN workflow_instances wi ON wi.workflow_def_id = wd.id
+             GROUP BY wd.id, wd.description, wd.created_at_epoch_ms
+             ORDER BY wd.created_at_epoch_ms DESC, wd.id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(WorkflowDefSummary {
+                    id: row.get("id"),
+                    description: row.get("description"),
+                    created_at_epoch_ms: u64_from_i64(row.get("created_at_epoch_ms"))?,
+                    last_invoked_at_epoch_ms: row
+                        .get::<Option<i64>, _>("last_invoked_at_epoch_ms")
+                        .map(u64_from_i64)
+                        .transpose()?,
+                })
+            })
+            .collect()
     }
 
     async fn save_function_def(&self, def: FunctionDef) -> StorageResult<()> {
@@ -804,6 +858,15 @@ mod tests {
         }
     }
 
+    fn workflow_def(id: &str, description: &str) -> WorkflowDef {
+        WorkflowDef {
+            id: id.to_string(),
+            description: description.to_string(),
+            tasks: vec![],
+            data_bindings: vec![],
+        }
+    }
+
     fn list_request(filters: Vec<WorkflowInstanceFilter>) -> WorkflowInfoListRequest {
         WorkflowInfoListRequest {
             filters,
@@ -868,6 +931,39 @@ mod tests {
             saved.verifier_states["verify"].feedback_history[0].feedback,
             "again"
         );
+    }
+
+    #[tokio::test]
+    async fn lists_compact_workflow_defs_with_last_invoked_time() {
+        let storage = storage().await;
+        storage
+            .save_workflow_def(workflow_def("wf", "Invoked workflow"))
+            .await
+            .unwrap();
+        storage
+            .save_workflow_def(workflow_def("neverinvoked", "Never invoked workflow"))
+            .await
+            .unwrap();
+        storage
+            .save_workflow_instance(
+                0,
+                vec![event_record(1234)],
+                instance("wf-1", WorkflowStatus::Completed),
+            )
+            .await
+            .unwrap();
+
+        let summaries = storage.list_workflow_defs().await.unwrap();
+        let invoked = summaries.iter().find(|summary| summary.id == "wf").unwrap();
+        assert_eq!(invoked.description, "Invoked workflow");
+        assert_eq!(invoked.last_invoked_at_epoch_ms, Some(1234));
+
+        let never_invoked = summaries
+            .iter()
+            .find(|summary| summary.id == "neverinvoked")
+            .unwrap();
+        assert_eq!(never_invoked.description, "Never invoked workflow");
+        assert_eq!(never_invoked.last_invoked_at_epoch_ms, None);
     }
 
     #[tokio::test]

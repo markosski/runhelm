@@ -425,6 +425,7 @@ fn test_workspace_group_does_not_create_scheduling_dependency() {
     let task_b = task_def_with_workspace_group("task-b", "repo");
     let def = WorkflowDef {
         id: "def-workspace-group-no-edge".to_string(),
+        description: String::new(),
         tasks: vec![task_a.clone(), task_b.clone()],
         data_bindings: vec![],
     };
@@ -474,6 +475,7 @@ fn test_root_task_uses_trigger_input_during_initial_materialization() {
     task.input_schemas = vec![json!({ "type": "object" })];
     let def = WorkflowDef {
         id: "def-root-input".to_string(),
+        description: String::new(),
         tasks: vec![task.clone()],
         data_bindings: vec![],
     };
@@ -502,6 +504,7 @@ fn test_workspace_group_tasks_still_wait_for_data_binding() {
     task_b.input_schemas = vec![json!({ "type": "object" })];
     let def = WorkflowDef {
         id: "def-workspace-group-data-binding".to_string(),
+        description: String::new(),
         tasks: vec![task_a.clone(), task_b.clone()],
         data_bindings: vec![DataBinding {
             source_task_id: "task-a".to_string(),
@@ -568,6 +571,7 @@ async fn test_input_needed_workflow_retains_pinned_host() {
     let engine = make_engine_with_dispatcher(Arc::new(InputNeededDispatcher));
     let def = WorkflowDef {
         id: "def-input-needed-pin-retention".to_string(),
+        description: String::new(),
         tasks: vec![agent_task("ask-user", true)],
         data_bindings: vec![],
     };
@@ -600,6 +604,7 @@ async fn test_input_needed_stops_current_engine_pass() {
     let engine = make_engine_with_dispatcher(dispatcher.clone());
     let def = WorkflowDef {
         id: "def-input-needed-stops-pass".to_string(),
+        description: String::new(),
         tasks: vec![
             agent_task("ask-user", true),
             task_def("independent-work", json!({ "type": "object" })),
@@ -637,6 +642,7 @@ fn test_verifier_without_rerun_from_task_id_self_reruns_only() {
     let engine = make_engine();
     let def = WorkflowDef {
         id: "def-self-rerun".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             agent_verifier_task("verify", None),
@@ -656,6 +662,7 @@ fn test_verifier_with_rerun_from_task_id_reruns_upstream_slice() {
     let engine = make_engine();
     let def = WorkflowDef {
         id: "def-upstream-rerun".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             task_def("task-b", json!({ "type": "object" })),
@@ -689,6 +696,7 @@ fn test_loop_execution_metadata_includes_feedback_history() {
     let engine = make_engine();
     let def = WorkflowDef {
         id: "def-loop-metadata".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             agent_verifier_task("verify", Some("task-a")),
@@ -778,6 +786,7 @@ fn test_execution_metadata_includes_task_instance_generation_index() {
     let engine = make_engine();
     let def = WorkflowDef {
         id: "def-generation-metadata".to_string(),
+        description: String::new(),
         tasks: vec![task_def("task-a", json!({ "type": "object" }))],
         data_bindings: vec![],
     };
@@ -815,6 +824,7 @@ async fn test_single_task_workflow_completes() {
 
     let def = WorkflowDef {
         id: "def-1".to_string(),
+        description: String::new(),
         tasks: vec![task_def("task-a", json!({ "type": "object" }))],
         data_bindings: vec![],
     };
@@ -847,6 +857,7 @@ async fn paused_workflow_records_in_flight_nonfinal_task_and_stops() {
     let engine = WorkflowEngine::new(storage.clone(), dispatcher.clone());
     let def = WorkflowDef {
         id: "def-paused-nonfinal".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             task_def("task-b", json!({ "type": "object" })),
@@ -901,6 +912,7 @@ async fn paused_workflow_records_in_flight_final_task_and_completes() {
     let engine = WorkflowEngine::new(storage.clone(), dispatcher.clone());
     let def = WorkflowDef {
         id: "def-paused-final".to_string(),
+        description: String::new(),
         tasks: vec![task_def("task-a", json!({ "type": "object" }))],
         data_bindings: vec![],
     };
@@ -946,6 +958,7 @@ async fn test_fan_in_workflow_completes_with_propagation() {
 
     let def = WorkflowDef {
         id: "def-2".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             task_def("task-b", json!({ "type": "object" })),
@@ -1018,6 +1031,7 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
     let engine = make_engine_with_dispatcher(Arc::new(ContinueThenCompleteDispatcher));
     let def = WorkflowDef {
         id: "def-loop-satisfaction".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             task_def("task-b", json!({ "type": "object" })),
@@ -1099,6 +1113,7 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
     let engine = make_engine_with_dispatcher(dispatcher.clone());
     let def = WorkflowDef {
         id: "def-agent-session-identity".to_string(),
+        description: String::new(),
         tasks: vec![
             agent_task("task-a", true),
             agent_verifier_task("verify", Some("task-a")),
@@ -1155,6 +1170,7 @@ async fn test_human_input_continuation_dispatches_same_logical_agent_identity() 
     let engine = make_engine_with_dispatcher(dispatcher.clone());
     let def = WorkflowDef {
         id: "def-human-input-continuation".to_string(),
+        description: String::new(),
         tasks: vec![agent_task("task-a", true)],
         data_bindings: vec![],
     };
@@ -1247,6 +1263,7 @@ fn test_verifier_slice_uses_latest_materialized_completed_source_attempt() {
     let verifier_task = agent_verifier_task("verify", Some("task-b"));
     let def = WorkflowDef {
         id: "def-verifier-latest-completed-source".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-b", json!({ "type": "object" })),
             verifier_task.clone(),
@@ -1353,6 +1370,7 @@ fn test_verifier_slice_waits_for_latest_materialized_source_attempt() {
     let verifier_task = agent_verifier_task("verify", Some("task-b"));
     let def = WorkflowDef {
         id: "def-verifier-waits-current-source".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-b", json!({ "type": "object" })),
             verifier_task.clone(),
@@ -1444,6 +1462,7 @@ async fn test_verifier_complete_accepts_first_generation() {
     let engine = make_engine_with_dispatcher(Arc::new(CompleteVerifierDispatcher));
     let def = WorkflowDef {
         id: "def-first-generation-accepted".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             task_def("task-b", json!({ "type": "object" })),
@@ -1505,6 +1524,7 @@ async fn test_function_verifier_can_drive_bounded_rerun() {
     let engine = make_engine_with_dispatcher(Arc::new(ContinueThenCompleteDispatcher));
     let def = WorkflowDef {
         id: "def-function-verifier".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             function_verifier_task("verify", Some("task-a")),
@@ -1547,6 +1567,7 @@ async fn test_exhausted_verifier_fails_when_continue_policy_is_false() {
     let engine = make_engine_with_dispatcher(Arc::new(AlwaysContinueVerifierDispatcher));
     let def = WorkflowDef {
         id: "def-exhaustion-fail".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             agent_verifier_task_with_policy("verify", Some("task-a"), 2, false),
@@ -1595,6 +1616,7 @@ async fn test_exhausted_verifier_accepts_latest_generation_when_continue_policy_
     let engine = make_engine_with_dispatcher(Arc::new(AlwaysContinueVerifierDispatcher));
     let def = WorkflowDef {
         id: "def-exhaustion-accept".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             agent_verifier_task_with_policy("verify", Some("task-a"), 2, true),
@@ -1647,6 +1669,7 @@ fn test_exhausted_continue_fails_without_schema_valid_latest_output() {
     verifier_task.output_schema = None;
     let def = WorkflowDef {
         id: "def-exhaustion-no-valid-output".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             verifier_task,
@@ -1745,6 +1768,7 @@ async fn test_downstream_uses_latest_satisfied_generation_after_verifier() {
     task_c.input_schemas = vec![json!({ "type": "object" }), json!({ "type": "object" })];
     let def = WorkflowDef {
         id: "def-downstream-latest-satisfied".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             task_def("task-b", json!({ "type": "object" })),
@@ -1815,6 +1839,7 @@ async fn test_schema_validation_failure_marks_workflow_failed() {
 
     let def = WorkflowDef {
         id: "def-3".to_string(),
+        description: String::new(),
         tasks: vec![task_def("task-strict", strict_schema)],
         data_bindings: vec![],
     };
@@ -1840,6 +1865,7 @@ async fn test_input_schema_failure_marks_workflow_failed() {
     downstream.input_schemas = vec![json!({ "type": "string" })];
     let def = WorkflowDef {
         id: "def-input-schema".to_string(),
+        description: String::new(),
         tasks: vec![task_def("task-a", json!({ "type": "object" })), downstream],
         data_bindings: vec![DataBinding {
             source_task_id: "task-a".to_string(),
@@ -1875,6 +1901,7 @@ async fn test_get_workflow_status_after_completion() {
 
     let def = WorkflowDef {
         id: "def-status".to_string(),
+        description: String::new(),
         tasks: vec![
             task_def("task-a", json!({ "type": "object" })),
             task_def("task-b", json!({ "type": "object" })),

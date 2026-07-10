@@ -2,7 +2,9 @@ use crate::core::models::{
     FunctionDef, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata,
 };
 use crate::core::workflow::events::WorkflowEventRecord;
-use crate::core::workflow::models::{WorkflowDef, WorkflowInfo, WorkflowInstance, WorkflowStatus};
+use crate::core::workflow::models::{
+    WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
+};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
@@ -246,6 +248,7 @@ impl Serialize for TaskResult {
 //  Global destrictive operations like delete workflow should still wipe out all workflow data
 pub trait StoragePort {
     async fn get_workflow_def(&self, id: &str) -> StorageResult<Option<WorkflowDef>>;
+    async fn list_workflow_defs(&self) -> StorageResult<Vec<WorkflowDefSummary>>;
     async fn get_function_def(&self, id: &str) -> StorageResult<Option<FunctionDef>>;
     async fn get_workflow_instance(&self, id: &str) -> StorageResult<Option<WorkflowInstance>>;
     async fn get_workflow_instance_events(

@@ -8,7 +8,7 @@ use tracing::{error, info};
 
 use crate::adapters::task_dispatcher::{WorkerExecutionResult, WorkerTaskResult};
 use crate::adapters::worker_registry::WorkerRegistration;
-use crate::api::models::WorkerResponse;
+use crate::api::models::{WorkerResponse, WorkflowDefList, WorkflowEvents, WorkflowList};
 use crate::core::models::FunctionDef;
 use crate::core::workflow::models::{WorkflowDef, WorkflowStatus};
 use crate::ports::task_dispatch::ExecutionResult;
@@ -57,6 +57,21 @@ pub async fn create_workflow_def(
         "status": "created",
         "id": workflow_def_id
     })))
+}
+
+pub async fn list_workflow_defs(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    let workflow_defs = state
+        .workflow_service
+        .list_workflow_defs()
+        .await
+        .map_err(|error| {
+            error!(%error, "failed to list workflow definitions");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    serde_json::to_value(WorkflowDefList { workflow_defs })
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub async fn create_function_def(
@@ -184,7 +199,13 @@ pub async fn get_workflow_events(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     match state.workflow_service.list_workflow_events(&id).await {
-        Ok(Some(events)) => Ok(Json(serde_json::to_value(events).unwrap())),
+        Ok(Some(events)) => Ok(Json(
+            serde_json::to_value(WorkflowEvents {
+                workflow_instance_id: id,
+                events,
+            })
+            .unwrap(),
+        )),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
@@ -381,7 +402,13 @@ pub async fn list_workflows(
         .list_workflows(status, query.limit, query.cursor.as_deref())
         .await
     {
-        Ok(workflows) => Ok(Json(serde_json::to_value(workflows).unwrap())),
+        Ok(page) => Ok(Json(
+            serde_json::to_value(WorkflowList {
+                workflows: page.workflows,
+                next_cursor: page.next_cursor,
+            })
+            .unwrap(),
+        )),
         Err(error) if error.to_string().contains("invalid workflow list cursor") => {
             Err(StatusCode::BAD_REQUEST)
         }
@@ -704,6 +731,7 @@ mod tests {
         let state = app_state(storage.clone(), WorkerRegistry::new());
         let workflow_def = WorkflowDef {
             id: "workflow-1".to_string(),
+            description: String::new(),
             tasks: vec![],
             data_bindings: vec![],
         };
@@ -739,6 +767,34 @@ mod tests {
             response["error"],
             "workflow definition workflow-1 already has workflow instances and cannot be overwritten; register under a new ID, for example workflow-1_v2"
         );
+    }
+
+    #[tokio::test]
+    async fn list_workflow_defs_api_returns_compact_summaries() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage, WorkerRegistry::new());
+        state
+            .workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow-1".to_string(),
+                description: "Example workflow".to_string(),
+                tasks: vec![],
+                data_bindings: vec![],
+            })
+            .await
+            .unwrap();
+
+        let Json(response) = list_workflow_defs(State(state)).await.unwrap();
+
+        assert_eq!(response["workflow_defs"][0]["id"], "workflow-1");
+        assert_eq!(
+            response["workflow_defs"][0]["description"],
+            "Example workflow"
+        );
+        assert!(response["workflow_defs"][0]["created_at_epoch_ms"].is_number());
+        assert!(response["workflow_defs"][0]["last_invoked_at_epoch_ms"].is_null());
+        assert!(response["workflow_defs"][0].get("tasks").is_none());
+        assert!(response["workflow_defs"][0].get("data_bindings").is_none());
     }
 
     #[tokio::test]
@@ -929,6 +985,7 @@ mod tests {
             .workflow_service
             .create_workflow_def(WorkflowDef {
                 id: "workflow-1".to_string(),
+                description: String::new(),
                 tasks: vec![crate::core::models::TaskDef {
                     id: "taska".to_string(),
                     kind: TaskTypeDef::Agent {

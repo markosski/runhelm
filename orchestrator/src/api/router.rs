@@ -44,7 +44,10 @@ pub fn create_public_router(
             "/function-def/{def_id}",
             delete(handlers::delete_function_def),
         )
-        .route("/workflow-def", post(handlers::create_workflow_def))
+        .route(
+            "/workflow-def",
+            get(handlers::list_workflow_defs).post(handlers::create_workflow_def),
+        )
         .route(
             "/workflow-def/{def_id}/tasks/{task_id}",
             post(handlers::invoke_workflow_task_isolated),
