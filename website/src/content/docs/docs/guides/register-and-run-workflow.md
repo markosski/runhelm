@@ -93,6 +93,15 @@ Response:
 }
 ```
 
+You can register an updated definition under the same ID until its first
+workflow instance is created. After an instance exists in any state, including
+`Completed` or `Failed`, RunHelm keeps the definition immutable and rejects an
+overwrite with `409 Conflict`. Register the update under a new ID instead, for
+example `hello-workflow_v2`.
+
+The `_v2` suffix is only a suggested naming convention. RunHelm does not require
+or interpret workflow definition versions.
+
 ## Start a run
 
 Start a workflow instance from the registered definition:

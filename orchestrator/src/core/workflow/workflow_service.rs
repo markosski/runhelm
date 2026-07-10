@@ -44,7 +44,8 @@ impl WorkflowService {
                 .await?;
             if !existing_instances.workflows.is_empty() {
                 anyhow::bail!(
-                    "workflow definition {} already has workflow instances and cannot be overwritten",
+                    "workflow definition {} already has workflow instances and cannot be overwritten; register under a new ID, for example {}_v2",
+                    def.id,
                     def.id
                 );
             }
@@ -965,7 +966,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("cannot be overwritten"));
+        assert_eq!(
+            error.to_string(),
+            "workflow definition workflow1 already has workflow instances and cannot be overwritten; register under a new ID, for example workflow1_v2"
+        );
         let stored = storage
             .get_workflow_def("workflow1")
             .await
@@ -975,38 +979,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_workflow_def_rejects_overwrite_after_terminal_instance_exists() {
-        let storage = Arc::new(MemoryStorage::new());
-        let service = WorkflowService::new(storage.clone());
+    async fn create_workflow_def_rejects_overwrite_when_instance_exists_in_any_state() {
+        for (index, status) in [
+            WorkflowStatus::Pending,
+            WorkflowStatus::Running,
+            WorkflowStatus::Paused,
+            WorkflowStatus::InputNeeded,
+            WorkflowStatus::Completed,
+            WorkflowStatus::Failed,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let storage = Arc::new(MemoryStorage::new());
+            let service = WorkflowService::new(storage.clone());
 
-        service
-            .create_workflow_def(workflow_def("workflow1"))
-            .await
-            .unwrap();
-        storage
-            .save_workflow_instance(
-                0,
-                vec![],
-                WorkflowInstance {
-                    id: "completed-workflow".to_string(),
-                    workflow_def_id: "workflow1".to_string(),
-                    version: 0,
-                    status: WorkflowStatus::Completed,
-                    trigger_input: None,
-                    pinned_worker_host: None,
-                    tasks: HashMap::new(),
-                    verifier_states: HashMap::new(),
-                },
-            )
-            .await
-            .unwrap();
+            service
+                .create_workflow_def(workflow_def("workflow1"))
+                .await
+                .unwrap();
+            storage
+                .save_workflow_instance(
+                    0,
+                    vec![],
+                    WorkflowInstance {
+                        id: format!("workflow-{index}"),
+                        workflow_def_id: "workflow1".to_string(),
+                        version: 0,
+                        status,
+                        trigger_input: None,
+                        pinned_worker_host: None,
+                        tasks: HashMap::new(),
+                        verifier_states: HashMap::new(),
+                    },
+                )
+                .await
+                .unwrap();
 
-        let error = service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
-            .await
-            .unwrap_err();
+            let error = service
+                .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+                .await
+                .unwrap_err();
 
-        assert!(error.to_string().contains("cannot be overwritten"));
+            assert!(error.to_string().contains("cannot be overwritten"));
+            let stored = storage
+                .get_workflow_def("workflow1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.tasks[0].id, "taska");
+        }
     }
 
     #[tokio::test]

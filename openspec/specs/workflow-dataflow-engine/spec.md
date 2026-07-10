@@ -25,7 +25,7 @@ The orchestrator SHALL normalize workflow definition IDs and task definition IDs
 - **THEN** that generated attempt ID is not subject to workflow definition ID validation
 
 ### Requirement: Workflow Definition Immutability After Instantiation
-The orchestrator SHALL reject overwriting an existing workflow definition after any workflow instance has been created for that definition.
+The orchestrator SHALL reject overwriting an existing workflow definition after any workflow instance has been created for that definition, regardless of the instance state. The orchestrator SHALL NOT require workflow definition IDs to follow a versioning scheme.
 
 #### Scenario: Definition overwrite before instances
 - **WHEN** a workflow definition is registered with the same normalized ID as an existing definition
@@ -35,7 +35,19 @@ The orchestrator SHALL reject overwriting an existing workflow definition after 
 #### Scenario: Definition overwrite after instance creation
 - **WHEN** a workflow definition is registered with the same normalized ID as an existing definition
 - **AND** at least one workflow instance exists for that workflow definition ID
+- **THEN** the system rejects the workflow definition overwrite with `409 Conflict`
+- **AND** the existing workflow definition remains unchanged
+- **AND** the error suggests registering a new ID by appending a suffix such as `_v2`
+
+#### Scenario: Definition overwrite after terminal instance creation
+- **WHEN** a workflow definition is registered with the same normalized ID as an existing definition
+- **AND** a completed or failed workflow instance exists for that workflow definition ID
 - **THEN** the system rejects the workflow definition overwrite
+
+#### Scenario: Workflow definition ID has no version suffix
+- **WHEN** a valid workflow definition ID does not contain a version suffix
+- **THEN** the system accepts the ID
+- **AND** the system does not interpret or enforce suffixes such as `_v2`
 
 ### Requirement: Bounded Backedge Validation
 The orchestrator SHALL preserve ordinary data binding cycle validation and SHALL allow bounded verifier backedges only through `control.verifier` configuration.
