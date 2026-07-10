@@ -28,7 +28,7 @@ pub async fn not_found() -> StatusCode {
 pub async fn create_workflow_def(
     State(state): State<AppState>,
     Json(workflow_def): Json<WorkflowDef>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let workflow_def_id = workflow_def.id.clone();
 
     state
@@ -36,14 +36,17 @@ pub async fn create_workflow_def(
         .create_workflow_def(workflow_def)
         .await
         .map_err(|error| {
-            let code;
-            if error.to_string().contains("cannot be overwritten") {
-                code = StatusCode::CONFLICT
+            let message = error.to_string();
+            let (code, response_message) = if message.contains("cannot be overwritten") {
+                (StatusCode::CONFLICT, message.clone())
             } else {
-                code = StatusCode::INTERNAL_SERVER_ERROR
-            }
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to register workflow definition".to_string(),
+                )
+            };
             error!("Error while registering workflow: {}", error);
-            code
+            (code, Json(json!({ "error": response_message })))
         })?;
     info!(
         "Registered workflow definition with ID: {}",
@@ -693,6 +696,49 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_workflow_def_api_returns_conflict_with_new_id_guidance() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
+        let workflow_def = WorkflowDef {
+            id: "workflow-1".to_string(),
+            tasks: vec![],
+            data_bindings: vec![],
+        };
+        state
+            .workflow_service
+            .create_workflow_def(workflow_def.clone())
+            .await
+            .unwrap();
+        storage
+            .save_workflow_instance(
+                0,
+                vec![],
+                WorkflowInstance {
+                    id: "workflow-instance".to_string(),
+                    workflow_def_id: "workflow-1".to_string(),
+                    version: 0,
+                    status: WorkflowStatus::Completed,
+                    trigger_input: None,
+                    pinned_worker_host: None,
+                    tasks: HashMap::new(),
+                    verifier_states: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let (status, Json(response)) = create_workflow_def(State(state), Json(workflow_def))
+            .await
+            .unwrap_err();
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            response["error"],
+            "workflow definition workflow-1 already has workflow instances and cannot be overwritten; register under a new ID, for example workflow-1_v2"
+        );
     }
 
     #[tokio::test]

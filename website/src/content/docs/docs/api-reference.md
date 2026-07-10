@@ -91,7 +91,18 @@ Response:
 }
 ```
 
-If a workflow definition cannot be overwritten, the API returns `409 Conflict`.
+You can overwrite a registered definition while it has no workflow instances.
+After any instance has been created, regardless of its state, the definition is
+immutable and an overwrite returns `409 Conflict`:
+
+```json
+{
+  "error": "workflow definition hello-workflow already has workflow instances and cannot be overwritten; register a new ID, for example hello-workflow_v2"
+}
+```
+
+RunHelm does not enforce a versioning scheme. Suffixes such as `_v2` are a
+suggested convention for choosing a new definition ID.
 
 ## Function definitions
 
