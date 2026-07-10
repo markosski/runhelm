@@ -1,4 +1,6 @@
 ---
+import WorkflowFlow from '../components/WorkflowFlow';
+
 const installCommand = `curl -fsSL https://raw.githubusercontent.com/markosski/runhelm/main/packaging/install.sh | sh
 runhelm init
 runhelm up`;
@@ -109,10 +111,8 @@ runhelm up`;
       }
 
       .hero {
-        min-height: 520px;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
-        gap: 44px;
+        min-height: 420px;
+        display: flex;
         align-items: center;
       }
 
@@ -208,40 +208,12 @@ runhelm up`;
         font-weight: 800;
       }
 
-      .nodes {
-        display: grid;
-        gap: 12px;
-        padding: 18px;
-      }
-
-      .node {
-        padding: 14px;
-        border: 1px solid var(--line);
-        border-left: 4px solid var(--blue);
-        border-radius: 8px;
-        background: #fbfcfe;
-      }
-
-      .node:nth-child(2) {
-        border-left-color: var(--green);
-      }
-
-      .node:nth-child(3) {
-        border-left-color: var(--accent);
-      }
-
-      .node strong {
-        display: block;
-        margin-bottom: 4px;
-      }
-
-      .node span {
-        color: var(--muted);
-        font-size: 14px;
-      }
-
       .section {
         padding-top: 72px;
+      }
+
+      .workflow-showcase {
+        padding-top: 24px;
       }
 
       .section > p {
@@ -302,7 +274,6 @@ runhelm up`;
       }
 
       @media (max-width: 900px) {
-        .hero,
         .install {
           grid-template-columns: 1fr;
         }
@@ -362,33 +333,20 @@ runhelm up`;
             observable, reusable workflow runs with explicit data flow, typed task
             contracts, resumable state, and isolated workers.
           </p>
+
           <div class="actions">
             <a class="button primary" href="/docs/">Read the docs</a>
             <a class="button" href="/docs/install/">Install locally</a>
           </div>
         </div>
-
-        <aside class="system-panel" aria-label="RunHelm system model">
-          <div class="panel-head">
-            <span>workflow run</span>
-            <span>observable state</span>
-          </div>
-          <div class="nodes">
-            <div class="node">
-              <strong>Orchestrator</strong>
-              <span>Owns definitions, scheduling, run state, and APIs.</span>
-            </div>
-            <div class="node">
-              <strong>Workers</strong>
-              <span>Execute agents, functions, and API calls in isolated runtimes.</span>
-            </div>
-            <div class="node">
-              <strong>Contracts</strong>
-              <span>Bind task inputs and outputs through schemas and data flow.</span>
-            </div>
-          </div>
-        </aside>
       </section>
+
+      <section class="workflow-showcase" aria-label="RunHelm stock report workflow">
+          <aside class="system-panel" aria-label="RunHelm stock report workflow">
+            <WorkflowFlow client:load />
+          </aside>
+      </section>
+      
 
       <section class="section">
         <h2>Built for workflows, not one-off prompts.</h2>
