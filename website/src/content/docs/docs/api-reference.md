@@ -18,6 +18,7 @@ export RUNHELM_URL=http://localhost:3000
 | `GET` | `/health` | Check API health. |
 | `GET` | `/workflow-def` | List registered workflow definition summaries. |
 | `POST` | `/workflow-def` | Register a workflow definition. |
+| `GET` | `/workflow-def/{def_id}` | Get a complete registered workflow definition. |
 | `POST` | `/workflow-def/{def_id}` | Create and queue a workflow instance. |
 | `POST` | `/workflow-def/{def_id}/tasks/{task_id}` | Execute one workflow task in isolation. |
 | `POST` | `/function-def` | Register a reusable function definition. |
@@ -123,6 +124,47 @@ Response:
 ```
 
 `last_invoked_at_epoch_ms` is the creation time of the most recently created workflow instance for that definition. It is `null` until the definition has been invoked.
+
+Get one complete registered workflow definition when you need its tasks, schemas,
+or data bindings:
+
+```bash
+curl -sS "$RUNHELM_URL/workflow-def/hello-workflow"
+```
+
+Response:
+
+```json
+{
+  "id": "hello-workflow",
+  "description": "Says hello to a named user.",
+  "tasks": [
+    {
+      "id": "hello",
+      "kind": {
+        "Function": {
+          "dependencies": [],
+          "code": "export default async function run({ inputs }) { return { response: `hello ${inputs[0].name}` }; }"
+        }
+      },
+      "timeout_secs": null,
+      "output_schema": {
+        "type": "object",
+        "required": ["response"],
+        "properties": {
+          "response": { "type": "string" }
+        }
+      },
+      "required_credentials": []
+    }
+  ],
+  "data_bindings": []
+}
+```
+
+The response is the full stored workflow definition model, rather than the
+summary returned by `GET /workflow-def`. An unknown `def_id` returns `404 Not
+Found`.
 
 You can overwrite a registered definition while it has no workflow instances.
 After any instance has been created, regardless of its state, the definition is

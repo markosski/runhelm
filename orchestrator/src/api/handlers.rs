@@ -74,6 +74,24 @@ pub async fn list_workflow_defs(State(state): State<AppState>) -> Result<Json<Va
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+pub async fn get_workflow_def(
+    State(state): State<AppState>,
+    Path(workflow_def_id): Path<String>,
+) -> Result<Json<WorkflowDef>, StatusCode> {
+    match state
+        .workflow_service
+        .get_workflow_def(&workflow_def_id)
+        .await
+    {
+        Ok(Some(workflow_def)) => Ok(Json(workflow_def)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            error!(%workflow_def_id, %error, "failed to get workflow definition");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 pub async fn create_function_def(
     State(state): State<AppState>,
     Json(function_def): Json<FunctionDef>,
@@ -795,6 +813,64 @@ mod tests {
         assert!(response["workflow_defs"][0]["last_invoked_at_epoch_ms"].is_null());
         assert!(response["workflow_defs"][0].get("tasks").is_none());
         assert!(response["workflow_defs"][0].get("data_bindings").is_none());
+    }
+
+    #[tokio::test]
+    async fn get_workflow_def_api_returns_complete_definition() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage, WorkerRegistry::new());
+        state
+            .workflow_service
+            .create_workflow_def(WorkflowDef {
+                id: "workflow-1".to_string(),
+                description: "Example workflow".to_string(),
+                tasks: vec![crate::core::models::TaskDef {
+                    id: "taska".to_string(),
+                    kind: TaskTypeDef::Agent {
+                        model_id: "model".to_string(),
+                        provider_url: "provider".to_string(),
+                        prompt: "prompt".to_string(),
+                        tools: vec![],
+                        skills: vec![],
+                        ask: false,
+                        schema_failure_retry_times: 0.into(),
+                        reuse_session: true,
+                    },
+                    control: None,
+                    timeout_secs: None,
+                    input_schemas: vec![],
+                    output_schema: None,
+                    workspace: None,
+                    required_credentials: vec![],
+                }],
+                data_bindings: vec![],
+            })
+            .await
+            .unwrap();
+
+        let Json(response) = get_workflow_def(State(state), Path("workflow-1".to_string()))
+            .await
+            .unwrap();
+        let response = serde_json::to_value(response).unwrap();
+
+        assert_eq!(response["id"], "workflow-1");
+        assert_eq!(response["description"], "Example workflow");
+        assert_eq!(response["tasks"][0]["id"], "taska");
+        assert!(response["data_bindings"].is_array());
+        assert!(response.get("created_at_epoch_ms").is_none());
+        assert!(response.get("last_invoked_at_epoch_ms").is_none());
+    }
+
+    #[tokio::test]
+    async fn get_workflow_def_api_returns_not_found_for_missing_definition() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage, WorkerRegistry::new());
+
+        let status = get_workflow_def(State(state), Path("missing".to_string()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
