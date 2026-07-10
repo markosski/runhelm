@@ -16,6 +16,7 @@ export RUNHELM_URL=http://localhost:3000
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Check API health. |
+| `GET` | `/workflow-def` | List registered workflow definition summaries. |
 | `POST` | `/workflow-def` | Register a workflow definition. |
 | `POST` | `/workflow-def/{def_id}` | Create and queue a workflow instance. |
 | `POST` | `/workflow-def/{def_id}/tasks/{task_id}` | Execute one workflow task in isolation. |
@@ -58,6 +59,7 @@ curl -sS -X POST "$RUNHELM_URL/workflow-def" \
   -H 'content-type: application/json' \
   -d '{
     "id": "hello-workflow",
+    "description": "Says hello to a named user.",
     "tasks": [
       {
         "id": "hello",
@@ -90,6 +92,37 @@ Response:
   "id": "hello-workflow"
 }
 ```
+
+`description` is optional and defaults to an empty string.
+
+List registered workflow definitions without loading their task definitions or data bindings:
+
+```bash
+curl -sS "$RUNHELM_URL/workflow-def"
+```
+
+Response:
+
+```json
+{
+  "workflow_defs": [
+    {
+      "id": "hello-workflow",
+      "description": "Says hello to a named user.",
+      "created_at_epoch_ms": 1780000000000,
+      "last_invoked_at_epoch_ms": 1780000001200
+    },
+    {
+      "id": "not-yet-run",
+      "description": "A workflow that has not been invoked.",
+      "created_at_epoch_ms": 1779999999000,
+      "last_invoked_at_epoch_ms": null
+    }
+  ]
+}
+```
+
+`last_invoked_at_epoch_ms` is the creation time of the most recently created workflow instance for that definition. It is `null` until the definition has been invoked.
 
 You can overwrite a registered definition while it has no workflow instances.
 After any instance has been created, regardless of its state, the definition is

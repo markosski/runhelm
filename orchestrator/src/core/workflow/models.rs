@@ -120,6 +120,12 @@ pub struct WorkflowInfo {
     pub completed_task_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowListPage {
+    pub workflows: Vec<WorkflowInfo>,
+    pub next_cursor: Option<String>,
+}
+
 impl WorkflowInfo {
     pub fn from_instance_with_timestamps(
         instance: &WorkflowInstance,
@@ -184,8 +190,19 @@ pub struct DataBinding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDef {
     pub id: String,
+    #[serde(default)]
+    pub description: String,
     pub tasks: Vec<TaskDef>,
     pub data_bindings: Vec<DataBinding>,
+}
+
+/// Compact workflow definition metadata for discovery and selection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowDefSummary {
+    pub id: String,
+    pub description: String,
+    pub created_at_epoch_ms: u64,
+    pub last_invoked_at_epoch_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

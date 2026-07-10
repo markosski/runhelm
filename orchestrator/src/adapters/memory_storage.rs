@@ -5,19 +5,26 @@ use tokio::sync::{Mutex, RwLock};
 use crate::core::models::FunctionDef;
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::WorkflowEventRecord;
-use crate::core::workflow::models::{WorkflowDef, WorkflowInfo, WorkflowInstance, WorkflowStatus};
+use crate::core::workflow::models::{
+    WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
+};
 use crate::ports::storage::{
     StoragePort, StorageResult, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPage,
     WorkflowInstanceFilter, WorkflowVersionConflict,
 };
 
 pub struct MemoryStorage {
-    workflow_defs: RwLock<HashMap<String, WorkflowDef>>,
+    workflow_defs: RwLock<HashMap<String, StoredWorkflowDef>>,
     function_defs: RwLock<HashMap<String, FunctionDef>>,
     workflow_instances: RwLock<HashMap<String, WorkflowInstance>>,
     workflow_instance_events: RwLock<HashMap<String, Vec<WorkflowEventRecord>>>,
     workflow_infos: RwLock<HashMap<String, WorkflowInfo>>,
     commit_lock: Mutex<()>,
+}
+
+struct StoredWorkflowDef {
+    definition: WorkflowDef,
+    created_at_epoch_ms: u64,
 }
 
 impl MemoryStorage {
@@ -40,13 +47,49 @@ impl MemoryStorage {
 impl StoragePort for MemoryStorage {
     async fn save_workflow_def(&self, def: WorkflowDef) -> StorageResult<()> {
         let mut map = self.workflow_defs.write().await;
-        map.insert(def.id.clone(), def);
+        let created_at_epoch_ms = map
+            .get(&def.id)
+            .map(|stored| stored.created_at_epoch_ms)
+            .unwrap_or(unix_timestamp_ms()?);
+        map.insert(
+            def.id.clone(),
+            StoredWorkflowDef {
+                definition: def,
+                created_at_epoch_ms,
+            },
+        );
         Ok(())
     }
 
     async fn get_workflow_def(&self, id: &str) -> StorageResult<Option<WorkflowDef>> {
         let map = self.workflow_defs.read().await;
-        Ok(map.get(id).cloned())
+        Ok(map.get(id).map(|stored| stored.definition.clone()))
+    }
+
+    async fn list_workflow_defs(&self) -> StorageResult<Vec<WorkflowDefSummary>> {
+        let _commit_guard = self.commit_lock.lock().await;
+        let definitions = self.workflow_defs.read().await;
+        let infos = self.workflow_infos.read().await;
+        let mut summaries = definitions
+            .values()
+            .map(|stored| WorkflowDefSummary {
+                id: stored.definition.id.clone(),
+                description: stored.definition.description.clone(),
+                created_at_epoch_ms: stored.created_at_epoch_ms,
+                last_invoked_at_epoch_ms: infos
+                    .values()
+                    .filter(|info| info.workflow_def_id == stored.definition.id)
+                    .filter_map(|info| info.created_at_epoch_ms)
+                    .max(),
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| {
+            right
+                .created_at_epoch_ms
+                .cmp(&left.created_at_epoch_ms)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        Ok(summaries)
     }
 
     async fn save_function_def(&self, def: FunctionDef) -> StorageResult<()> {

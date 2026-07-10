@@ -9,6 +9,7 @@ RunHelm workflow definitions are JSON or YAML documents. YAML is convenient for 
 
 ```yaml
 id: example-workflow
+description: Summarize an input document.
 
 tasks: []
 
@@ -18,6 +19,7 @@ data_bindings: []
 | Field | Required | Description |
 | --- | --- | --- |
 | `id` | Yes | Workflow definition ID. IDs are normalized during registration. |
+| `description` | No | Human-readable workflow description used in workflow discovery lists. Defaults to an empty string. |
 | `tasks` | Yes | Task definitions that make up the workflow graph. |
 | `data_bindings` | Yes | Edges that pass outputs from source tasks to target task inputs. |
 

@@ -346,6 +346,28 @@ The orchestrator SHALL expose storage-level workflow instance list results as li
 - **WHEN** a workflow instance appears in a storage-level list result
 - **THEN** the summary includes total task count and completed task count produced from the saved snapshot
 
+### Requirement: Workflow Definition Discovery
+The orchestrator SHALL expose registered workflow definitions as compact summaries without returning task definitions, data bindings, or other full definition payload data.
+
+#### Scenario: List registered workflow definitions
+- **WHEN** a caller requests the workflow definition list
+- **THEN** the system returns a summary for every registered workflow definition
+- **THEN** each summary includes the workflow definition ID, description, and creation time
+- **THEN** the summaries are sorted by creation time descending and then workflow definition ID descending
+
+#### Scenario: List an invoked workflow definition
+- **WHEN** a registered workflow definition has one or more workflow instances
+- **THEN** its summary includes the creation time of its most recently created workflow instance as the last invoked time
+
+#### Scenario: List a never-invoked workflow definition
+- **WHEN** a registered workflow definition has no workflow instances
+- **THEN** its summary has no last invoked time
+
+#### Scenario: Persist workflow description metadata
+- **WHEN** a workflow definition is registered with a description
+- **THEN** storage persists the description with the workflow definition
+- **THEN** the workflow definition summary exposes that description without loading the full workflow definition payload
+
 ### Requirement: Storage Adapter Boundary
 Storage adapters SHALL be responsible for persistence mechanics and SHALL NOT own workflow event semantics.
 

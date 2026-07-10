@@ -170,6 +170,7 @@ fn function_ref_task(id: &str, reference: &str) -> TaskDef {
 fn workflow(id: &str, tasks: Vec<TaskDef>) -> WorkflowDef {
     WorkflowDef {
         id: id.to_string(),
+        description: String::new(),
         tasks,
         data_bindings: vec![],
     }
@@ -617,6 +618,7 @@ async fn create_workflow_def_normalizes_workflow_def_task_def_and_binding_ids() 
     workflow_service
         .create_workflow_def(WorkflowDef {
             id: "Workflow_ABC-1".to_string(),
+            description: String::new(),
             tasks: vec![task_a, task_b],
             data_bindings: vec![DataBinding {
                 source_task_id: "Task_A".to_string(),
@@ -697,6 +699,7 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
     let missing_target_error = workflow_service
         .create_workflow_def(WorkflowDef {
             id: "workflow1".to_string(),
+            description: String::new(),
             tasks: vec![task("taska"), missing_target_verifier],
             data_bindings: vec![DataBinding {
                 source_task_id: "taska".to_string(),
@@ -723,6 +726,7 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
     let downstream_target_error = workflow_service
         .create_workflow_def(WorkflowDef {
             id: "workflow2".to_string(),
+            description: String::new(),
             tasks: vec![downstream_target_verifier, task("taskb")],
             data_bindings: vec![DataBinding {
                 source_task_id: "taska".to_string(),
@@ -749,6 +753,7 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
     let unrelated_target_error = workflow_service
         .create_workflow_def(WorkflowDef {
             id: "workflow3".to_string(),
+            description: String::new(),
             tasks: vec![task("taska"), task("taskb"), unrelated_target_verifier],
             data_bindings: vec![DataBinding {
                 source_task_id: "taska".to_string(),
@@ -789,6 +794,7 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
     let error = workflow_service
         .create_workflow_def(WorkflowDef {
             id: "workflow1".to_string(),
+            description: String::new(),
             tasks: vec![task("taska"), task("taskb"), verifya, verifyb],
             data_bindings: vec![
                 DataBinding {
