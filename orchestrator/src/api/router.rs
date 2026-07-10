@@ -54,7 +54,7 @@ pub fn create_public_router(
         )
         .route(
             "/workflow-def/{def_id}",
-            post(handlers::trigger_workflow_instance),
+            get(handlers::get_workflow_def).post(handlers::trigger_workflow_instance),
         )
         .route(
             "/workflow-queue",

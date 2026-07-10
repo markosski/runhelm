@@ -60,6 +60,10 @@ impl WorkflowService {
         Ok(self.storage.list_workflow_defs().await?)
     }
 
+    pub async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
+        Ok(self.storage.get_workflow_def(id).await?)
+    }
+
     pub async fn create_workflow_instance_for_def(
         &self,
         workflow_def_id: &str,
