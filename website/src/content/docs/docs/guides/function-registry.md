@@ -7,6 +7,44 @@ The Function registry stores reusable Function definitions. A workflow can refer
 
 Use registered functions for shared integrations, common transformations, or any code that is easier to build and test outside a workflow file.
 
+## Create a function
+
+Give your coding agent access to the current RunHelm function implementations
+and documentation. If you have not already done so, add RunHelm to your
+application repository as a Git submodule:
+
+```bash
+cd path/to/your-application
+git submodule add https://github.com/markosski/runhelm.git runhelm
+```
+
+Open your application repository in your coding agent, then adapt this prompt:
+
+```text
+Create a reusable RunHelm function that [describe what the function should do].
+
+Use the implementations and build tooling in runhelm/functions/ and the
+documentation in runhelm/website/src/content/docs/docs/ as the authoritative
+references. Ensure to understand the function's inputs, output and credential 
+requirements.
+
+Create the function under [path and package name]. Follow the existing RunHelm
+source, build, and test patterns. Keep the implementation and its dependencies
+as small as possible, pin every runtime dependency to a specific version, and
+do not invent fields that are not supported by the current examples or
+documentation.
+
+Add tests for the function's behavior and generate the registry-ready JSON and
+YAML artifacts. Run the tests and build, then explain the function ID, inputs,
+output, dependencies, and credentials that a referencing workflow task must
+declare. Give me the curl command to register the JSON artifact against
+$RUNHELM_URL.
+```
+
+Replace the bracketed text with the desired behavior and output location. Review
+the generated code, dependency versions, and credential usage before
+registering the function.
+
 ## Function definition shape
 
 A registered function definition contains:
@@ -104,6 +142,15 @@ Register the JSON artifact:
 curl -sS -X POST "$RUNHELM_URL/function-def" \
   -H 'content-type: application/json' \
   --data-binary @functions/example/dist/example.example.json
+```
+
+You can also pipe a YAML artifact through `yq` and register the resulting JSON:
+
+```bash
+yq . functions/example/dist/example.yaml \
+  | curl -sS -X POST "$RUNHELM_URL/function-def" \
+      -H 'Content-Type: application/json' \
+      --data-binary @-
 ```
 
 ## When to use inline functions

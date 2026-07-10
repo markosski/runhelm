@@ -5,16 +5,51 @@ description: Register a workflow definition, start a run, inspect status, and re
 
 This guide walks through the smallest useful RunHelm API flow:
 
-1. Register a workflow definition.
-2. Start a workflow instance.
-3. Check workflow status.
-4. Read task results.
+1. Create a workflow definition.
+2. Register a workflow definition.
+3. Start a workflow instance.
+4. Check workflow status.
+5. Read task results.
 
 Set the local API URL:
 
 ```bash
 export RUNHELM_URL=http://localhost:3000
 ```
+
+## Create a workflow
+
+The quickest way to create a workflow is to give your coding agent access to the
+RunHelm repository. Add RunHelm to your application repository as a Git
+submodule so the agent can inspect the current examples and documentation while
+it works:
+
+```bash
+cd path/to/your-application
+git submodule add https://github.com/markosski/runhelm.git runhelm
+```
+
+Open your application repository in your coding agent, then adapt this prompt:
+
+```text
+Create a RunHelm workflow that [describe the outcome you want].
+
+Use the workflow examples in runhelm/worker/examples/ and the documentation in
+runhelm/website/src/content/docs/docs/ as the authoritative references. Inspect
+my application to understand the inputs, outputs, APIs, and credentials the
+workflow needs.
+
+Keep the workflow as small as possible. Define only the required tasks, data
+bindings, input and output schemas, and credentials. Do not invent fields that
+are not supported by the current RunHelm examples or documentation.
+
+Save an API-ready JSON workflow definition to [path and filename]. Then explain
+the workflow, list the inputs and credentials I must provide, and give me the
+curl commands to register and run it against $RUNHELM_URL.
+```
+
+Replace the bracketed text with your desired outcome and output path. Review the
+generated definition and its credential requirements before registering it.
 
 ## Register a workflow
 

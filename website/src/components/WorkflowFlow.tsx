@@ -52,7 +52,7 @@ const nodeData: Array<Node<FlowNodeData>> = [
     style: { width: 230, height: 210 },
     data: {
       label: 'Orchestrator',
-      detail: 'Captures trigger input and schedules work',
+      detail: 'Captures workflow trigger input makes tasks available for workers',
       tone: 'orchestrator',
       sourcePosition: Position.Top,
       hasTarget: false,
@@ -62,10 +62,10 @@ const nodeData: Array<Node<FlowNodeData>> = [
     id: 'worker',
     type: 'groupNode',
     position: { x: 300, y: 30 },
-    style: { width: 600, height: 300 },
+    style: { width: 600, height: 340 },
     data: {
       label: 'Remote Worker',
-      detail: 'Executes tasks and returns observed results',
+      detail: 'Polls orchestrator for work, executes tasks and passes results to next task in the chain',
       tone: 'worker',
       targetPosition: Position.Top,
       hasSource: false,
@@ -98,6 +98,7 @@ const nodeData: Array<Node<FlowNodeData>> = [
       detail: 'Calls market data URLs',
       tone: 'function',
       hasTarget: false,
+      hasSource: true,
     },
   },
   {
@@ -118,10 +119,10 @@ const nodeData: Array<Node<FlowNodeData>> = [
     type: 'workflow',
     parentId: 'worker',
     extent: 'parent',
-    position: { x: 285, y: 186 },
+    position: { x: 285, y: 214 },
     data: {
       title: 'Verify summary',
-      kind: 'Verifier Agent Task',
+      kind: 'Agent Task',
       detail: 'Another agent checks expected information',
       tone: 'verify',
       targetPosition: Position.Right,
@@ -133,7 +134,7 @@ const nodeData: Array<Node<FlowNodeData>> = [
     type: 'workflow',
     parentId: 'worker',
     extent: 'parent',
-    position: { x: 38, y: 186 },
+    position: { x: 38, y: 214 },
     data: {
       title: 'Send email',
       kind: 'Function Task',
