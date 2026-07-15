@@ -1,3 +1,4 @@
+pub mod aws_storage;
 pub mod fake_task_dispatcher;
 pub mod memory_storage;
 pub mod memory_workflow_queue;

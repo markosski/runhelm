@@ -9,6 +9,7 @@ use tokio::time::{self, Duration};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use crate::adapters::aws_storage::{AwsStorage, AwsStorageConfig};
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::adapters::sql_storage::SqlStorage;
@@ -122,6 +123,9 @@ async fn create_storage() -> anyhow::Result<Arc<dyn StoragePort + Send + Sync>> 
             })?;
             Ok(Arc::new(SqlStorage::connect(&database_url).await?))
         }
+        "aws" => Ok(Arc::new(
+            AwsStorage::connect(AwsStorageConfig::from_env()?).await?,
+        )),
         value => anyhow::bail!("unsupported RUNHELM_STORAGE value {value}"),
     }
 }
