@@ -276,6 +276,12 @@ The orchestrator SHALL persist workflow instance event batches and the resulting
 - **WHEN** core code commits workflow instance events
 - **THEN** each persisted workflow event record includes a `created_time` value
 
+#### Scenario: Event history is paginated
+- **WHEN** a caller requests workflow instance events with a page limit and optional sequence cursor
+- **THEN** the system returns events in ascending event-sequence order
+- **THEN** the response includes a next-sequence cursor only when more events remain
+- **THEN** durable storage performs a bounded read rather than loading the complete event history before pagination
+
 #### Scenario: Empty event batch
 - **WHEN** core code attempts to commit an empty event batch
 - **THEN** the system rejects the operation without saving a snapshot
@@ -379,6 +385,22 @@ Storage adapters SHALL be responsible for persistence mechanics and SHALL NOT ow
 - **WHEN** storage commits workflow instance event records and snapshot state
 - **THEN** the snapshot has already been produced by core logic
 - **THEN** any summary projection is derived from the committed snapshot, not from event payload semantics
+
+#### Scenario: Event batch identifies changed tasks
+- **WHEN** a workflow event changes or creates task-attempt state
+- **THEN** the event identifies every affected task attempt ID
+- **THEN** startup recovery records the exact running task attempt IDs it resets
+
+#### Scenario: Durable storage persists event-identified tasks
+- **WHEN** durable storage commits workflow events and the resulting workflow snapshot
+- **THEN** a core-owned exhaustive event classifier supplies the affected task attempt IDs
+- **THEN** storage writes the authoritative task records for those IDs from the resulting snapshot
+- **THEN** storage creates missing task records and updates existing task records without bulk replacement or deletion
+- **THEN** storage does not reapply workflow event transition semantics
+
+#### Scenario: SQL storage persists event-identified tasks
+- **WHEN** SQL storage commits a transition whose events identify changed tasks
+- **THEN** it upserts only those task rows without replacing unchanged task rows
 
 #### Scenario: SQL storage reconstructs aggregate state
 - **WHEN** SQL storage persists workflow instance state across workflow, task, verifier, and event tables

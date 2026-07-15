@@ -6,6 +6,7 @@ use crate::core::workflow::models::{
     WorkflowInstance, WorkflowStatus,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -15,7 +16,7 @@ pub enum WorkflowInstanceEvent {
     /// Changes the overall workflow instance status.
     WorkflowStatusChanged { status: WorkflowStatus },
     /// Resets in-flight running workflow or task state after orchestrator restart.
-    StartupRecoveryApplied,
+    StartupRecoveryApplied { task_attempt_ids: Vec<String> },
     /// Adds a concrete task attempt to the workflow instance.
     TaskMaterialized {
         task_attempt_id: String,
@@ -102,11 +103,12 @@ pub fn apply_workflow_instance_event(
         WorkflowInstanceEvent::WorkflowStatusChanged { status } => {
             instance.status = status.clone();
         }
-        WorkflowInstanceEvent::StartupRecoveryApplied => {
+        WorkflowInstanceEvent::StartupRecoveryApplied { task_attempt_ids } => {
             if instance.status == WorkflowStatus::Running {
                 instance.status = WorkflowStatus::Pending;
             }
-            for task in instance.tasks.values_mut() {
+            for task_attempt_id in task_attempt_ids {
+                let task = task_mut(instance, task_attempt_id)?;
                 if task.status == TaskStatus::Running {
                     task.status = TaskStatus::Pending;
                 }
@@ -244,6 +246,60 @@ pub fn apply_workflow_instance_event(
     }
 
     Ok(())
+}
+
+pub fn changed_task_attempt_ids(events: &[WorkflowEventRecord]) -> HashSet<String> {
+    let mut task_attempt_ids = HashSet::new();
+    for record in events {
+        match &record.event {
+            WorkflowInstanceEvent::WorkflowCreated { instance } => {
+                task_attempt_ids.extend(instance.tasks.keys().cloned());
+            }
+            WorkflowInstanceEvent::WorkflowStatusChanged { .. }
+            | WorkflowInstanceEvent::VerifierStateUpserted { .. }
+            | WorkflowInstanceEvent::VerifierFeedbackRecorded { .. }
+            | WorkflowInstanceEvent::VerifierStateStatusChanged { .. } => {}
+            WorkflowInstanceEvent::StartupRecoveryApplied {
+                task_attempt_ids: recovered_task_attempt_ids,
+            } => {
+                task_attempt_ids.extend(recovered_task_attempt_ids.iter().cloned());
+            }
+            WorkflowInstanceEvent::TaskMaterialized {
+                task_attempt_id, ..
+            }
+            | WorkflowInstanceEvent::TaskStatusChanged {
+                task_attempt_id, ..
+            }
+            | WorkflowInstanceEvent::TaskInputDataSet {
+                task_attempt_id, ..
+            }
+            | WorkflowInstanceEvent::TaskInputMappingSet {
+                task_attempt_id, ..
+            }
+            | WorkflowInstanceEvent::TaskOutputRecorded {
+                task_attempt_id, ..
+            }
+            | WorkflowInstanceEvent::TaskSatisfactionChanged {
+                task_attempt_id, ..
+            }
+            | WorkflowInstanceEvent::TaskVerifierMetadataSet {
+                task_attempt_id, ..
+            }
+            | WorkflowInstanceEvent::TaskRetryRequested { task_attempt_id }
+            | WorkflowInstanceEvent::TaskForceRetryRequested {
+                task_attempt_id, ..
+            } => {
+                task_attempt_ids.insert(task_attempt_id.clone());
+            }
+            WorkflowInstanceEvent::HumanInputSubmitted {
+                continuation_task_attempt_id,
+                ..
+            } => {
+                task_attempt_ids.insert(continuation_task_attempt_id.clone());
+            }
+        }
+    }
+    task_attempt_ids
 }
 
 pub fn reduce_workflow_instance_events(
@@ -455,12 +511,56 @@ mod tests {
 
         apply_workflow_instance_event(
             &mut instance,
-            &WorkflowInstanceEvent::StartupRecoveryApplied,
+            &WorkflowInstanceEvent::StartupRecoveryApplied {
+                task_attempt_ids: vec!["task-a[1]".to_string()],
+            },
         )
         .unwrap();
 
         assert_eq!(instance.status, WorkflowStatus::Pending);
         assert_eq!(instance.tasks["task-a[1]"].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn changed_task_ids_are_extracted_without_reducing_events() {
+        let records = vec![
+            WorkflowEventRecord {
+                created_time: 1,
+                event: WorkflowInstanceEvent::TaskStatusChanged {
+                    task_attempt_id: "task-a[1]".to_string(),
+                    status: TaskStatus::Running,
+                },
+            },
+            WorkflowEventRecord {
+                created_time: 2,
+                event: WorkflowInstanceEvent::HumanInputSubmitted {
+                    task_attempt_id: "task-b[1]".to_string(),
+                    continuation_task_attempt_id: "task-b[2]".to_string(),
+                    submitted_input: serde_json::json!("approved"),
+                },
+            },
+            WorkflowEventRecord {
+                created_time: 3,
+                event: WorkflowInstanceEvent::StartupRecoveryApplied {
+                    task_attempt_ids: vec!["task-c[1]".to_string()],
+                },
+            },
+            WorkflowEventRecord {
+                created_time: 4,
+                event: WorkflowInstanceEvent::WorkflowStatusChanged {
+                    status: WorkflowStatus::Running,
+                },
+            },
+        ];
+
+        assert_eq!(
+            changed_task_attempt_ids(&records),
+            HashSet::from([
+                "task-a[1]".to_string(),
+                "task-b[2]".to_string(),
+                "task-c[1]".to_string(),
+            ])
+        );
     }
 
     #[test]

@@ -6,13 +6,13 @@ use std::str::FromStr;
 
 use crate::core::models::{FunctionDef, TaskInstance, TaskStatus};
 use crate::core::util::unix_timestamp_ms;
-use crate::core::workflow::events::WorkflowEventRecord;
+use crate::core::workflow::events::{WorkflowEventRecord, changed_task_attempt_ids};
 use crate::core::workflow::models::{
     WorkerHostId, WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::storage::{
-    StoragePort, StorageResult, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPage,
-    WorkflowInstanceFilter, WorkflowVersionConflict,
+    StoragePort, StorageResult, WorkflowEventPage, WorkflowEventPageRequest, WorkflowInfoCursor,
+    WorkflowInfoPage, WorkflowInfoPageRequest, WorkflowInstanceFilter, WorkflowVersionConflict,
 };
 
 const INITIAL_SCHEMA_MIGRATION: &str = "001_initial_sql_storage_schema";
@@ -157,7 +157,7 @@ impl StoragePort for SqlStorage {
             .transpose()?)
     }
 
-    async fn list_workflow_defs(&self) -> StorageResult<Vec<WorkflowDefSummary>> {
+    async fn list_workflow_def(&self) -> StorageResult<Vec<WorkflowDefSummary>> {
         let rows = sqlx::query(
             "SELECT
                 wd.id,
@@ -298,47 +298,69 @@ impl StoragePort for SqlStorage {
         }))
     }
 
-    async fn get_workflow_instance_events(
+    async fn list_workflow_instance_events(
         &self,
         workflow_instance_id: &str,
-    ) -> StorageResult<Vec<WorkflowEventRecord>> {
+        page: WorkflowEventPageRequest,
+    ) -> StorageResult<WorkflowEventPage> {
+        if page.limit == 0 {
+            return Ok(WorkflowEventPage {
+                items: vec![],
+                next_cursor: None,
+            });
+        }
         let rows = sqlx::query(
-            "SELECT created_at_epoch_ms, event_json
+            "SELECT event_sequence, created_at_epoch_ms, event_json
              FROM workflow_events
-             WHERE workflow_instance_id = ?
-             ORDER BY event_sequence ASC",
+             WHERE workflow_instance_id = ? AND event_sequence > ?
+             ORDER BY event_sequence ASC
+             LIMIT ?",
         )
         .bind(workflow_instance_id)
+        .bind(i64_from_u64(page.cursor.unwrap_or(0))?)
+        .bind(i64_from_usize(page.limit + 1)?)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
+        let has_more = rows.len() > page.limit;
+        let selected = rows.into_iter().take(page.limit).collect::<Vec<_>>();
+        let next_cursor = has_more
+            .then(|| selected.last())
+            .flatten()
+            .map(|row| u64_from_i64(row.get::<i64, _>("event_sequence")))
+            .transpose()?;
+        let events = selected
+            .into_iter()
             .map(|row| {
                 Ok(WorkflowEventRecord {
                     created_time: u64_from_i64(row.get::<i64, _>("created_at_epoch_ms"))?,
                     event: deserialize_json(&row.get::<String, _>("event_json"))?,
                 })
             })
-            .collect()
+            .collect::<StorageResult<Vec<_>>>()?;
+        Ok(WorkflowEventPage {
+            items: events,
+            next_cursor,
+        })
     }
 
     async fn list_workflow_info(
         &self,
-        request: WorkflowInfoListRequest,
+        page: WorkflowInfoPageRequest,
+        filters: Vec<WorkflowInstanceFilter>,
     ) -> StorageResult<WorkflowInfoPage> {
-        if request
-            .filters
+        if filters
             .iter()
             .any(|filter| matches!(filter, WorkflowInstanceFilter::Statuses(statuses) if statuses.is_empty()))
         {
             return Ok(WorkflowInfoPage {
-                workflows: vec![],
+                items: vec![],
                 next_cursor: None,
             });
         }
 
         let mut conditions = Vec::new();
-        for filter in &request.filters {
+        for filter in &filters {
             match filter {
                 WorkflowInstanceFilter::Statuses(statuses) => {
                     let placeholders = vec!["?"; statuses.len()].join(", ");
@@ -350,7 +372,7 @@ impl StoragePort for SqlStorage {
             }
         }
 
-        if request.page.cursor.is_some() {
+        if page.cursor.is_some() {
             conditions.push(
                 "(wi.modified_at_epoch_ms < ? OR (wi.modified_at_epoch_ms = ? AND wi.id < ?))"
                     .to_string(),
@@ -384,7 +406,7 @@ impl StoragePort for SqlStorage {
 
         let mut query = sqlx::query(&sql);
 
-        for filter in &request.filters {
+        for filter in &filters {
             match filter {
                 WorkflowInstanceFilter::Statuses(statuses) => {
                     for status in statuses {
@@ -397,20 +419,20 @@ impl StoragePort for SqlStorage {
             }
         }
 
-        if let Some(cursor) = &request.page.cursor {
+        if let Some(cursor) = &page.cursor {
             query = query
                 .bind(i64_from_u64(cursor.modified_at_epoch_ms)?)
                 .bind(i64_from_u64(cursor.modified_at_epoch_ms)?)
                 .bind(&cursor.workflow_instance_id);
         }
 
-        query = query.bind(i64_from_usize(request.page.limit + 1)?);
+        query = query.bind(i64_from_usize(page.limit + 1)?);
 
         let rows = query.fetch_all(&self.pool).await?;
-        let has_more = rows.len() > request.page.limit;
+        let has_more = rows.len() > page.limit;
         let workflows: Vec<WorkflowInfo> = rows
             .into_iter()
-            .take(request.page.limit)
+            .take(page.limit)
             .map(workflow_info_from_row)
             .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -424,7 +446,7 @@ impl StoragePort for SqlStorage {
                 });
 
         Ok(WorkflowInfoPage {
-            workflows,
+            items: workflows,
             next_cursor,
         })
     }
@@ -495,7 +517,7 @@ impl StoragePort for SqlStorage {
             completed_at_epoch_ms,
         )
         .await?;
-        replace_tasks(&mut tx, &instance).await?;
+        persist_task_changes(&mut tx, &instance, &events, existing.is_none()).await?;
         replace_verifier_states(&mut tx, &instance).await?;
 
         tx.commit().await?;
@@ -567,39 +589,69 @@ async fn upsert_workflow_instance(
     Ok(())
 }
 
-async fn replace_tasks(
+async fn persist_task_changes(
     tx: &mut Transaction<'_, Sqlite>,
     instance: &WorkflowInstance,
+    events: &[WorkflowEventRecord],
+    is_new_instance: bool,
 ) -> anyhow::Result<()> {
-    sqlx::query("DELETE FROM workflow_tasks WHERE workflow_instance_id = ?")
-        .bind(&instance.id)
-        .execute(&mut **tx)
-        .await?;
+    let task_attempt_ids = if is_new_instance {
+        instance.tasks.keys().cloned().collect()
+    } else {
+        changed_task_attempt_ids(events)
+    };
 
-    for (task_attempt_id, task) in &instance.tasks {
-        sqlx::query(
-            "INSERT INTO workflow_tasks (
+    for task_attempt_id in task_attempt_ids {
+        let task = instance.tasks.get(&task_attempt_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "event identified task attempt {task_attempt_id} but it is missing from workflow instance {}",
+                instance.id
+            )
+        })?;
+        upsert_task(tx, &instance.id, &task_attempt_id, task).await?;
+    }
+    Ok(())
+}
+
+async fn upsert_task(
+    tx: &mut Transaction<'_, Sqlite>,
+    workflow_instance_id: &str,
+    task_attempt_id: &str,
+    task: &TaskInstance,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO workflow_tasks (
                 workflow_instance_id, task_attempt_id, task_def_id, status, status_json,
                 satisfaction_status, generation_index, human_input_json, input_data_json,
                 input_mapping_json, output_data_json, verifier_metadata_json
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&instance.id)
-        .bind(task_attempt_id)
-        .bind(&task.task_def_id)
-        .bind(task_status_name(&task.status))
-        .bind(serde_json::to_string(&task.status)?)
-        .bind(serde_json::to_string(&task.satisfaction_status)?)
-        .bind(i64::from(task.generation_index))
-        .bind(optional_json_string(&task.human_input)?)
-        .bind(serde_json::to_string(&task.input_data)?)
-        .bind(serde_json::to_string(&task.input_mapping)?)
-        .bind(optional_json_string(&task.output_data)?)
-        .bind(optional_json_string(&task.verifier_metadata)?)
-        .execute(&mut **tx)
-        .await?;
-    }
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(workflow_instance_id, task_attempt_id) DO UPDATE SET
+                task_def_id = excluded.task_def_id,
+                status = excluded.status,
+                status_json = excluded.status_json,
+                satisfaction_status = excluded.satisfaction_status,
+                generation_index = excluded.generation_index,
+                human_input_json = excluded.human_input_json,
+                input_data_json = excluded.input_data_json,
+                input_mapping_json = excluded.input_mapping_json,
+                output_data_json = excluded.output_data_json,
+                verifier_metadata_json = excluded.verifier_metadata_json",
+    )
+    .bind(workflow_instance_id)
+    .bind(task_attempt_id)
+    .bind(&task.task_def_id)
+    .bind(task_status_name(&task.status))
+    .bind(serde_json::to_string(&task.status)?)
+    .bind(serde_json::to_string(&task.satisfaction_status)?)
+    .bind(i64::from(task.generation_index))
+    .bind(optional_json_string(&task.human_input)?)
+    .bind(serde_json::to_string(&task.input_data)?)
+    .bind(serde_json::to_string(&task.input_mapping)?)
+    .bind(optional_json_string(&task.output_data)?)
+    .bind(optional_json_string(&task.verifier_metadata)?)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -867,13 +919,10 @@ mod tests {
         }
     }
 
-    fn list_request(filters: Vec<WorkflowInstanceFilter>) -> WorkflowInfoListRequest {
-        WorkflowInfoListRequest {
-            filters,
-            page: WorkflowInfoPageRequest {
-                limit: 100,
-                cursor: None,
-            },
+    fn list_page() -> WorkflowInfoPageRequest {
+        WorkflowInfoPageRequest {
+            limit: 100,
+            cursor: None,
         }
     }
 
@@ -953,7 +1002,7 @@ mod tests {
             .await
             .unwrap();
 
-        let summaries = storage.list_workflow_defs().await.unwrap();
+        let summaries = storage.list_workflow_def().await.unwrap();
         let invoked = summaries.iter().find(|summary| summary.id == "wf").unwrap();
         assert_eq!(invoked.description, "Invoked workflow");
         assert_eq!(invoked.last_invoked_at_epoch_ms, Some(1234));
@@ -978,15 +1027,25 @@ mod tests {
             .await
             .unwrap();
 
-        let events = storage.get_workflow_instance_events("wf-1").await.unwrap();
+        let events = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap()
+            .items;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].created_time, 1000);
 
         let infos = storage
-            .list_workflow_info(list_request(vec![]))
+            .list_workflow_info(list_page(), vec![])
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].total_task_count, 1);
         assert_eq!(infos[0].completed_task_count, 1);
@@ -1025,9 +1084,16 @@ mod tests {
         assert!(saved.tasks.is_empty());
         assert_eq!(
             storage
-                .get_workflow_instance_events("wf-1")
+                .list_workflow_instance_events(
+                    "wf-1",
+                    WorkflowEventPageRequest {
+                        limit: 100,
+                        cursor: None,
+                    },
+                )
                 .await
                 .unwrap()
+                .items
                 .len(),
             1
         );
@@ -1062,43 +1128,137 @@ mod tests {
             .unwrap();
 
         let active = storage
-            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![
-                WorkflowStatus::Pending,
-                WorkflowStatus::Running,
-            ])]))
+            .list_workflow_info(
+                list_page(),
+                vec![WorkflowInstanceFilter::Statuses(vec![
+                    WorkflowStatus::Pending,
+                    WorkflowStatus::Running,
+                ])],
+            )
             .await
             .unwrap()
-            .workflows;
+            .items;
         let ids: Vec<&str> = active.iter().map(|info| info.id.as_str()).collect();
         assert_eq!(ids, vec!["newest", "middle"]);
 
         let first_page = storage
-            .list_workflow_info(WorkflowInfoListRequest {
-                filters: vec![],
-                page: WorkflowInfoPageRequest {
+            .list_workflow_info(
+                WorkflowInfoPageRequest {
                     limit: 1,
                     cursor: None,
                 },
-            })
+                vec![],
+            )
             .await
             .unwrap();
-        assert_eq!(first_page.workflows[0].id, "newest");
+        assert_eq!(first_page.items[0].id, "newest");
 
         let second_page = storage
-            .list_workflow_info(WorkflowInfoListRequest {
-                filters: vec![],
-                page: WorkflowInfoPageRequest {
+            .list_workflow_info(
+                WorkflowInfoPageRequest {
                     limit: 2,
                     cursor: first_page.next_cursor,
                 },
-            })
+                vec![],
+            )
             .await
             .unwrap();
         let ids: Vec<&str> = second_page
-            .workflows
+            .items
             .iter()
             .map(|info| info.id.as_str())
             .collect();
         assert_eq!(ids, vec!["middle", "oldest"]);
+    }
+
+    #[tokio::test]
+    async fn event_history_uses_ordered_cursor_pages() {
+        let storage = storage().await;
+        let mut workflow = instance("wf-1", WorkflowStatus::Running);
+        workflow.version = 3;
+        storage
+            .save_workflow_instance(
+                0,
+                vec![event_record(100), event_record(200), event_record(300)],
+                workflow,
+            )
+            .await
+            .unwrap();
+
+        let first = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 2,
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|event| event.created_time)
+                .collect::<Vec<_>>(),
+            vec![100, 200]
+        );
+        assert_eq!(first.next_cursor, Some(2));
+
+        let second = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 2,
+                    cursor: first.next_cursor,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items[0].created_time, 300);
+        assert_eq!(second.next_cursor, None);
+    }
+
+    #[tokio::test]
+    async fn task_events_upsert_only_selected_rows() {
+        let storage = storage().await;
+        let mut initial = instance("wf-1", WorkflowStatus::Running);
+        initial.version = 1;
+        initial
+            .tasks
+            .insert("unchanged[1]".to_string(), task(TaskStatus::Completed));
+        storage
+            .save_workflow_instance(0, vec![event_record(100)], initial.clone())
+            .await
+            .unwrap();
+
+        let mut updated = initial.clone();
+        updated.version = 2;
+        updated
+            .tasks
+            .insert("added[1]".to_string(), task(TaskStatus::Running));
+        let added = updated.tasks["added[1]"].clone();
+        storage
+            .save_workflow_instance(
+                1,
+                vec![WorkflowEventRecord {
+                    created_time: 200,
+                    event: WorkflowInstanceEvent::TaskMaterialized {
+                        task_attempt_id: "added[1]".to_string(),
+                        task: added,
+                    },
+                }],
+                updated,
+            )
+            .await
+            .unwrap();
+
+        let saved = storage
+            .get_workflow_instance("wf-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(saved.tasks.contains_key("unchanged[1]"));
+        assert!(saved.tasks.contains_key("added[1]"));
     }
 }

@@ -1,15 +1,15 @@
 use crate::core::models::{
     TaskDef, TaskInstance, TaskStatus, TaskTypeDef, VerifierControlConfig, verifier_decision_schema,
 };
-use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
+use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
     WorkerHostId, WorkflowDef, WorkflowDefSummary, WorkflowInstance, WorkflowListPage,
     WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::{
-    StoragePort, TaskResult, TaskResultMetadata, WorkflowInfoCursor, WorkflowInfoListRequest,
-    WorkflowInfoPageRequest, WorkflowInstanceFilter, WorkflowTaskResult,
+    StoragePort, TaskResult, TaskResultMetadata, WorkflowEventPage, WorkflowEventPageRequest,
+    WorkflowInfoCursor, WorkflowInfoPageRequest, WorkflowInstanceFilter, WorkflowTaskResult,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -22,6 +22,8 @@ pub struct WorkflowService {
 
 pub const DEFAULT_WORKFLOW_LIST_LIMIT: usize = 50;
 pub const MAX_WORKFLOW_LIST_LIMIT: usize = 100;
+pub const DEFAULT_WORKFLOW_EVENT_LIST_LIMIT: usize = 50;
+pub const MAX_WORKFLOW_EVENT_LIST_LIMIT: usize = 100;
 
 impl WorkflowService {
     pub fn new(storage: Arc<dyn StoragePort + Send + Sync>) -> Self {
@@ -36,15 +38,16 @@ impl WorkflowService {
         if self.storage.get_workflow_def(&def.id).await?.is_some() {
             let existing_instances = self
                 .storage
-                .list_workflow_info(WorkflowInfoListRequest {
-                    filters: vec![WorkflowInstanceFilter::WorkflowDefId(def.id.clone())],
-                    page: WorkflowInfoPageRequest {
+                .list_workflow_info(
+                    WorkflowInfoPageRequest {
                         limit: 1,
                         cursor: None,
                     },
-                })
+                    vec![WorkflowInstanceFilter::WorkflowDefId(def.id.clone())],
+                )
                 .await?;
-            if !existing_instances.workflows.is_empty() {
+
+            if !existing_instances.items.is_empty() {
                 anyhow::bail!(
                     "workflow definition {} already has workflow instances and cannot be overwritten; register under a new ID, for example {}_v2",
                     def.id,
@@ -57,7 +60,7 @@ impl WorkflowService {
     }
 
     pub async fn list_workflow_defs(&self) -> anyhow::Result<Vec<WorkflowDefSummary>> {
-        Ok(self.storage.list_workflow_defs().await?)
+        Ok(self.storage.list_workflow_def().await?)
     }
 
     pub async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
@@ -105,19 +108,19 @@ impl WorkflowService {
         let cursor = cursor.map(decode_workflow_info_cursor).transpose()?;
         let page = self
             .storage
-            .list_workflow_info(WorkflowInfoListRequest {
-                filters: status
-                    .map(|status| vec![WorkflowInstanceFilter::Statuses(vec![status])])
-                    .unwrap_or_default(),
-                page: WorkflowInfoPageRequest {
+            .list_workflow_info(
+                WorkflowInfoPageRequest {
                     limit: clamp_workflow_list_limit(limit),
                     cursor,
                 },
-            })
+                status
+                    .map(|status| vec![WorkflowInstanceFilter::Statuses(vec![status])])
+                    .unwrap_or_default(),
+            )
             .await?;
 
         Ok(WorkflowListPage {
-            workflows: page.workflows,
+            workflows: page.items,
             next_cursor: page.next_cursor.map(encode_workflow_info_cursor),
         })
     }
@@ -125,7 +128,9 @@ impl WorkflowService {
     pub async fn list_workflow_events(
         &self,
         workflow_instance_id: &str,
-    ) -> anyhow::Result<Option<Vec<WorkflowEventRecord>>> {
+        limit: Option<usize>,
+        after_sequence: Option<u64>,
+    ) -> anyhow::Result<Option<WorkflowEventPage>> {
         if self
             .storage
             .get_workflow_instance(workflow_instance_id)
@@ -137,7 +142,15 @@ impl WorkflowService {
 
         let events = self
             .storage
-            .get_workflow_instance_events(workflow_instance_id)
+            .list_workflow_instance_events(
+                workflow_instance_id,
+                WorkflowEventPageRequest {
+                    limit: limit
+                        .unwrap_or(DEFAULT_WORKFLOW_EVENT_LIST_LIMIT)
+                        .clamp(1, MAX_WORKFLOW_EVENT_LIST_LIMIT),
+                    cursor: after_sequence,
+                },
+            )
             .await?;
 
         Ok(Some(events))
@@ -199,16 +212,16 @@ impl WorkflowService {
         loop {
             let page = self
                 .storage
-                .list_workflow_info(WorkflowInfoListRequest {
-                    filters: vec![WorkflowInstanceFilter::Statuses(vec![
+                .list_workflow_info(
+                    WorkflowInfoPageRequest { limit: 100, cursor },
+                    vec![WorkflowInstanceFilter::Statuses(vec![
                         WorkflowStatus::Pending,
                         WorkflowStatus::Running,
                     ])],
-                    page: WorkflowInfoPageRequest { limit: 100, cursor },
-                })
+                )
                 .await?;
 
-            for info in &page.workflows {
+            for info in &page.items {
                 self.pause_workflow(&info.id).await?;
                 paused.push(info.id.clone());
             }
@@ -229,15 +242,15 @@ impl WorkflowService {
         loop {
             let page = self
                 .storage
-                .list_workflow_info(WorkflowInfoListRequest {
-                    filters: vec![WorkflowInstanceFilter::Statuses(vec![
+                .list_workflow_info(
+                    WorkflowInfoPageRequest { limit: 100, cursor },
+                    vec![WorkflowInstanceFilter::Statuses(vec![
                         WorkflowStatus::Paused,
                     ])],
-                    page: WorkflowInfoPageRequest { limit: 100, cursor },
-                })
+                )
                 .await?;
 
-            for info in &page.workflows {
+            for info in &page.items {
                 self.resume_workflow(&info.id).await?;
                 resumed.push(info.id.clone());
             }
@@ -1082,9 +1095,16 @@ mod tests {
         assert_eq!(resumed.status, WorkflowStatus::Pending);
 
         let events = storage
-            .get_workflow_instance_events("active-workflow")
+            .list_workflow_instance_events(
+                "active-workflow",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[0].event,
@@ -1182,12 +1202,12 @@ mod tests {
         assert!(instance.verifier_states.is_empty());
 
         let events = service
-            .list_workflow_events(&instance_id)
+            .list_workflow_events(&instance_id, None, None)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(events[0].created_time > 0);
+        assert_eq!(events.items.len(), 1);
+        assert!(events.items[0].created_time > 0);
     }
 
     #[tokio::test]
@@ -1333,7 +1353,10 @@ mod tests {
     async fn list_workflow_events_returns_none_for_unknown_instance() {
         let service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
-        let events = service.list_workflow_events("missing").await.unwrap();
+        let events = service
+            .list_workflow_events("missing", None, None)
+            .await
+            .unwrap();
 
         assert!(events.is_none());
     }
@@ -1484,9 +1507,16 @@ mod tests {
         );
 
         let events = storage
-            .get_workflow_instance_events("input-workflow")
+            .list_workflow_instance_events(
+                "input-workflow",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0].event,
@@ -1603,9 +1633,16 @@ mod tests {
         assert_eq!(saved.tasks["taskb[1]"].status, TaskStatus::Completed);
 
         let events = storage
-            .get_workflow_instance_events("failed-workflow")
+            .list_workflow_instance_events(
+                "failed-workflow",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0].event,
@@ -1696,9 +1733,16 @@ mod tests {
         assert_eq!(saved.tasks["taska[1]"].output_data, None);
 
         let events = storage
-            .get_workflow_instance_events("failed-workflow")
+            .list_workflow_instance_events(
+                "failed-workflow",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0].event,
@@ -1755,9 +1799,16 @@ mod tests {
             .unwrap();
 
         let events = storage
-            .get_workflow_instance_events("failed-workflow")
+            .list_workflow_instance_events(
+                "failed-workflow",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert!(matches!(
             &events[0].event,
             WorkflowInstanceEvent::TaskForceRetryRequested {
