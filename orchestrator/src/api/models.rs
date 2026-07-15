@@ -33,6 +33,7 @@ pub struct WorkflowDefList {
 pub struct WorkflowEvents {
     pub workflow_instance_id: String,
     pub events: Vec<WorkflowEventRecord>,
+    pub next_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

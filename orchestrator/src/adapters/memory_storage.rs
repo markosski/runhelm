@@ -9,8 +9,8 @@ use crate::core::workflow::models::{
     WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::storage::{
-    StoragePort, StorageResult, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPage,
-    WorkflowInstanceFilter, WorkflowVersionConflict,
+    StoragePort, StorageResult, WorkflowEventPage, WorkflowEventPageRequest, WorkflowInfoCursor,
+    WorkflowInfoPage, WorkflowInfoPageRequest, WorkflowInstanceFilter, WorkflowVersionConflict,
 };
 
 pub struct MemoryStorage {
@@ -66,7 +66,7 @@ impl StoragePort for MemoryStorage {
         Ok(map.get(id).map(|stored| stored.definition.clone()))
     }
 
-    async fn list_workflow_defs(&self) -> StorageResult<Vec<WorkflowDefSummary>> {
+    async fn list_workflow_def(&self) -> StorageResult<Vec<WorkflowDefSummary>> {
         let _commit_guard = self.commit_lock.lock().await;
         let definitions = self.workflow_defs.read().await;
         let infos = self.workflow_infos.read().await;
@@ -114,26 +114,50 @@ impl StoragePort for MemoryStorage {
         Ok(map.get(id).cloned())
     }
 
-    async fn get_workflow_instance_events(
+    async fn list_workflow_instance_events(
         &self,
         workflow_instance_id: &str,
-    ) -> StorageResult<Vec<WorkflowEventRecord>> {
+        page: WorkflowEventPageRequest,
+    ) -> StorageResult<WorkflowEventPage> {
         let _commit_guard = self.commit_lock.lock().await;
         let map = self.workflow_instance_events.read().await;
-        Ok(map.get(workflow_instance_id).cloned().unwrap_or_default())
+        let all = map
+            .get(workflow_instance_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if page.limit == 0 {
+            return Ok(WorkflowEventPage {
+                items: vec![],
+                next_cursor: None,
+            });
+        }
+        let start = page.cursor.unwrap_or(0) as usize;
+        let selected = all
+            .iter()
+            .skip(start)
+            .take(page.limit + 1)
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_more = selected.len() > page.limit;
+        let events = selected.into_iter().take(page.limit).collect::<Vec<_>>();
+        let next_cursor = has_more.then_some((start + events.len()) as u64);
+        Ok(WorkflowEventPage {
+            items: events,
+            next_cursor,
+        })
     }
 
     async fn list_workflow_info(
         &self,
-        request: WorkflowInfoListRequest,
+        page: WorkflowInfoPageRequest,
+        filters: Vec<WorkflowInstanceFilter>,
     ) -> StorageResult<WorkflowInfoPage> {
         let _commit_guard = self.commit_lock.lock().await;
         let map = self.workflow_infos.read().await;
         let mut workflows: Vec<WorkflowInfo> = map
             .values()
             .filter(|info| {
-                request
-                    .filters
+                filters
                     .iter()
                     .all(|filter| workflow_info_matches(info, filter))
             })
@@ -147,19 +171,19 @@ impl StoragePort for MemoryStorage {
                 .then_with(|| right.id.cmp(&left.id))
         });
 
-        if let Some(cursor) = &request.page.cursor {
+        if let Some(cursor) = &page.cursor {
             workflows.retain(|info| is_after_cursor(info, cursor));
         }
 
-        let has_more = workflows.len() > request.page.limit;
-        workflows.truncate(request.page.limit);
+        let has_more = workflows.len() > page.limit;
+        workflows.truncate(page.limit);
         let next_cursor = has_more
             .then(|| workflows.last())
             .flatten()
             .map(workflow_info_cursor);
 
         Ok(WorkflowInfoPage {
-            workflows,
+            items: workflows,
             next_cursor,
         })
     }
@@ -287,25 +311,15 @@ mod tests {
         }
     }
 
-    fn list_request(filters: Vec<WorkflowInstanceFilter>) -> WorkflowInfoListRequest {
-        WorkflowInfoListRequest {
-            filters,
-            page: WorkflowInfoPageRequest {
-                limit: 100,
-                cursor: None,
-            },
+    fn list_page() -> WorkflowInfoPageRequest {
+        WorkflowInfoPageRequest {
+            limit: 100,
+            cursor: None,
         }
     }
 
-    fn paged_request(
-        filters: Vec<WorkflowInstanceFilter>,
-        limit: usize,
-        cursor: Option<WorkflowInfoCursor>,
-    ) -> WorkflowInfoListRequest {
-        WorkflowInfoListRequest {
-            filters,
-            page: WorkflowInfoPageRequest { limit, cursor },
-        }
+    fn page_request(limit: usize, cursor: Option<WorkflowInfoCursor>) -> WorkflowInfoPageRequest {
+        WorkflowInfoPageRequest { limit, cursor }
     }
 
     fn event_record(created_time: u64) -> WorkflowEventRecord {
@@ -347,16 +361,29 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.status, WorkflowStatus::Completed);
-        let records = storage.get_workflow_instance_events("wf-1").await.unwrap();
+        let records = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap()
+            .items;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].created_time, 42);
         let infos = storage
-            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![
-                WorkflowStatus::Completed,
-            ])]))
+            .list_workflow_info(
+                list_page(),
+                vec![WorkflowInstanceFilter::Statuses(vec![
+                    WorkflowStatus::Completed,
+                ])],
+            )
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].id, "wf-1");
         assert!(infos[0].created_at_epoch_ms.is_some());
@@ -397,9 +424,16 @@ mod tests {
         assert_eq!(saved.version, 1);
         assert_eq!(
             storage
-                .get_workflow_instance_events("wf-1")
+                .list_workflow_instance_events(
+                    "wf-1",
+                    WorkflowEventPageRequest {
+                        limit: 100,
+                        cursor: None,
+                    },
+                )
                 .await
                 .unwrap()
+                .items
                 .len(),
             1
         );
@@ -444,10 +478,10 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![]))
+            .list_workflow_info(list_page(), vec![])
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].total_task_count, 2);
         assert_eq!(infos[0].completed_task_count, 1);
@@ -469,10 +503,10 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![]))
+            .list_workflow_info(list_page(), vec![])
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(infos[0].created_at_epoch_ms, Some(1000));
         assert_eq!(infos[0].modified_at_epoch_ms, 2000);
         assert_eq!(infos[0].completed_at_epoch_ms, Some(2000));
@@ -491,10 +525,10 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![]))
+            .list_workflow_info(list_page(), vec![])
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(infos[0].created_at_epoch_ms, Some(1000));
         assert_eq!(infos[0].modified_at_epoch_ms, 1500);
     }
@@ -528,10 +562,10 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![]))
+            .list_workflow_info(list_page(), vec![])
             .await
             .unwrap()
-            .workflows;
+            .items;
 
         let ids: Vec<&str> = infos.iter().map(|info| info.id.as_str()).collect();
         assert_eq!(ids, vec!["same-b", "same-a", "older"]);
@@ -566,11 +600,11 @@ mod tests {
             .unwrap();
 
         let first_page = storage
-            .list_workflow_info(paged_request(vec![], 1, None))
+            .list_workflow_info(page_request(1, None), vec![])
             .await
             .unwrap();
-        assert_eq!(first_page.workflows.len(), 1);
-        assert_eq!(first_page.workflows[0].id, "newest");
+        assert_eq!(first_page.items.len(), 1);
+        assert_eq!(first_page.items[0].id, "newest");
         assert_eq!(
             first_page.next_cursor,
             Some(WorkflowInfoCursor {
@@ -580,11 +614,11 @@ mod tests {
         );
 
         let second_page = storage
-            .list_workflow_info(paged_request(vec![], 2, first_page.next_cursor))
+            .list_workflow_info(page_request(2, first_page.next_cursor), vec![])
             .await
             .unwrap();
         let ids: Vec<&str> = second_page
-            .workflows
+            .items
             .iter()
             .map(|info| info.id.as_str())
             .collect();
@@ -607,23 +641,29 @@ mod tests {
             .unwrap();
 
         let active = storage
-            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![
-                WorkflowStatus::Pending,
-                WorkflowStatus::Running,
-            ])]))
+            .list_workflow_info(
+                list_page(),
+                vec![WorkflowInstanceFilter::Statuses(vec![
+                    WorkflowStatus::Pending,
+                    WorkflowStatus::Running,
+                ])],
+            )
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, "pending");
 
         let completed = storage
-            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![
-                WorkflowStatus::Completed,
-            ])]))
+            .list_workflow_info(
+                list_page(),
+                vec![WorkflowInstanceFilter::Statuses(vec![
+                    WorkflowStatus::Completed,
+                ])],
+            )
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].id, "completed");
     }
@@ -653,12 +693,15 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::WorkflowDefId(
-                "workflow-2".to_string(),
-            )]))
+            .list_workflow_info(
+                list_page(),
+                vec![WorkflowInstanceFilter::WorkflowDefId(
+                    "workflow-2".to_string(),
+                )],
+            )
             .await
             .unwrap()
-            .workflows;
+            .items;
 
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].id, "workflow-2-instance");
@@ -697,13 +740,16 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![
-                WorkflowInstanceFilter::WorkflowDefId("workflow-1".to_string()),
-                WorkflowInstanceFilter::Statuses(vec![WorkflowStatus::Pending]),
-            ]))
+            .list_workflow_info(
+                list_page(),
+                vec![
+                    WorkflowInstanceFilter::WorkflowDefId("workflow-1".to_string()),
+                    WorkflowInstanceFilter::Statuses(vec![WorkflowStatus::Pending]),
+                ],
+            )
             .await
             .unwrap()
-            .workflows;
+            .items;
 
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].id, "workflow-1-pending");
@@ -722,10 +768,10 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![WorkflowInstanceFilter::Statuses(vec![])]))
+            .list_workflow_info(list_page(), vec![WorkflowInstanceFilter::Statuses(vec![])])
             .await
             .unwrap()
-            .workflows;
+            .items;
 
         assert!(infos.is_empty());
     }
@@ -755,12 +801,60 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_request(vec![]))
+            .list_workflow_info(list_page(), vec![])
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].total_task_count, 1);
         assert_eq!(infos[0].completed_task_count, 1);
+    }
+
+    #[tokio::test]
+    async fn event_history_uses_ordered_cursor_pages() {
+        let storage = MemoryStorage::new();
+        let mut workflow = instance("wf-1", WorkflowStatus::Running);
+        workflow.version = 3;
+        storage
+            .save_workflow_instance(
+                0,
+                vec![event_record(100), event_record(200), event_record(300)],
+                workflow,
+            )
+            .await
+            .unwrap();
+
+        let first = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 2,
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|event| event.created_time)
+                .collect::<Vec<_>>(),
+            vec![100, 200]
+        );
+        assert_eq!(first.next_cursor, Some(2));
+
+        let second = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 2,
+                    cursor: first.next_cursor,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items[0].created_time, 300);
+        assert_eq!(second.next_cursor, None);
     }
 }

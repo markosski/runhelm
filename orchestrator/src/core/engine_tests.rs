@@ -4,6 +4,7 @@ use crate::adapters::memory_storage::MemoryStorage;
 use crate::core::models::*;
 use crate::core::workflow::models::{DataBinding, TaskDispatchConstraints, WorkerHostId};
 use crate::core::workflow::state_manager::WorkflowStateManager;
+use crate::ports::storage::WorkflowEventPageRequest;
 use crate::ports::task_dispatch::ExecutionResult;
 use crate::ports::task_dispatch::TaskDispatchPort;
 use async_trait::async_trait;
@@ -1062,9 +1063,16 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
         .unwrap();
     let events = engine
         .storage
-        .get_workflow_instance_events(&instance_id)
+        .list_workflow_instance_events(
+            &instance_id,
+            WorkflowEventPageRequest {
+                limit: 100,
+                cursor: None,
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .items;
 
     assert!(events.iter().any(|record| matches!(
         &record.event,

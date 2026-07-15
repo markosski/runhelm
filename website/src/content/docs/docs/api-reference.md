@@ -25,7 +25,7 @@ export RUNHELM_URL=http://localhost:3000
 | `DELETE` | `/function-def/{def_id}` | Delete a reusable function definition. |
 | `GET` | `/workflows` | List workflow instances. |
 | `GET` | `/workflows/{id}` | Get workflow status. |
-| `GET` | `/workflows/{id}/events` | Get workflow event history. |
+| `GET` | `/workflows/{id}/events` | Get a cursor-paginated workflow event-history page. |
 | `POST` | `/workflows/{id}/pause` | Pause one workflow instance. |
 | `POST` | `/workflows/{id}/resume` | Resume one paused workflow instance. |
 | `POST` | `/workflows/pause` | Pause active workflow instances. |
@@ -332,7 +332,7 @@ Response:
 ## Workflow events
 
 ```bash
-curl -sS "$RUNHELM_URL/workflows/hello-workflow-1780000000000000000/events"
+curl -sS "$RUNHELM_URL/workflows/hello-workflow-1780000000000000000/events?limit=100"
 ```
 
 Response shape:
@@ -340,11 +340,20 @@ Response shape:
 ```json
 {
   "workflow_instance_id": "hello-workflow-1780000000000000000",
-  "events": []
+  "events": [],
+  "next_sequence": null
 }
 ```
 
-Events are an execution history for the workflow instance. Exact event payloads depend on the workflow operations that have occurred.
+Events are returned in ascending sequence order. When `next_sequence` is not
+`null`, pass it as `after_sequence` to request the next page:
+
+```bash
+curl -sS "$RUNHELM_URL/workflows/hello-workflow-1780000000000000000/events?limit=100&after_sequence=100"
+```
+
+The default page size is 100 and the maximum is 500. Exact event payloads depend
+on the workflow operations that have occurred.
 
 ## Pause and resume
 

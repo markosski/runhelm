@@ -87,15 +87,9 @@ pub enum WorkflowInstanceFilter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowInfoListRequest {
-    pub filters: Vec<WorkflowInstanceFilter>,
-    pub page: WorkflowInfoPageRequest,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowInfoPageRequest {
+pub struct PageRequest<C> {
     pub limit: usize,
-    pub cursor: Option<WorkflowInfoCursor>,
+    pub cursor: Option<C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,10 +99,15 @@ pub struct WorkflowInfoCursor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowInfoPage {
-    pub workflows: Vec<WorkflowInfo>,
-    pub next_cursor: Option<WorkflowInfoCursor>,
+pub struct Page<T, C> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<C>,
 }
+
+pub type WorkflowInfoPageRequest = PageRequest<WorkflowInfoCursor>;
+pub type WorkflowInfoPage = Page<WorkflowInfo, WorkflowInfoCursor>;
+pub type WorkflowEventPageRequest = PageRequest<u64>;
+pub type WorkflowEventPage = Page<WorkflowEventRecord, u64>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskResult {
@@ -244,24 +243,99 @@ impl Serialize for TaskResult {
 }
 
 #[async_trait]
-// TODO: consider converting to using event sourcing for state changes
-//  Global destrictive operations like delete workflow should still wipe out all workflow data
+/// Persistence boundary for workflow definitions, function definitions, and workflow execution
+/// state.
+///
+/// Point reads return authoritative committed state. Collection and history reads may be backed by
+/// asynchronous projections, so callers must tolerate recently committed changes being absent or
+/// stale and must re-read an entity by ID before making a state transition. List pagination is not
+/// a snapshot: concurrent writes may move entries between pages.
 pub trait StoragePort {
+    /// Returns the authoritative committed workflow definition for `id`, or `None` when it does not
+    /// exist.
+    ///
+    /// A successful save completed before this call must be visible to this point read.
     async fn get_workflow_def(&self, id: &str) -> StorageResult<Option<WorkflowDef>>;
-    async fn list_workflow_defs(&self) -> StorageResult<Vec<WorkflowDefSummary>>;
+
+    /// Returns lightweight summaries of all workflow definitions, ordered by creation time
+    /// descending and then definition ID descending.
+    ///
+    /// This discovery read may lag recent definition saves and workflow invocations. In particular,
+    /// `last_invoked_at_epoch_ms` is projection data and is not an authoritative workflow-instance
+    /// existence check.
+    async fn list_workflow_def(&self) -> StorageResult<Vec<WorkflowDefSummary>>;
+
+    /// Returns the authoritative committed function definition for `id`, or `None` when it does not
+    /// exist.
+    ///
+    /// A successful save completed before this call must be visible to this point read.
     async fn get_function_def(&self, id: &str) -> StorageResult<Option<FunctionDef>>;
+
+    /// Returns the latest committed workflow-instance snapshot for `id`, or `None` when it does not
+    /// exist.
+    ///
+    /// This is the authoritative read for workflow state and must provide read-after-write
+    /// visibility. Callers must use the returned version when attempting a subsequent transition.
     async fn get_workflow_instance(&self, id: &str) -> StorageResult<Option<WorkflowInstance>>;
-    async fn get_workflow_instance_events(
-        &self,
-        workflow_instance_id: &str,
-    ) -> StorageResult<Vec<WorkflowEventRecord>>;
+
+    /// Returns a bounded page of lightweight workflow-instance summaries.
+    ///
+    /// Filters of different kinds are combined with logical AND. Status filters match any supplied
+    /// status. Results are ordered by modification time descending and then workflow-instance ID
+    /// descending. `next_cursor` is present only when another page may exist, and the cursor resumes
+    /// strictly after the final returned item in that ordering.
+    ///
+    /// Summaries may lag recent transition commits and pagination is not snapshot-isolated. A caller
+    /// making a state-changing decision must fetch the authoritative instance with
+    /// [`StoragePort::get_workflow_instance`] before committing the transition.
     async fn list_workflow_info(
         &self,
-        request: WorkflowInfoListRequest,
+        page: WorkflowInfoPageRequest,
+        filters: Vec<WorkflowInstanceFilter>,
     ) -> StorageResult<WorkflowInfoPage>;
+
+    /// Returns a bounded page of persisted events for one workflow instance in ascending sequence
+    /// order.
+    ///
+    /// The optional cursor is an exclusive event-sequence cursor. `next_cursor` is present only when
+    /// another page may exist. Event discovery may lag a successful transition commit, but returned
+    /// events must retain their committed order and contents.
+    async fn list_workflow_instance_events(
+        &self,
+        workflow_instance_id: &str,
+        page: WorkflowEventPageRequest,
+    ) -> StorageResult<WorkflowEventPage>;
+
+    /// Creates or replaces a workflow definition and makes it available to authoritative point
+    /// reads before returning.
+    ///
+    /// This storage operation does not enforce the business rule that definitions with existing
+    /// workflow instances cannot be replaced; callers are currently responsible for that rule.
     async fn save_workflow_def(&self, def: WorkflowDef) -> StorageResult<()>;
+
+    /// Creates or replaces a function definition and makes it available to authoritative point
+    /// reads before returning.
     async fn save_function_def(&self, def: FunctionDef) -> StorageResult<()>;
+
+    /// Removes the function definition identified by `id` from authoritative reads.
+    ///
+    /// Returns `true` when a stored definition was removed and `false` when it did not exist.
+    /// Backends may retain unreachable immutable payload data after removing its authoritative
+    /// metadata.
     async fn delete_function_def(&self, id: &str) -> StorageResult<bool>;
+
+    /// Atomically commits an ordered event batch and its already-reduced workflow-instance snapshot.
+    ///
+    /// `expected_version` is the version from the authoritative snapshot on which the transition was
+    /// based. The supplied `instance.version` must equal `expected_version + events.len()`, and the
+    /// events must be in the same order in which core reduced them. Storage persists, as one logical
+    /// transition, the new authoritative snapshot, ordered event records, changed task state, and
+    /// summary data derived from the snapshot.
+    ///
+    /// If the authoritative version differs from `expected_version`, the method returns
+    /// [`StorageError::WorkflowVersionConflict`] and none of the supplied data becomes authoritative.
+    /// On success, a subsequent [`StoragePort::get_workflow_instance`] must return the new snapshot;
+    /// collection and history reads may observe it later.
     async fn save_workflow_instance(
         &self,
         expected_version: u64,

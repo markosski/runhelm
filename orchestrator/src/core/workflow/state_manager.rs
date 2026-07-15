@@ -57,7 +57,6 @@ impl WorkflowStateManager {
             version: expected_version + event_count,
             ..updated
         };
-
         let created_time = unix_timestamp_ms()?;
         let records = events
             .into_iter()
@@ -83,17 +82,14 @@ mod tests {
     use crate::core::workflow::events::WorkflowInstanceEvent;
     use crate::core::workflow::models::{WorkflowInstance, WorkflowStatus};
     use crate::ports::storage::{
-        StorageError, WorkflowInfoListRequest, WorkflowInfoPageRequest, WorkflowVersionConflict,
+        StorageError, WorkflowEventPageRequest, WorkflowInfoPageRequest, WorkflowVersionConflict,
     };
     use std::collections::HashMap;
 
-    fn list_all_request() -> WorkflowInfoListRequest {
-        WorkflowInfoListRequest {
-            filters: vec![],
-            page: WorkflowInfoPageRequest {
-                limit: 100,
-                cursor: None,
-            },
+    fn list_all_page() -> WorkflowInfoPageRequest {
+        WorkflowInfoPageRequest {
+            limit: 100,
+            cursor: None,
         }
     }
 
@@ -185,14 +181,24 @@ mod tests {
             .unwrap();
         assert_eq!(saved.workflow_def_id, "wf");
         assert_eq!(saved.version, 1);
-        let events = storage.get_workflow_instance_events("wf-1").await.unwrap();
+        let events = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap()
+            .items;
         assert_eq!(events.len(), 1);
         assert!(events[0].created_time > 0);
         let summaries = storage
-            .list_workflow_info(list_all_request())
+            .list_workflow_info(list_all_page(), vec![])
             .await
             .unwrap()
-            .workflows;
+            .items;
         assert_eq!(summaries[0].id, "wf-1");
         assert_eq!(summaries[0].workflow_def_id, "wf");
     }
@@ -220,13 +226,23 @@ mod tests {
             .unwrap();
         assert_eq!(saved.status, WorkflowStatus::Running);
         assert_eq!(saved.version, 1);
-        let events = storage.get_workflow_instance_events("wf-1").await.unwrap();
-        assert_eq!(events.len(), 1);
-        let summaries = storage
-            .list_workflow_info(list_all_request())
+        let events = storage
+            .list_workflow_instance_events(
+                "wf-1",
+                WorkflowEventPageRequest {
+                    limit: 100,
+                    cursor: None,
+                },
+            )
             .await
             .unwrap()
-            .workflows;
+            .items;
+        assert_eq!(events.len(), 1);
+        let summaries = storage
+            .list_workflow_info(list_all_page(), vec![])
+            .await
+            .unwrap()
+            .items;
         assert_eq!(summaries[0].status, WorkflowStatus::Running);
     }
 
@@ -287,9 +303,16 @@ mod tests {
         assert_eq!(saved.version, 2);
         assert_eq!(
             storage
-                .get_workflow_instance_events("wf-1")
+                .list_workflow_instance_events(
+                    "wf-1",
+                    WorkflowEventPageRequest {
+                        limit: 100,
+                        cursor: None,
+                    },
+                )
                 .await
                 .unwrap()
+                .items
                 .len(),
             2
         );

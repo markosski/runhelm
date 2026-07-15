@@ -215,18 +215,30 @@ pub async fn get_workflow_instance(
 pub async fn get_workflow_events(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<WorkflowEventListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    match state.workflow_service.list_workflow_events(&id).await {
-        Ok(Some(events)) => Ok(Json(
+    match state
+        .workflow_service
+        .list_workflow_events(&id, query.limit, query.after_sequence)
+        .await
+    {
+        Ok(Some(page)) => Ok(Json(
             serde_json::to_value(WorkflowEvents {
                 workflow_instance_id: id,
-                events,
+                events: page.items,
+                next_sequence: page.next_cursor,
             })
             .unwrap(),
         )),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+#[derive(Deserialize)]
+pub struct WorkflowEventListQuery {
+    limit: Option<usize>,
+    after_sequence: Option<u64>,
 }
 
 pub async fn pause_workflow(
@@ -657,6 +669,7 @@ mod tests {
     use crate::core::function_service::FunctionService;
     use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
     use crate::core::orchestrator::Orchestrator;
+    use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
     use crate::core::workflow::models::{
         WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus,
     };
@@ -741,6 +754,45 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn workflow_events_api_returns_cursor_page() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage.clone(), WorkerRegistry::new());
+        let mut workflow = workflow_instance(
+            "event-workflow",
+            WorkflowStatus::Running,
+            None,
+            failed_task(),
+        );
+        workflow.version = 3;
+        let events = [100, 200, 300]
+            .into_iter()
+            .map(|created_time| WorkflowEventRecord {
+                created_time,
+                event: WorkflowInstanceEvent::WorkflowStatusChanged {
+                    status: WorkflowStatus::Running,
+                },
+            })
+            .collect();
+        storage
+            .save_workflow_instance(0, events, workflow)
+            .await
+            .unwrap();
+
+        let Json(response) = get_workflow_events(
+            State(state),
+            Path("event-workflow".to_string()),
+            Query(WorkflowEventListQuery {
+                limit: Some(2),
+                after_sequence: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response["events"].as_array().unwrap().len(), 2);
+        assert_eq!(response["next_sequence"], 2);
     }
 
     #[tokio::test]

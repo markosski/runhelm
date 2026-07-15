@@ -10,8 +10,7 @@ use crate::core::workflow::models::{
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::core::workflow::workflow_service::WorkflowService;
 use crate::ports::storage::{
-    StoragePort, WorkflowInfoCursor, WorkflowInfoListRequest, WorkflowInfoPageRequest,
-    WorkflowInstanceFilter,
+    StoragePort, WorkflowInfoCursor, WorkflowInfoPageRequest, WorkflowInstanceFilter,
 };
 use crate::ports::task_dispatch::TaskDispatchPort;
 use crate::ports::workflow_queue::WorkflowQueuePort;
@@ -274,17 +273,24 @@ impl Orchestrator {
             let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
                 continue;
             };
-            let changed = instance.status == WorkflowStatus::Running
-                || instance
-                    .tasks
-                    .values()
-                    .any(|task| task.status == TaskStatus::Running);
 
-            if changed {
+            // Tasks that need recovery
+            let task_attempt_ids: Vec<String> = instance
+                .tasks
+                .iter()
+                .filter(|(_, task)| task.status == TaskStatus::Running)
+                .map(|(task_attempt_id, _)| task_attempt_id.clone())
+                .collect();
+
+            // If workflow itself or at least one task is still in Running state, we need to recover those tasks.
+            let needs_recovery =
+                instance.status == WorkflowStatus::Running || !task_attempt_ids.is_empty();
+
+            if needs_recovery {
                 state_manager
                     .commit_events(
                         &info.id,
-                        vec![WorkflowInstanceEvent::StartupRecoveryApplied],
+                        vec![WorkflowInstanceEvent::StartupRecoveryApplied { task_attempt_ids }],
                     )
                     .await?;
                 recovered += 1;
@@ -383,20 +389,20 @@ impl Orchestrator {
         loop {
             let page = self
                 .storage
-                .list_workflow_info(WorkflowInfoListRequest {
-                    filters: all_nonterminal_workflow_filter(),
-                    page: WorkflowInfoPageRequest { limit: 100, cursor },
-                })
+                .list_workflow_info(
+                    WorkflowInfoPageRequest { limit: 100, cursor },
+                    all_nonterminal_workflow_filter(),
+                )
                 .await?;
 
             let runnable: Vec<WorkflowInfo> = page
-                .workflows
+                .items
                 .iter()
                 .filter(|x| matches!(x.status, WorkflowStatus::Running | WorkflowStatus::Pending))
                 .map(|x| x.clone())
                 .collect();
             let blocked: Vec<WorkflowInfo> = page
-                .workflows
+                .items
                 .iter()
                 .filter(|x| {
                     matches!(

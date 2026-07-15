@@ -3,9 +3,9 @@ target/
 debug/
 
 # AI Agent tools
-orchestrator/.agent/**
-orchestrator/.gemini/**
-orchestrator/.codex/**
+**/.agent/
+**/.gemini/
+**/.codex/
 
 # Dependencies
 **/node_modules/
