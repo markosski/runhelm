@@ -1,4 +1,4 @@
-use crate::core::models::{ExecutionMetadata, TaskDef};
+use crate::core::task::{ExecutionMetadata, TaskDef};
 use crate::core::worker::TaskDispatchConstraints;
 use crate::ports::task_dispatch::{ExecutionResult, TaskDispatchPort};
 use async_trait::async_trait;
@@ -110,7 +110,7 @@ mod tests {
     fn task_with_schema(schema: Value) -> TaskDef {
         TaskDef {
             id: "test-task".to_string(),
-            kind: crate::core::models::TaskTypeDef::ApiCall {
+            kind: crate::core::task::TaskTypeDef::ApiCall {
                 url: "http://example.com".to_string(),
                 method: "GET".to_string(),
             },

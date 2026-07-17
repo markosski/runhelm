@@ -16,7 +16,7 @@ use crate::adapters::sql_storage::SqlStorage;
 use crate::adapters::task_dispatcher::{self, TaskDispatcher};
 use crate::adapters::worker_registry::WorkerRegistry;
 use crate::api::router;
-use crate::core::function_service::FunctionService;
+use crate::core::function::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
 use crate::ports::storage::StoragePort;

@@ -3,11 +3,13 @@ use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::adapters::worker_registry::WorkerRegistry;
-use crate::core::function_service::FunctionService;
-use crate::core::models::{
-    ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskInstance, TaskSatisfactionStatus,
-    TaskStatus, TaskTypeDef, Workspace, verifier_decision_schema,
+use crate::core::function::function_service::FunctionService;
+use crate::core::function::models::{FunctionDef, FunctionTaskDef};
+use crate::core::task::{
+    ExecutionMetadata, TaskDef, TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef,
+    Workspace,
 };
+use crate::core::verifier::verifier_decision_schema;
 use crate::core::worker::{WorkerHostId, WorkerId, WorkerIdentity};
 use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
@@ -557,8 +559,8 @@ async fn verifier_control_accepts_function_task_and_injects_decision_schema() {
     let workflow_service = WorkflowService::new(storage.clone());
     let mut verifier = task("verify");
     verifier.output_schema = None;
-    verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: None,
@@ -583,8 +585,8 @@ async fn verifier_control_accepts_function_task_and_injects_decision_schema() {
 async fn verifier_control_rejects_user_output_schema() {
     let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
     let mut verifier = task("verify");
-    verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: None,
@@ -688,8 +690,8 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
 
     let mut missing_target_verifier = task("verify");
     missing_target_verifier.output_schema = None;
-    missing_target_verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    missing_target_verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("missing".to_string()),
@@ -715,8 +717,8 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
 
     let mut downstream_target_verifier = task("taska");
     downstream_target_verifier.output_schema = None;
-    downstream_target_verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    downstream_target_verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taskb".to_string()),
@@ -742,8 +744,8 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
 
     let mut unrelated_target_verifier = task("verify");
     unrelated_target_verifier.output_schema = None;
-    unrelated_target_verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    unrelated_target_verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taskb".to_string()),
@@ -773,8 +775,8 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
     let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
     let mut verifya = task("verifya");
     verifya.output_schema = None;
-    verifya.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifya.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taska".to_string()),
@@ -782,8 +784,8 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
     });
     let mut verifyb = task("verifyb");
     verifyb.output_schema = None;
-    verifyb.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifyb.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taskb".to_string()),

@@ -106,7 +106,8 @@ pub enum WorkerResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::{ExecutionMetadata, FunctionTaskDef, TaskDef, TaskTypeDef};
+    use crate::core::function::models::FunctionTaskDef;
+    use crate::core::task::{ExecutionMetadata, TaskDef, TaskTypeDef};
     use crate::ports::task_dispatch::WorkerExecutionResult;
     use serde_json::json;
     use std::path::PathBuf;

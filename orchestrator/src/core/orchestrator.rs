@@ -1,7 +1,7 @@
 use crate::adapters::worker_registry::WorkerRegistry;
 use crate::core::engine::WorkflowEngine;
-use crate::core::function_service::resolve_task_function_ref;
-use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
+use crate::core::function::function_service::resolve_task_function_ref;
+use crate::core::task::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::worker::{TaskDispatchConstraints, WorkerHostId};
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{

@@ -1,6 +1,5 @@
-use crate::core::models::{
-    TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata,
-};
+use crate::core::task::{TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus};
+use crate::core::verifier::VerifierAttemptMetadata;
 use crate::core::worker::WorkerHostId;
 use crate::core::workflow::models::{
     VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowInstance,
@@ -371,7 +370,7 @@ fn verifier_state_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::TaskSatisfactionStatus;
+    use crate::core::task::TaskSatisfactionStatus;
     use std::collections::HashMap;
 
     fn instance() -> WorkflowInstance {
@@ -615,7 +614,7 @@ mod tests {
                 input_data: vec![serde_json::json!({"input": true})],
                 output_data: Some(serde_json::json!({"stale": true})),
                 verifier_metadata: Some(VerifierAttemptMetadata {
-                    status: crate::core::models::VerifierAttemptStatus::Invalid,
+                    status: crate::core::verifier::VerifierAttemptStatus::Invalid,
                     decision: None,
                     feedback: None,
                     verifier_output: Some(serde_json::json!({"bad": true})),

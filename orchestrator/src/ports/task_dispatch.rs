@@ -1,5 +1,5 @@
 use crate::core::{
-    models::{ExecutionMetadata, TaskDef},
+    task::{ExecutionMetadata, TaskDef},
     worker::TaskDispatchConstraints,
 };
 use async_trait::async_trait;

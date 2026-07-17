@@ -1,7 +1,9 @@
-use crate::core::function_service::resolve_task_function_ref;
-use crate::core::models::{
-    ExecutionMetadata, LoopExecutionContext, LoopFeedbackEntry, TaskInputMapping, TaskInstance,
-    TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus,
+use crate::core::function::function_service::resolve_task_function_ref;
+use crate::core::task::{
+    ExecutionMetadata, TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus,
+};
+use crate::core::verifier::{
+    LoopExecutionContext, LoopFeedbackEntry, VerifierAttemptMetadata, VerifierAttemptStatus,
     VerifierControlConfig, VerifierDecision, VerifierExecutionResult,
 };
 use crate::core::worker::TaskDispatchConstraints;
@@ -775,7 +777,7 @@ impl WorkflowEngine {
         &self,
         instance: &WorkflowInstance,
         def: &WorkflowDef,
-        task_def: &crate::core::models::TaskDef,
+        task_def: &crate::core::task::TaskDef,
         slice: &[String],
         loop_slices: &HashMap<String, Vec<String>>,
     ) -> bool {
@@ -834,7 +836,7 @@ impl WorkflowEngine {
         workflow_instance: &WorkflowInstance,
         workflow_def: &WorkflowDef,
         task_instance: &TaskInstance,
-        task_def: &crate::core::models::TaskDef,
+        task_def: &crate::core::task::TaskDef,
         // list of all verifier slices discovered from the workflow definition
         loop_slices: &HashMap<String, Vec<String>>,
     ) -> Option<ResolvedTaskInputs> {
@@ -1057,7 +1059,7 @@ impl WorkflowEngine {
         loop_slices: &HashMap<String, Vec<String>>,
         verifier_task_attempt_id: &str,
         task_output: &serde_json::Value,
-        verifier_result: crate::core::models::VerifierExecutionResult,
+        verifier_result: crate::core::verifier::VerifierExecutionResult,
     ) -> anyhow::Result<VerifierTransition> {
         let verifier_task_attempt =
             instance
@@ -1316,7 +1318,7 @@ impl WorkflowEngine {
 fn initial_task_input_data(
     workflow_instance: &WorkflowInstance,
     workflow_def: &WorkflowDef,
-    task_def: &crate::core::models::TaskDef,
+    task_def: &crate::core::task::TaskDef,
 ) -> Vec<serde_json::Value> {
     if workflow_instance.trigger_input.is_none() || task_def.input_schemas.is_empty() {
         return vec![];
@@ -1335,18 +1337,18 @@ fn initial_task_input_data(
     }
 }
 
-fn task_verifier(task: &crate::core::models::TaskDef) -> Option<&VerifierControlConfig> {
+fn task_verifier(task: &crate::core::task::TaskDef) -> Option<&VerifierControlConfig> {
     task.control.as_ref()?.verifier.as_ref()
 }
 
 fn effective_output_schema(
-    task: &crate::core::models::TaskDef,
-) -> Option<&crate::core::models::JsonSchema> {
+    task: &crate::core::task::TaskDef,
+) -> Option<&crate::core::task::JsonSchema> {
     task.output_schema.as_ref()
 }
 
 fn validate_inputs(
-    task: &crate::core::models::TaskDef,
+    task: &crate::core::task::TaskDef,
     inputs: &[serde_json::Value],
 ) -> anyhow::Result<()> {
     for (index, schema) in task.input_schemas.iter().enumerate() {

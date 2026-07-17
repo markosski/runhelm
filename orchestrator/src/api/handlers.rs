@@ -14,7 +14,7 @@ use crate::api::models::{
     WorkflowDefList, WorkflowEventListQuery, WorkflowEvents, WorkflowList, WorkflowListQuery,
     WorkflowQueueStatus,
 };
-use crate::core::models::FunctionDef;
+use crate::core::function::models::FunctionDef;
 use crate::core::workflow::models::{WorkflowDef, WorkflowStatus};
 use crate::ports::task_dispatch::{ExecutionResult, WorkerExecutionResult, WorkerTaskResult};
 use serde::de::DeserializeOwned;
@@ -704,9 +704,9 @@ mod tests {
     use crate::adapters::task_dispatcher::TaskDispatcher;
     use crate::adapters::worker_registry::WorkerRegistry;
     use crate::api::router::AppState;
-    use crate::core::function_service::FunctionService;
-    use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
+    use crate::core::function::function_service::FunctionService;
     use crate::core::orchestrator::Orchestrator;
+    use crate::core::task::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
     use crate::core::worker::WorkerHostId;
     use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
     use crate::core::workflow::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
@@ -929,7 +929,7 @@ data_bindings: []
             .create_workflow_def(WorkflowDef {
                 id: "workflow-1".to_string(),
                 description: "Example workflow".to_string(),
-                tasks: vec![crate::core::models::TaskDef {
+                tasks: vec![crate::core::task::TaskDef {
                     id: "taska".to_string(),
                     kind: TaskTypeDef::Agent {
                         model_id: "model".to_string(),
@@ -1266,7 +1266,7 @@ code: "export default async function run() { return {}; }"
             .create_workflow_def(WorkflowDef {
                 id: "workflow-1".to_string(),
                 description: String::new(),
-                tasks: vec![crate::core::models::TaskDef {
+                tasks: vec![crate::core::task::TaskDef {
                     id: "taska".to_string(),
                     kind: TaskTypeDef::Agent {
                         model_id: "model".to_string(),

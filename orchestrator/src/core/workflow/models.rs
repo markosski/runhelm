@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::models::{
+use crate::core::task::{
     TaskDef, TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus,
-    VerifierAttemptMetadata,
 };
+use crate::core::verifier::VerifierAttemptMetadata;
 use crate::core::worker::WorkerHostId;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

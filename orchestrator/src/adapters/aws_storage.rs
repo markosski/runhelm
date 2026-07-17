@@ -9,7 +9,8 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
-use crate::core::models::{FunctionDef, TaskInstance, TaskStatus};
+use crate::core::function::models::FunctionDef;
+use crate::core::task::{TaskInstance, TaskStatus};
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::{WorkflowEventRecord, changed_task_attempt_ids};
 use crate::core::workflow::models::{
@@ -1240,10 +1241,9 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::core::models::{
-        FunctionDependency, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata,
-        VerifierAttemptStatus, VerifierDecision,
-    };
+    use crate::core::function::models::FunctionDependency;
+    use crate::core::task::{TaskInputMapping, TaskSatisfactionStatus};
+    use crate::core::verifier::{VerifierAttemptMetadata, VerifierAttemptStatus, VerifierDecision};
     use crate::core::worker::WorkerHostId;
     use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
     use crate::core::workflow::models::{

@@ -1,6 +1,6 @@
-use crate::core::models::{
-    FunctionDef, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata,
-};
+use crate::core::function::models::FunctionDef;
+use crate::core::task::{TaskInputMapping, TaskSatisfactionStatus};
+use crate::core::verifier::VerifierAttemptMetadata;
 use crate::core::workflow::events::WorkflowEventRecord;
 use crate::core::workflow::models::{
     WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,

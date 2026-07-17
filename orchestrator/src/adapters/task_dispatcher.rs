@@ -1,4 +1,4 @@
-use crate::core::models::{ExecutionMetadata, TaskDef, TaskInstance, WorkspaceKey};
+use crate::core::task::{ExecutionMetadata, TaskDef, TaskInstance, WorkspaceKey};
 use crate::core::worker::{DispatchLease, TaskDispatchConstraints, WorkerHostId, WorkerIdentity};
 use crate::ports::task_dispatch::{
     ExecutionResult, TaskDispatch, TaskDispatchPort, WorkerExecutionResult, WorkerTaskResult,
@@ -398,7 +398,7 @@ fn task_timeout_from_env() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::{TaskDef, TaskTypeDef, Workspace};
+    use crate::core::task::{TaskDef, TaskTypeDef, Workspace};
     use crate::core::worker::{WorkerHostId, WorkerId};
     use serde_json::json;
     use std::path::PathBuf;
@@ -1211,7 +1211,7 @@ mod tests {
     fn test_task(id: &str) -> TaskDef {
         TaskDef {
             id: id.to_string(),
-            kind: TaskTypeDef::Function(crate::core::models::FunctionTaskDef::Inline {
+            kind: TaskTypeDef::Function(crate::core::function::models::FunctionTaskDef::Inline {
                 dependencies: vec![],
                 code: "return 1".to_string(),
             }),
