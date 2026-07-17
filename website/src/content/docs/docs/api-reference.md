@@ -57,7 +57,6 @@ Register a workflow definition:
 
 ```bash
 curl -sS -X POST "$RUNHELM_URL/workflow-def" \
-  -H 'content-type: application/json' \
   -d '{
     "id": "hello-workflow",
     "description": "Says hello to a named user.",
@@ -95,6 +94,17 @@ Response:
 ```
 
 `description` is optional and defaults to an empty string.
+
+Workflow definitions may also be posted as YAML without conversion:
+
+```bash
+curl -sS -X POST "$RUNHELM_URL/workflow-def" \
+  --data-binary @workflow.yaml
+```
+
+RunHelm auto-detects JSON or YAML from the request body. A `Content-Type`
+containing `yaml` is treated as a parsing hint, but it is not required. An
+invalid document returns `400 Bad Request`.
 
 List registered workflow definitions without loading their task definitions or data bindings:
 
@@ -166,6 +176,17 @@ The response is the full stored workflow definition model, rather than the
 summary returned by `GET /workflow-def`. An unknown `def_id` returns `404 Not
 Found`.
 
+JSON is the default response format. Request YAML with the `format` query
+parameter:
+
+```bash
+curl -sS "$RUNHELM_URL/workflow-def/hello-workflow?format=yaml"
+```
+
+The supported values are `json` and `yaml`. YAML responses use
+`Content-Type: application/yaml`; an unsupported value returns `400 Bad
+Request`.
+
 You can overwrite a registered definition while it has no workflow instances.
 After any instance has been created, regardless of its state, the definition is
 immutable and an overwrite returns `409 Conflict`:
@@ -185,7 +206,6 @@ Register a reusable function definition:
 
 ```bash
 curl -sS -X POST "$RUNHELM_URL/function-def" \
-  -H 'content-type: application/json' \
   -d '{
     "id": "format.hello",
     "dependencies": [],
@@ -200,6 +220,14 @@ Response:
   "status": "created",
   "id": "format.hello"
 }
+```
+
+Function definitions use the same JSON/YAML auto-detection as workflow
+definitions. For example, register a YAML artifact directly with:
+
+```bash
+curl -sS -X POST "$RUNHELM_URL/function-def" \
+  --data-binary @function.yaml
 ```
 
 Delete a reusable function definition:

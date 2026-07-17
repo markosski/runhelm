@@ -47,45 +47,14 @@ data_bindings: []
 
 ## Register with the API
 
-The API accepts JSON. This request registers the same workflow:
+The API accepts JSON and YAML. Save the definition above as
+`simple-function-workflow.yaml`, then register it directly:
 
 ```bash
 export RUNHELM_URL=http://localhost:3000
 
 curl -sS -X POST "$RUNHELM_URL/workflow-def" \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "simple-function-workflow",
-    "tasks": [
-      {
-        "id": "summarize-user",
-        "kind": {
-          "Function": {
-            "dependencies": [],
-            "code": "export default async function run({ inputs }) { const user = inputs[0] ?? {}; const name = user.name ?? \"friend\"; return { response: `Hello, ${name}!`, normalizedName: String(name).trim().toLowerCase() }; }"
-          }
-        },
-        "input_schemas": [
-          {
-            "type": "object",
-            "properties": {
-              "name": { "type": "string" }
-            }
-          }
-        ],
-        "output_schema": {
-          "type": "object",
-          "required": ["response", "normalizedName"],
-          "properties": {
-            "response": { "type": "string" },
-            "normalizedName": { "type": "string" }
-          }
-        },
-        "required_credentials": []
-      }
-    ],
-    "data_bindings": []
-  }'
+  --data-binary @simple-function-workflow.yaml
 ```
 
 ## Start a run

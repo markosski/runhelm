@@ -3,7 +3,8 @@ title: Workflow YAML Reference
 description: Reference the workflow definition fields used by RunHelm.
 ---
 
-RunHelm workflow definitions are JSON or YAML documents. YAML is convenient for authoring; the API receives JSON.
+RunHelm workflow definitions are JSON or YAML documents. The API accepts either
+format directly and stores the definition canonically as JSON.
 
 ## Top-level fields
 

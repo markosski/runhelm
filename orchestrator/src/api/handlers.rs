@@ -1,7 +1,9 @@
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Response},
 };
 use std::time::Duration;
 use tracing::{error, info};
@@ -12,7 +14,7 @@ use crate::api::models::{WorkerResponse, WorkflowDefList, WorkflowEvents, Workfl
 use crate::core::models::FunctionDef;
 use crate::core::workflow::models::{WorkflowDef, WorkflowStatus};
 use crate::ports::task_dispatch::ExecutionResult;
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use super::router::AppState;
@@ -27,8 +29,10 @@ pub async fn not_found() -> StatusCode {
 
 pub async fn create_workflow_def(
     State(state): State<AppState>,
-    Json(workflow_def): Json<WorkflowDef>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let workflow_def: WorkflowDef = parse_definition(&headers, &body)?;
     let workflow_def_id = workflow_def.id.clone();
 
     state
@@ -77,13 +81,14 @@ pub async fn list_workflow_defs(State(state): State<AppState>) -> Result<Json<Va
 pub async fn get_workflow_def(
     State(state): State<AppState>,
     Path(workflow_def_id): Path<String>,
-) -> Result<Json<WorkflowDef>, StatusCode> {
+    Query(query): Query<WorkflowDefFormatQuery>,
+) -> Result<Response, StatusCode> {
     match state
         .workflow_service
         .get_workflow_def(&workflow_def_id)
         .await
     {
-        Ok(Some(workflow_def)) => Ok(Json(workflow_def)),
+        Ok(Some(workflow_def)) => format_workflow_def(workflow_def, query.format),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             error!(%workflow_def_id, %error, "failed to get workflow definition");
@@ -92,17 +97,89 @@ pub async fn get_workflow_def(
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct WorkflowDefFormatQuery {
+    #[serde(default)]
+    format: DefinitionFormat,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DefinitionFormat {
+    #[default]
+    Json,
+    Yaml,
+}
+
+fn parse_definition<T: DeserializeOwned>(
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<T, (StatusCode, Json<Value>)> {
+    let yaml_hint = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("yaml"));
+
+    let parsed = if yaml_hint {
+        parse_yaml_definition(body)
+    } else {
+        serde_json::from_slice(body)
+            .map_err(|error| error.to_string())
+            .or_else(|_| parse_yaml_definition(body))
+    };
+
+    parsed.map_err(|_| {
+        definition_request_error(
+            StatusCode::BAD_REQUEST,
+            "definition must be valid JSON or YAML",
+        )
+    })
+}
+
+fn parse_yaml_definition<T: DeserializeOwned>(body: &[u8]) -> Result<T, String> {
+    let value: Value = serde_yaml::from_slice(body).map_err(|error| error.to_string())?;
+    serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+fn definition_request_error(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
+    (status, Json(json!({ "error": message })))
+}
+
+fn format_workflow_def(
+    workflow_def: WorkflowDef,
+    format: DefinitionFormat,
+) -> Result<Response, StatusCode> {
+    match format {
+        DefinitionFormat::Json => Ok(Json(workflow_def).into_response()),
+        DefinitionFormat::Yaml => serde_json::to_value(workflow_def)
+            .map_err(|error| error.to_string())
+            .and_then(|value| serde_yaml::to_string(&value).map_err(|error| error.to_string()))
+            .map(|body| ([(CONTENT_TYPE, "application/yaml")], body).into_response())
+            .map_err(|error| {
+                error!(%error, "failed to serialize workflow definition as YAML");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }),
+    }
+}
+
 pub async fn create_function_def(
     State(state): State<AppState>,
-    Json(function_def): Json<FunctionDef>,
-) -> Result<Json<Value>, StatusCode> {
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let function_def: FunctionDef = parse_definition(&headers, &body)?;
     let function_def_id = function_def.id.clone();
 
     state
         .function_service
         .create_function_def(function_def)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| {
+            definition_request_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to register function definition",
+            )
+        })?;
     info!(
         id = %function_def_id,
         "Registered function definition"
@@ -678,6 +755,19 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    const YAML_WORKFLOW: &[u8] = br#"id: yaml-workflow
+description: From YAML
+tasks:
+  - id: run
+    kind:
+      Function:
+        code: "export default async function run() { return {}; }"
+        dependencies: []
+    input_schemas: []
+    required_credentials: []
+data_bindings: []
+"#;
+
     fn failed_task() -> TaskInstance {
         TaskInstance {
             task_def_id: "taska".to_string(),
@@ -828,7 +918,10 @@ mod tests {
             .await
             .unwrap();
 
-        let (status, Json(response)) = create_workflow_def(State(state), Json(workflow_def))
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
+        let body = Bytes::from(serde_json::to_vec(&workflow_def).unwrap());
+        let (status, Json(response)) = create_workflow_def(State(state), headers, body)
             .await
             .unwrap_err();
 
@@ -900,10 +993,23 @@ mod tests {
             .await
             .unwrap();
 
-        let Json(response) = get_workflow_def(State(state), Path("workflow-1".to_string()))
-            .await
-            .unwrap();
-        let response = serde_json::to_value(response).unwrap();
+        let response = get_workflow_def(
+            State(state),
+            Path("workflow-1".to_string()),
+            Query(WorkflowDefFormatQuery::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let response: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(response["id"], "workflow-1");
         assert_eq!(response["description"], "Example workflow");
@@ -918,11 +1024,98 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let state = app_state(storage, WorkerRegistry::new());
 
-        let status = get_workflow_def(State(state), Path("missing".to_string()))
-            .await
-            .unwrap_err();
+        let status = get_workflow_def(
+            State(state),
+            Path("missing".to_string()),
+            Query(WorkflowDefFormatQuery::default()),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn workflow_definition_request_accepts_explicit_yaml() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "application/yaml".parse().unwrap());
+
+        let workflow_def: WorkflowDef = parse_definition(&headers, YAML_WORKFLOW).unwrap();
+
+        assert_eq!(workflow_def.id, "yaml-workflow");
+        assert_eq!(workflow_def.description, "From YAML");
+        assert_eq!(workflow_def.tasks[0].id, "run");
+    }
+
+    #[test]
+    fn workflow_definition_request_auto_detects_yaml_with_generic_content_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let workflow_def: WorkflowDef = parse_definition(
+            &headers,
+            b"id: detected-workflow\ntasks: []\ndata_bindings: []\n",
+        )
+        .unwrap();
+
+        assert_eq!(workflow_def.id, "detected-workflow");
+    }
+
+    #[test]
+    fn function_definition_request_accepts_explicit_yaml() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "text/yaml".parse().unwrap());
+
+        let function_def: FunctionDef = parse_definition(
+            &headers,
+            br#"id: format.hello
+dependencies: []
+code: "export default async function run() { return {}; }"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(function_def.id, "format.hello");
+        assert!(function_def.dependencies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_workflow_def_api_returns_yaml_when_requested() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state = app_state(storage, WorkerRegistry::new());
+        state
+            .workflow_service
+            .create_workflow_def(parse_yaml_definition(YAML_WORKFLOW).unwrap())
+            .await
+            .unwrap();
+
+        let response = get_workflow_def(
+            State(state),
+            Path("yaml-workflow".to_string()),
+            Query(WorkflowDefFormatQuery {
+                format: DefinitionFormat::Yaml,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/yaml"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response: Value = serde_yaml::from_slice(&body).unwrap();
+        assert_eq!(response["id"], "yaml-workflow");
+        assert!(response["tasks"][0]["kind"]["Function"].is_object());
+    }
+
+    #[test]
+    fn definition_format_rejects_unknown_value() {
+        assert!(serde_json::from_str::<DefinitionFormat>(r#""xml""#).is_err());
     }
 
     #[tokio::test]
