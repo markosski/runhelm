@@ -43,7 +43,7 @@ Keep the workflow as small as possible. Define only the required tasks, data
 bindings, input and output schemas, and credentials. Do not invent fields that
 are not supported by the current RunHelm examples or documentation.
 
-Save an API-ready JSON workflow definition to [path and filename]. Then explain
+Save an API-ready JSON or YAML workflow definition to [path and filename]. Then explain
 the workflow, list the inputs and credentials I must provide, and give me the
 curl commands to register and run it against $RUNHELM_URL.
 ```
@@ -57,7 +57,6 @@ Register a one-task Function workflow:
 
 ```bash
 curl -sS -X POST "$RUNHELM_URL/workflow-def" \
-  -H 'content-type: application/json' \
   -d '{
     "id": "hello-workflow",
     "tasks": [
@@ -91,6 +90,13 @@ Response:
   "status": "created",
   "id": "hello-workflow"
 }
+```
+
+If the definition is a YAML file, register it directly:
+
+```bash
+curl -sS -X POST "$RUNHELM_URL/workflow-def" \
+  --data-binary @hello-workflow.yaml
 ```
 
 You can register an updated definition under the same ID until its first

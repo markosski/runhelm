@@ -34,6 +34,10 @@ SQLite is the first supported SQL backend. The storage adapter detects the SQL d
 
 SQL storage keeps workflow-level state, task attempts, verifier state, and events in separate tables. RunHelm still exposes the same workflow state model through the API.
 
+Workflow definitions may enter and leave the API as JSON or YAML. Storage
+normalizes definition payloads to JSON, so the selected API representation does
+not change the persisted format.
+
 Workflow transition commits are atomic: when the orchestrator records a workflow change, the SQL adapter saves the event records, workflow row, task rows, and verifier rows together. Workflow list summaries are derived from workflow and task rows when queried.
 
 SQL storage does not make task execution exactly once. Tasks should still be designed for at-least-once execution. See [Reliability and Side Effects](/docs/operations/reliability/).

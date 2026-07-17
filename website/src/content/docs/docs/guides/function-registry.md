@@ -69,7 +69,6 @@ Fields:
 export RUNHELM_URL=http://localhost:3000
 
 curl -sS -X POST "$RUNHELM_URL/function-def" \
-  -H 'content-type: application/json' \
   -d '{
     "id": "format.hello",
     "dependencies": [],
@@ -140,17 +139,14 @@ Register the JSON artifact:
 
 ```bash
 curl -sS -X POST "$RUNHELM_URL/function-def" \
-  -H 'content-type: application/json' \
   --data-binary @functions/example/dist/example.example.json
 ```
 
-You can also pipe a YAML artifact through `yq` and register the resulting JSON:
+Register a YAML artifact directly without converting it:
 
 ```bash
-yq . functions/example/dist/example.yaml \
-  | curl -sS -X POST "$RUNHELM_URL/function-def" \
-      -H 'Content-Type: application/json' \
-      --data-binary @-
+curl -sS -X POST "$RUNHELM_URL/function-def" \
+  --data-binary @functions/example/dist/example.yaml
 ```
 
 ## When to use inline functions

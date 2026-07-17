@@ -374,6 +374,21 @@ The orchestrator SHALL expose registered workflow definitions as compact summari
 - **THEN** storage persists the description with the workflow definition
 - **THEN** the workflow definition summary exposes that description without loading the full workflow definition payload
 
+### Requirement: Definition API Formats
+The orchestrator SHALL accept workflow and function definition documents as JSON or YAML while keeping JSON as the canonical persisted representation. The orchestrator SHALL return complete workflow definitions as JSON by default and YAML when requested.
+
+#### Scenario: Register a JSON or YAML definition
+- **WHEN** a caller posts a valid JSON or YAML workflow or function definition with any or no `Content-Type`
+- **THEN** the API detects and parses the document format
+- **THEN** a YAML `Content-Type` may be used as a parsing hint
+- **THEN** storage receives the same typed definition model for canonical JSON persistence
+
+#### Scenario: Retrieve a complete definition in the requested format
+- **WHEN** a caller gets a complete workflow definition with `format=json` or without a `format` query parameter
+- **THEN** the API returns JSON
+- **WHEN** a caller gets a complete workflow definition with `format=yaml`
+- **THEN** the API returns YAML
+
 ### Requirement: Storage Adapter Boundary
 Storage adapters SHALL be responsible for persistence mechanics and SHALL NOT own workflow event semantics.
 

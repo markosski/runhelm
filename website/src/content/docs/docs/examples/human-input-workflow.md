@@ -65,13 +65,18 @@ Add the model credential to `~/.runhelm/file_credentials.json`:
 
 ## Register and start
 
-Register the workflow with the API. If you are working from the repository checkout, you can convert the example YAML to JSON with your preferred YAML tool and post it to `/workflow-def`.
-
-Start an instance:
+Register the example YAML directly with the API:
 
 ```bash
 export RUNHELM_URL=http://localhost:3000
 
+curl -sS -X POST "$RUNHELM_URL/workflow-def" \
+  --data-binary @worker/examples/example_human_input_workflow.yaml
+```
+
+Start an instance:
+
+```bash
 curl -sS -X POST "$RUNHELM_URL/workflow-def/human-input-agent-workflow" \
   -H 'content-type: application/json' \
   -d '{}'
