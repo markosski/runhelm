@@ -1244,9 +1244,10 @@ mod tests {
         FunctionDependency, TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata,
         VerifierAttemptStatus, VerifierDecision,
     };
+    use crate::core::worker::WorkerHostId;
     use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
     use crate::core::workflow::models::{
-        VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkerHostId,
+        VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
     };
     use crate::ports::storage::{StorageError, WorkflowInfoPageRequest};
 

@@ -1,11 +1,11 @@
 use crate::adapters::worker_registry::WorkerRegistry;
-use crate::api::models::{WorkflowQueueStatus, WorkflowStatusReport};
 use crate::core::engine::WorkflowEngine;
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskStatus};
+use crate::core::worker::{TaskDispatchConstraints, WorkerHostId};
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
-    StartupWorkflowDiscovery, TaskDispatchConstraints, WorkerHostId, WorkflowInfo, WorkflowStatus,
+    StartupWorkflowDiscovery, WorkflowInfo, WorkflowStatus, WorkflowStatusReport,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::core::workflow::workflow_service::WorkflowService;
@@ -181,10 +181,8 @@ impl Orchestrator {
     }
 
     /// Returns queued and currently running workflow instance IDs.
-    pub async fn get_queue_status(&self) -> anyhow::Result<WorkflowQueueStatus> {
-        let pending = self.workflow_queue.pending_ids().await?;
-
-        Ok(WorkflowQueueStatus { pending })
+    pub async fn get_queue_status(&self) -> anyhow::Result<Vec<String>> {
+        self.workflow_queue.pending_ids().await
     }
 
     /// Removes a pending workflow instance from the queue.

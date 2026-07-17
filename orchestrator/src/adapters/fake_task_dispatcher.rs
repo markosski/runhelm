@@ -1,5 +1,5 @@
 use crate::core::models::{ExecutionMetadata, TaskDef};
-use crate::core::workflow::models::TaskDispatchConstraints;
+use crate::core::worker::TaskDispatchConstraints;
 use crate::ports::task_dispatch::{ExecutionResult, TaskDispatchPort};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -132,7 +132,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -158,7 +158,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -179,7 +179,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -198,7 +198,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -217,7 +217,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -236,7 +236,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -255,7 +255,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -274,7 +274,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -293,7 +293,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -314,7 +314,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -333,7 +333,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -343,7 +343,7 @@ mod tests {
                 &task,
                 &[json!("anything"), json!(42)],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();
@@ -371,7 +371,7 @@ mod tests {
                 &task,
                 &[],
                 &ExecutionMetadata::default(),
-                &crate::core::workflow::models::TaskDispatchConstraints::default(),
+                &crate::core::worker::TaskDispatchConstraints::default(),
             )
             .await
             .unwrap();

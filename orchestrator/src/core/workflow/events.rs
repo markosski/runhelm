@@ -1,9 +1,10 @@
 use crate::core::models::{
     TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata,
 };
+use crate::core::worker::WorkerHostId;
 use crate::core::workflow::models::{
-    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkerHostId,
-    WorkflowInstance, WorkflowStatus,
+    VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus, WorkflowInstance,
+    WorkflowStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

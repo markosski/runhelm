@@ -6,9 +6,10 @@ use std::str::FromStr;
 
 use crate::core::models::{FunctionDef, TaskInstance, TaskStatus};
 use crate::core::util::unix_timestamp_ms;
+use crate::core::worker::WorkerHostId;
 use crate::core::workflow::events::{WorkflowEventRecord, changed_task_attempt_ids};
 use crate::core::workflow::models::{
-    WorkerHostId, WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
+    WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::storage::{
     StoragePort, StorageResult, WorkflowEventPage, WorkflowEventPageRequest, WorkflowInfoCursor,

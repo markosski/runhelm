@@ -1,11 +1,10 @@
 use crate::core::models::{ExecutionMetadata, TaskDef, TaskInstance, WorkspaceKey};
-use crate::core::workflow::models::{
-    DispatchLease, TaskDispatchConstraints, WorkerHostId, WorkerIdentity,
+use crate::core::worker::{DispatchLease, TaskDispatchConstraints, WorkerHostId, WorkerIdentity};
+use crate::ports::task_dispatch::{
+    ExecutionResult, TaskDispatch, TaskDispatchPort, WorkerExecutionResult, WorkerTaskResult,
 };
-use crate::ports::task_dispatch::{ExecutionResult, TaskDispatchPort};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,58 +18,6 @@ use tracing::{debug, warn};
 const TASK_TIMEOUT_MONITOR_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_TASK_TIMEOUT: Duration = Duration::from_secs(300);
 static NEXT_DISPATCH_NAMESPACE_ID: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskDispatch {
-    pub workflow_inst_id: String,
-    pub task_id: String,
-    pub task: TaskDef,
-    pub workspace_path_suffix: PathBuf,
-    #[serde(default)]
-    pub inputs: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub execution_metadata: ExecutionMetadata,
-    #[serde(
-        default,
-        rename = "input_provided",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub human_input_provided: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorkerExecutionResult {
-    Success { output: serde_json::Value },
-    InputNeeded { description: String },
-    Failure { reason: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerTaskResult {
-    pub task_id: String,
-    pub result: WorkerExecutionResult,
-}
-
-impl From<ExecutionResult> for WorkerExecutionResult {
-    fn from(value: ExecutionResult) -> Self {
-        match value {
-            ExecutionResult::Success(output) => Self::Success { output },
-            ExecutionResult::InputNeeded(description) => Self::InputNeeded { description },
-            ExecutionResult::Failure(reason) => Self::Failure { reason },
-        }
-    }
-}
-
-impl From<WorkerExecutionResult> for ExecutionResult {
-    fn from(value: WorkerExecutionResult) -> Self {
-        match value {
-            WorkerExecutionResult::Success { output } => Self::Success(output),
-            WorkerExecutionResult::InputNeeded { description } => Self::InputNeeded(description),
-            WorkerExecutionResult::Failure { reason } => Self::Failure(reason),
-        }
-    }
-}
 
 #[derive(Debug)]
 struct PendingTask {
@@ -452,7 +399,7 @@ fn task_timeout_from_env() -> Duration {
 mod tests {
     use super::*;
     use crate::core::models::{TaskDef, TaskTypeDef, Workspace};
-    use crate::core::workflow::models::{WorkerHostId, WorkerId};
+    use crate::core::worker::{WorkerHostId, WorkerId};
     use serde_json::json;
     use std::path::PathBuf;
 

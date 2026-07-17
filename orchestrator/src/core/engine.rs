@@ -1,14 +1,14 @@
-use crate::api::models::{TaskStatusReport, VerifierStatusReport, WorkflowStatusReport};
 use crate::core::function_service::resolve_task_function_ref;
 use crate::core::models::{
     ExecutionMetadata, LoopExecutionContext, LoopFeedbackEntry, TaskInputMapping, TaskInstance,
     TaskSatisfactionStatus, TaskStatus, VerifierAttemptMetadata, VerifierAttemptStatus,
     VerifierControlConfig, VerifierDecision, VerifierExecutionResult,
 };
+use crate::core::worker::TaskDispatchConstraints;
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
-    TaskDispatchConstraints, VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
-    WorkflowDef, WorkflowInstance, WorkflowStatus,
+    TaskStatusReport, VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
+    VerifierStatusReport, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStatusReport,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::StoragePort;
