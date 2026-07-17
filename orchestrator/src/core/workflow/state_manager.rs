@@ -78,7 +78,7 @@ impl WorkflowStateManager {
 mod tests {
     use super::*;
     use crate::adapters::memory_storage::MemoryStorage;
-    use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus};
+    use crate::core::task::{TaskInstance, TaskSatisfactionStatus, TaskStatus};
     use crate::core::workflow::events::WorkflowInstanceEvent;
     use crate::core::workflow::models::{WorkflowInstance, WorkflowStatus};
     use crate::ports::storage::{

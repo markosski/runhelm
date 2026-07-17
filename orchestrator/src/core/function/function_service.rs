@@ -1,7 +1,8 @@
-use crate::core::models::FunctionDef;
-use crate::core::models::{FunctionTaskDef, TaskDef, TaskTypeDef};
-use crate::ports::storage::StoragePort;
 use std::sync::Arc;
+
+use crate::core::function::models::{FunctionDef, FunctionTaskDef};
+use crate::core::task::{TaskDef, TaskTypeDef};
+use crate::ports::storage::StoragePort;
 
 pub struct FunctionService {
     storage: Arc<dyn StoragePort + Send + Sync>,

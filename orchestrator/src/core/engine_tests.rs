@@ -1,8 +1,11 @@
 use super::*;
 use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
 use crate::adapters::memory_storage::MemoryStorage;
-use crate::core::models::*;
-use crate::core::workflow::models::{DataBinding, TaskDispatchConstraints, WorkerHostId};
+use crate::core::function::models::FunctionTaskDef;
+use crate::core::task::*;
+use crate::core::verifier::verifier_decision_schema;
+use crate::core::worker::{TaskDispatchConstraints, WorkerHostId};
+use crate::core::workflow::models::DataBinding;
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::WorkflowEventPageRequest;
 use crate::ports::task_dispatch::ExecutionResult;
@@ -37,7 +40,7 @@ impl TaskDispatchPort for ContinueThenCompleteDispatcher {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         metadata: &ExecutionMetadata,
-        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
+        _dispatch: &crate::core::worker::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             let generation = metadata
@@ -68,7 +71,7 @@ impl TaskDispatchPort for CompleteVerifierDispatcher {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
+        _dispatch: &crate::core::worker::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({ "decision": "complete" })));
@@ -88,7 +91,7 @@ impl TaskDispatchPort for AlwaysContinueVerifierDispatcher {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
+        _dispatch: &crate::core::worker::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         if task_verifier(task).is_some() {
             return Ok(ExecutionResult::Success(json!({

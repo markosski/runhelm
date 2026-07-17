@@ -2,15 +2,16 @@ use super::*;
 use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-use crate::adapters::worker_registry::WorkerRegistration;
 use crate::adapters::worker_registry::WorkerRegistry;
-use crate::api::models::WorkflowQueueStatus;
-use crate::core::function_service::FunctionService;
-use crate::core::models::{
-    ExecutionMetadata, FunctionDef, FunctionTaskDef, TaskDef, TaskInstance, TaskSatisfactionStatus,
-    TaskStatus, TaskTypeDef, Workspace, verifier_decision_schema,
+use crate::core::function::function_service::FunctionService;
+use crate::core::function::models::{FunctionDef, FunctionTaskDef};
+use crate::core::task::{
+    ExecutionMetadata, TaskDef, TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef,
+    Workspace,
 };
-use crate::core::workflow::models::{DataBinding, WorkerHostId, WorkflowDef, WorkflowInstance};
+use crate::core::verifier::verifier_decision_schema;
+use crate::core::worker::{WorkerHostId, WorkerId, WorkerIdentity};
+use crate::core::workflow::models::{DataBinding, WorkflowDef, WorkflowInstance};
 use crate::core::workflow::workflow_service::WorkflowService;
 use crate::ports::storage::{StoragePort, TaskResult};
 use crate::ports::task_dispatch::ExecutionResult;
@@ -71,7 +72,7 @@ impl TaskDispatchPort for CountingDispatcher {
         _task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
+        _dispatch: &crate::core::worker::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -111,7 +112,7 @@ impl TaskDispatchPort for RecordingIsolatedDispatcher {
         task: &TaskDef,
         _inputs: &[serde_json::Value],
         _metadata: &ExecutionMetadata,
-        _dispatch: &crate::core::workflow::models::TaskDispatchConstraints,
+        _dispatch: &crate::core::worker::TaskDispatchConstraints,
     ) -> anyhow::Result<ExecutionResult> {
         self.records
             .lock()
@@ -558,8 +559,8 @@ async fn verifier_control_accepts_function_task_and_injects_decision_schema() {
     let workflow_service = WorkflowService::new(storage.clone());
     let mut verifier = task("verify");
     verifier.output_schema = None;
-    verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: None,
@@ -584,8 +585,8 @@ async fn verifier_control_accepts_function_task_and_injects_decision_schema() {
 async fn verifier_control_rejects_user_output_schema() {
     let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
     let mut verifier = task("verify");
-    verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: None,
@@ -689,8 +690,8 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
 
     let mut missing_target_verifier = task("verify");
     missing_target_verifier.output_schema = None;
-    missing_target_verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    missing_target_verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("missing".to_string()),
@@ -716,8 +717,8 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
 
     let mut downstream_target_verifier = task("taska");
     downstream_target_verifier.output_schema = None;
-    downstream_target_verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    downstream_target_verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taskb".to_string()),
@@ -743,8 +744,8 @@ async fn verifier_control_rejects_invalid_rerun_from_task_id_values() {
 
     let mut unrelated_target_verifier = task("verify");
     unrelated_target_verifier.output_schema = None;
-    unrelated_target_verifier.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    unrelated_target_verifier.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taskb".to_string()),
@@ -774,8 +775,8 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
     let workflow_service = WorkflowService::new(Arc::new(MemoryStorage::new()));
     let mut verifya = task("verifya");
     verifya.output_schema = None;
-    verifya.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifya.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taska".to_string()),
@@ -783,8 +784,8 @@ async fn verifier_control_rejects_overlapping_loop_slices() {
     });
     let mut verifyb = task("verifyb");
     verifyb.output_schema = None;
-    verifyb.control = Some(crate::core::models::TaskControl {
-        verifier: Some(crate::core::models::VerifierControlConfig {
+    verifyb.control = Some(crate::core::task::TaskControl {
+        verifier: Some(crate::core::verifier::VerifierControlConfig {
             max_iterations: 2,
             on_exhausted_continue: false,
             rerun_from_task_id: Some("taskb".to_string()),
@@ -838,9 +839,7 @@ async fn queue_status_lists_pending_workflows() {
 
     assert_eq!(
         orchestrator.get_queue_status().await.unwrap(),
-        WorkflowQueueStatus {
-            pending: vec!["pending-workflow".to_string()],
-        }
+        vec!["pending-workflow".to_string()]
     );
 }
 
@@ -893,7 +892,7 @@ async fn startup_discovery_finds_blocked_workflows_without_requeueing_them() {
         .enqueue_active_workflow_instances()
         .await
         .unwrap();
-    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    let mut pending = orchestrator.get_queue_status().await.unwrap();
     pending.sort();
 
     assert_eq!(requeued, 2);
@@ -937,14 +936,7 @@ async fn pause_and_resume_workflow_update_status_and_queue() {
             .status,
         WorkflowStatus::Paused
     );
-    assert!(
-        orchestrator
-            .get_queue_status()
-            .await
-            .unwrap()
-            .pending
-            .is_empty()
-    );
+    assert!(orchestrator.get_queue_status().await.unwrap().is_empty());
 
     orchestrator
         .resume_workflow_instance("workflow-1")
@@ -961,7 +953,7 @@ async fn pause_and_resume_workflow_update_status_and_queue() {
         WorkflowStatus::Pending
     );
     assert_eq!(
-        orchestrator.get_queue_status().await.unwrap().pending,
+        orchestrator.get_queue_status().await.unwrap(),
         vec!["workflow-1".to_string()]
     );
 }
@@ -1007,14 +999,7 @@ async fn bulk_pause_and_resume_update_queue_for_matching_workflows() {
             "running-workflow".to_string(),
         ]
     );
-    assert!(
-        orchestrator
-            .get_queue_status()
-            .await
-            .unwrap()
-            .pending
-            .is_empty()
-    );
+    assert!(orchestrator.get_queue_status().await.unwrap().is_empty());
 
     let mut resumed = orchestrator
         .resume_paused_workflow_instances()
@@ -1029,7 +1014,7 @@ async fn bulk_pause_and_resume_update_queue_for_matching_workflows() {
             "running-workflow".to_string(),
         ]
     );
-    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    let mut pending = orchestrator.get_queue_status().await.unwrap();
     pending.sort();
     assert_eq!(
         pending,
@@ -1102,7 +1087,7 @@ async fn startup_recovery_preserves_workflow_pins_when_reloading_runnable_work()
         WorkflowStatus::Pending
     );
 
-    let mut pending = orchestrator.get_queue_status().await.unwrap().pending;
+    let mut pending = orchestrator.get_queue_status().await.unwrap();
     pending.sort();
     assert_eq!(
         pending,
@@ -1171,7 +1156,7 @@ async fn startup_recovery_requeues_abandoned_running_task_attempts() {
         TaskStatus::Pending
     );
     assert_eq!(
-        orchestrator.get_queue_status().await.unwrap().pending,
+        orchestrator.get_queue_status().await.unwrap(),
         vec!["running-workflow".to_string()]
     );
 }
@@ -1332,7 +1317,7 @@ async fn retry_workflow_task_commits_retry_and_enqueues_workflow() {
     assert_eq!(saved.status, WorkflowStatus::Pending);
     assert_eq!(saved.tasks["taska[1]"].status, TaskStatus::Pending);
     assert_eq!(
-        orchestrator.get_queue_status().await.unwrap().pending,
+        orchestrator.get_queue_status().await.unwrap(),
         vec!["failed-workflow".to_string()]
     );
 }
@@ -1343,14 +1328,14 @@ async fn force_retry_workflow_task_keeps_existing_host_when_it_is_available() {
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
     let worker_registry = WorkerRegistry::new();
     worker_registry
-        .register_worker(WorkerRegistration {
-            worker_id: "worker-1".to_string(),
+        .register_worker(WorkerIdentity {
+            worker_id: WorkerId::new("worker-1"),
             host_id: WorkerHostId::new("host-a"),
         })
         .await;
     worker_registry
-        .register_worker(WorkerRegistration {
-            worker_id: "worker-2".to_string(),
+        .register_worker(WorkerIdentity {
+            worker_id: WorkerId::new("worker-2"),
             host_id: WorkerHostId::new("host-b"),
         })
         .await;
@@ -1399,8 +1384,8 @@ async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable()
     let queue = Arc::new(MemoryWorkflowQueue::new(10));
     let worker_registry = WorkerRegistry::new();
     worker_registry
-        .register_worker(WorkerRegistration {
-            worker_id: "worker-1".to_string(),
+        .register_worker(WorkerIdentity {
+            worker_id: WorkerId::new("worker-1"),
             host_id: WorkerHostId::new("host-b"),
         })
         .await;
@@ -1442,7 +1427,7 @@ async fn force_retry_workflow_task_reassigns_when_existing_host_is_unavailable()
         .unwrap();
     assert_eq!(saved.pinned_worker_host, Some(WorkerHostId::new("host-b")));
     assert_eq!(
-        orchestrator.get_queue_status().await.unwrap().pending,
+        orchestrator.get_queue_status().await.unwrap(),
         vec!["failed-workflow".to_string()]
     );
 }
@@ -1482,14 +1467,7 @@ async fn force_retry_workflow_task_rejects_when_no_host_is_eligible() {
         .unwrap_err();
 
     assert!(error.to_string().contains("no eligible retry host"));
-    assert!(
-        orchestrator
-            .get_queue_status()
-            .await
-            .unwrap()
-            .pending
-            .is_empty()
-    );
+    assert!(orchestrator.get_queue_status().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1518,12 +1496,5 @@ async fn remove_and_purge_affect_pending_queue_only() {
             .unwrap(),
         vec!["workflow-2".to_string()]
     );
-    assert!(
-        orchestrator
-            .get_queue_status()
-            .await
-            .unwrap()
-            .pending
-            .is_empty()
-    );
+    assert!(orchestrator.get_queue_status().await.unwrap().is_empty());
 }

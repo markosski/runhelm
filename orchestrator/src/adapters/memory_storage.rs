@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::core::models::FunctionDef;
+use crate::core::function::models::FunctionDef;
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::WorkflowEventRecord;
 use crate::core::workflow::models::{
@@ -285,7 +285,7 @@ fn workflow_completed_at(instance: &WorkflowInstance, modified_at_epoch_ms: u64)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus};
+    use crate::core::task::{TaskInstance, TaskSatisfactionStatus, TaskStatus};
     use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
     use crate::ports::storage::WorkflowInfoPageRequest;
     use std::collections::HashMap;

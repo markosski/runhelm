@@ -1,4 +1,4 @@
-use crate::core::workflow::models::{WorkerHeartbeatState, WorkerHostId, WorkerId, WorkerIdentity};
+use crate::core::worker::{WorkerHeartbeatState, WorkerHostId, WorkerIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -8,21 +8,6 @@ use tracing::debug;
 
 const DEFAULT_WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_MISSED_HEARTBEAT_THRESHOLD: u32 = 3;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkerRegistration {
-    pub worker_id: String,
-    pub host_id: WorkerHostId,
-}
-
-impl WorkerRegistration {
-    pub fn into_identity(self) -> WorkerIdentity {
-        WorkerIdentity {
-            worker_id: WorkerId::new(self.worker_id),
-            host_id: self.host_id,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkerHeartbeatPolicy {
@@ -68,12 +53,11 @@ impl WorkerRegistry {
         }
     }
 
-    pub async fn register_worker(&self, registration: WorkerRegistration) {
-        self.tick_worker_heartbeat(registration).await;
+    pub async fn register_worker(&self, identity: WorkerIdentity) {
+        self.tick_worker_heartbeat(identity).await;
     }
 
-    pub async fn tick_worker_heartbeat(&self, registration: WorkerRegistration) {
-        let identity = registration.into_identity();
+    pub async fn tick_worker_heartbeat(&self, identity: WorkerIdentity) {
         let worker_id = identity.worker_id.0.clone();
         let host_id = identity.host_id.0.clone();
         let now = epoch_ms();
@@ -213,16 +197,16 @@ fn epoch_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::workflow::models::{WorkerHostId, WorkerId};
+    use crate::core::worker::{WorkerHostId, WorkerId};
     use tokio::time;
 
-    fn test_registration(worker_id: &str) -> WorkerRegistration {
+    fn test_registration(worker_id: &str) -> WorkerIdentity {
         test_registration_for_host(worker_id, "test-host")
     }
 
-    fn test_registration_for_host(worker_id: &str, host_id: &str) -> WorkerRegistration {
-        WorkerRegistration {
-            worker_id: worker_id.to_string(),
+    fn test_registration_for_host(worker_id: &str, host_id: &str) -> WorkerIdentity {
+        WorkerIdentity {
+            worker_id: WorkerId::new(worker_id),
             host_id: WorkerHostId::new(host_id),
         }
     }

@@ -8,7 +8,7 @@ use super::handlers;
 
 use crate::adapters::task_dispatcher::TaskDispatcher;
 use crate::adapters::worker_registry::WorkerRegistry;
-use crate::core::function_service::FunctionService;
+use crate::core::function::function_service::FunctionService;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
 

@@ -8,13 +8,16 @@ use axum::{
 use std::time::Duration;
 use tracing::{error, info};
 
-use crate::adapters::task_dispatcher::{WorkerExecutionResult, WorkerTaskResult};
-use crate::adapters::worker_registry::WorkerRegistration;
-use crate::api::models::{WorkerResponse, WorkflowDefList, WorkflowEvents, WorkflowList};
-use crate::core::models::FunctionDef;
+use crate::api::models::{
+    DefinitionFormat, InvokeTaskRequest, RetryTaskQuery, SubmitHumanInputRequest,
+    WorkerClaimRequest, WorkerRegistrationRequest, WorkerResponse, WorkflowDefFormatQuery,
+    WorkflowDefList, WorkflowEventListQuery, WorkflowEvents, WorkflowList, WorkflowListQuery,
+    WorkflowQueueStatus,
+};
+use crate::core::function::models::FunctionDef;
 use crate::core::workflow::models::{WorkflowDef, WorkflowStatus};
-use crate::ports::task_dispatch::ExecutionResult;
-use serde::{Deserialize, de::DeserializeOwned};
+use crate::ports::task_dispatch::{ExecutionResult, WorkerExecutionResult, WorkerTaskResult};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::router::AppState;
@@ -95,20 +98,6 @@ pub async fn get_workflow_def(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct WorkflowDefFormatQuery {
-    #[serde(default)]
-    format: DefinitionFormat,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum DefinitionFormat {
-    #[default]
-    Json,
-    Yaml,
 }
 
 fn parse_definition<T: DeserializeOwned>(
@@ -254,11 +243,6 @@ fn trigger_payload_input(payload: Value) -> Option<Value> {
     }
 }
 
-#[derive(Deserialize)]
-pub struct InvokeTaskRequest {
-    inputs: Vec<Value>,
-}
-
 pub async fn invoke_workflow_task_isolated(
     State(state): State<AppState>,
     Path((workflow_def_id, task_id)): Path<(String, String)>,
@@ -310,12 +294,6 @@ pub async fn get_workflow_events(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
-}
-
-#[derive(Deserialize)]
-pub struct WorkflowEventListQuery {
-    limit: Option<usize>,
-    after_sequence: Option<u64>,
 }
 
 pub async fn pause_workflow(
@@ -393,11 +371,6 @@ pub async fn resume_paused_workflows(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-}
-
-#[derive(Deserialize)]
-pub struct SubmitHumanInputRequest {
-    input: Value,
 }
 
 pub async fn submit_human_input(
@@ -482,18 +455,6 @@ pub async fn retry_task(
     }
 }
 
-#[derive(Deserialize)]
-pub struct RetryTaskQuery {
-    force: Option<bool>,
-}
-
-#[derive(Deserialize)]
-pub struct WorkflowListQuery {
-    status: Option<String>,
-    limit: Option<usize>,
-    cursor: Option<String>,
-}
-
 pub async fn list_workflows(
     State(state): State<AppState>,
     Query(query): Query<WorkflowListQuery>,
@@ -525,7 +486,9 @@ pub async fn list_workflows(
 
 pub async fn get_queue(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
     match state.orchestrator.get_queue_status().await {
-        Ok(status) => Ok(Json(serde_json::to_value(status).unwrap())),
+        Ok(pending) => Ok(Json(
+            serde_json::to_value(WorkflowQueueStatus { pending }).unwrap(),
+        )),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
@@ -606,17 +569,15 @@ pub async fn get_task_result_generation(
     }
 }
 
-#[derive(Deserialize)]
-pub struct WorkerClaimRequest {
-    worker_id: String,
-}
-
 pub async fn register_worker(
     State(state): State<AppState>,
-    Json(registration): Json<WorkerRegistration>,
+    Json(registration): Json<WorkerRegistrationRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
-    state.worker_registry.register_worker(registration).await;
+    state
+        .worker_registry
+        .register_worker(registration.into_identity())
+        .await;
     let heartbeat_policy = state.worker_registry.heartbeat_policy();
 
     Ok(Json(
@@ -630,12 +591,12 @@ pub async fn register_worker(
 
 pub async fn heartbeat_worker(
     State(state): State<AppState>,
-    Json(registration): Json<WorkerRegistration>,
+    Json(registration): Json<WorkerRegistrationRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
     state
         .worker_registry
-        .tick_worker_heartbeat(registration)
+        .tick_worker_heartbeat(registration.into_identity())
         .await;
 
     Ok(Json(json!({
@@ -743,13 +704,12 @@ mod tests {
     use crate::adapters::task_dispatcher::TaskDispatcher;
     use crate::adapters::worker_registry::WorkerRegistry;
     use crate::api::router::AppState;
-    use crate::core::function_service::FunctionService;
-    use crate::core::models::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
+    use crate::core::function::function_service::FunctionService;
     use crate::core::orchestrator::Orchestrator;
+    use crate::core::task::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
+    use crate::core::worker::WorkerHostId;
     use crate::core::workflow::events::{WorkflowEventRecord, WorkflowInstanceEvent};
-    use crate::core::workflow::models::{
-        WorkerHostId, WorkflowDef, WorkflowInstance, WorkflowStatus,
-    };
+    use crate::core::workflow::models::{WorkflowDef, WorkflowInstance, WorkflowStatus};
     use crate::core::workflow::workflow_service::WorkflowService;
     use crate::ports::storage::StoragePort;
     use std::collections::HashMap;
@@ -969,7 +929,7 @@ data_bindings: []
             .create_workflow_def(WorkflowDef {
                 id: "workflow-1".to_string(),
                 description: "Example workflow".to_string(),
-                tasks: vec![crate::core::models::TaskDef {
+                tasks: vec![crate::core::task::TaskDef {
                     id: "taska".to_string(),
                     kind: TaskTypeDef::Agent {
                         model_id: "model".to_string(),
@@ -1223,7 +1183,6 @@ code: "export default async function run() { return {}; }"
                 .get_queue_status()
                 .await
                 .unwrap()
-                .pending
                 .is_empty()
         );
 
@@ -1235,7 +1194,7 @@ code: "export default async function run() { return {}; }"
         assert_eq!(resumed["status"], "queued");
         assert_eq!(resumed["workflow_instance_id"], "active-workflow");
         assert_eq!(
-            state.orchestrator.get_queue_status().await.unwrap().pending,
+            state.orchestrator.get_queue_status().await.unwrap(),
             vec!["active-workflow".to_string()]
         );
     }
@@ -1307,7 +1266,7 @@ code: "export default async function run() { return {}; }"
             .create_workflow_def(WorkflowDef {
                 id: "workflow-1".to_string(),
                 description: String::new(),
-                tasks: vec![crate::core::models::TaskDef {
+                tasks: vec![crate::core::task::TaskDef {
                     id: "taska".to_string(),
                     kind: TaskTypeDef::Agent {
                         model_id: "model".to_string(),
@@ -1369,7 +1328,7 @@ code: "export default async function run() { return {}; }"
             Some(json!({"approved": true}))
         );
         assert_eq!(
-            state.orchestrator.get_queue_status().await.unwrap().pending,
+            state.orchestrator.get_queue_status().await.unwrap(),
             vec!["input-needed-workflow".to_string()]
         );
     }

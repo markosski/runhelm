@@ -4,11 +4,13 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use crate::core::models::{FunctionDef, TaskInstance, TaskStatus};
+use crate::core::function::models::FunctionDef;
+use crate::core::task::{TaskInstance, TaskStatus};
 use crate::core::util::unix_timestamp_ms;
+use crate::core::worker::WorkerHostId;
 use crate::core::workflow::events::{WorkflowEventRecord, changed_task_attempt_ids};
 use crate::core::workflow::models::{
-    WorkerHostId, WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
+    WorkflowDef, WorkflowDefSummary, WorkflowInfo, WorkflowInstance, WorkflowStatus,
 };
 use crate::ports::storage::{
     StoragePort, StorageResult, WorkflowEventPage, WorkflowEventPageRequest, WorkflowInfoCursor,
@@ -853,7 +855,8 @@ const INITIAL_SCHEMA_SQL: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::{TaskInputMapping, TaskSatisfactionStatus, VerifierAttemptMetadata};
+    use crate::core::task::{TaskInputMapping, TaskSatisfactionStatus};
+    use crate::core::verifier::VerifierAttemptMetadata;
     use crate::core::workflow::events::WorkflowInstanceEvent;
     use crate::core::workflow::models::{
         VerifierFeedbackEntry, VerifierGenerationState, VerifierStateStatus,
@@ -892,8 +895,8 @@ mod tests {
             output_data: Some(json!({"output": 2})),
             generation_index: 2,
             verifier_metadata: Some(VerifierAttemptMetadata {
-                status: crate::core::models::VerifierAttemptStatus::Accepted,
-                decision: Some(crate::core::models::VerifierDecision::Complete),
+                status: crate::core::verifier::VerifierAttemptStatus::Accepted,
+                decision: Some(crate::core::verifier::VerifierDecision::Complete),
                 feedback: Some("ok".to_string()),
                 verifier_output: Some(json!({"decision": "complete"})),
                 exit_reason: None,

@@ -1,10 +1,9 @@
-use crate::core::models::{
-    TaskDef, TaskInstance, TaskStatus, TaskTypeDef, VerifierControlConfig, verifier_decision_schema,
-};
+use crate::core::task::{TaskDef, TaskInstance, TaskStatus, TaskTypeDef};
+use crate::core::verifier::{VerifierControlConfig, verifier_decision_schema};
+use crate::core::worker::WorkerHostId;
 use crate::core::workflow::events::WorkflowInstanceEvent;
 use crate::core::workflow::models::{
-    WorkerHostId, WorkflowDef, WorkflowDefSummary, WorkflowInstance, WorkflowListPage,
-    WorkflowStatus,
+    WorkflowDef, WorkflowDefSummary, WorkflowInstance, WorkflowListPage, WorkflowStatus,
 };
 use crate::core::workflow::state_manager::WorkflowStateManager;
 use crate::ports::storage::{
@@ -896,7 +895,8 @@ fn validate_non_overlapping_verifier_slices(def: &WorkflowDef) -> anyhow::Result
 mod tests {
     use super::*;
     use crate::adapters::memory_storage::MemoryStorage;
-    use crate::core::models::{FunctionTaskDef, TaskSatisfactionStatus, TaskTypeDef};
+    use crate::core::function::models::FunctionTaskDef;
+    use crate::core::task::{TaskSatisfactionStatus, TaskTypeDef};
     use serde_json::json;
 
     fn workflow_def(id: &str) -> WorkflowDef {

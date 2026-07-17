@@ -2,83 +2,11 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::models::{TaskDef, TaskInstance, TaskStatus};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkerId(pub String);
-
-impl WorkerId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkerHostId(pub String);
-
-impl WorkerHostId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerIdentity {
-    pub worker_id: WorkerId,
-    pub host_id: WorkerHostId,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TaskDispatchConstraints {
-    pub pinned_host_id: Option<WorkerHostId>,
-}
-
-impl TaskDispatchConstraints {
-    pub fn matches_worker(&self, worker: &WorkerIdentity) -> bool {
-        match &self.pinned_host_id {
-            Some(host_id) => host_id == &worker.host_id,
-            None => true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct WorkerHeartbeatState {
-    pub identity: WorkerIdentity,
-    pub last_heartbeat_at_epoch_ms: u64,
-    pub next_heartbeat_due_epoch_ms: u64,
-    pub deregister_after_epoch_ms: u64,
-    pub missed_heartbeat: bool,
-}
-
-#[allow(dead_code)]
-impl WorkerHeartbeatState {
-    pub fn is_expired_at(&self, now_epoch_ms: u64) -> bool {
-        self.deregister_after_epoch_ms <= now_epoch_ms
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct DispatchLease {
-    pub dispatch_id: String,
-    pub workflow_instance_id: String,
-    pub task_attempt_id: String,
-    pub worker_id: WorkerId,
-    pub host_id: WorkerHostId,
-    pub claimed_at_epoch_ms: u64,
-    pub expires_at_epoch_ms: u64,
-}
-
-#[allow(dead_code)]
-impl DispatchLease {
-    pub fn is_expired_at(&self, now_epoch_ms: u64) -> bool {
-        self.expires_at_epoch_ms <= now_epoch_ms
-    }
-}
+use crate::core::task::{
+    TaskDef, TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus,
+};
+use crate::core::verifier::VerifierAttemptMetadata;
+use crate::core::worker::WorkerHostId;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkflowStatus {
@@ -88,6 +16,44 @@ pub enum WorkflowStatus {
     InputNeeded,
     Completed,
     Failed,
+}
+
+/// A lightweight read model describing the current state of a workflow instance.
+/// Intended for status queries - does not expose raw input/output data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStatusReport {
+    pub instance_id: String,
+    pub workflow_def_id: String,
+    pub status: WorkflowStatus,
+    pub tasks: Vec<TaskStatusReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifier_states: Vec<VerifierStatusReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStatusReport {
+    pub task_attempt_id: String,
+    pub task_def_id: String,
+    pub status: TaskStatus,
+    pub satisfaction: TaskSatisfactionStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_mapping: Vec<TaskInputMapping>,
+    pub generation_index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier_metadata: Option<VerifierAttemptMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifierStatusReport {
+    pub verifier_task_id: String,
+    pub rerun_start_task_id: String,
+    pub latest_generation: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_generation: Option<u32>,
+    pub status: VerifierStateStatus,
+    pub feedback_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
