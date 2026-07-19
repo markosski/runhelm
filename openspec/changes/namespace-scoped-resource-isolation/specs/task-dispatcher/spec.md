@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Namespace-Aware Dispatch Tracking
-`TaskDispatcher` SHALL retain namespace in pending dispatches and active leases and SHALL validate the namespace echoed by worker results.
+`TaskDispatcher` SHALL share pending and active tracking across namespaces, SHALL retain namespace in pending dispatches and active leases, and SHALL validate the namespace echoed by worker results.
 
 #### Scenario: Claimed dispatch includes namespace
 - **WHEN** a worker claims pending work
@@ -18,4 +18,3 @@
 #### Scenario: Mismatched namespace result is rejected
 - **WHEN** a worker reports an active dispatch ID with a different namespace from the in-flight dispatch
 - **THEN** the dispatcher does not complete or remove the active dispatch
-

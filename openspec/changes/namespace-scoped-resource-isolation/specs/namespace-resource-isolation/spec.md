@@ -1,14 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: Validated Namespace Identity
-RunHelm SHALL represent namespace identity with a validated value that contains 1 through 63 lowercase ASCII letters, digits, or hyphens and starts and ends with an alphanumeric character.
+RunHelm SHALL represent namespace identity as a string containing a UUID in canonical hyphenated form.
 
 #### Scenario: Valid namespace is accepted
-- **WHEN** namespace text such as `default`, `team-1`, or `a` is supplied by trusted configuration or a namespace resolver
+- **WHEN** a canonical UUID string such as `550e8400-e29b-41d4-a716-446655440000` is supplied by trusted configuration or a namespace resolver
 - **THEN** RunHelm constructs the namespace value
+- **AND** internal contracts serialize the namespace as that string
 
 #### Scenario: Invalid namespace is rejected
-- **WHEN** namespace text is empty, longer than 63 characters, contains uppercase or unsupported characters, or starts or ends with a hyphen
+- **WHEN** a non-empty namespace value is not a canonical hyphenated UUID string
 - **THEN** RunHelm rejects the namespace text before performing a resource action
 
 ### Requirement: Public Request Namespace Selection
@@ -70,7 +71,18 @@ RunHelm SHALL evaluate every definition, workflow instance, task, verifier state
 - **AND** public resource fields cannot override the selected namespace
 
 ### Requirement: Namespace-Scoped Storage Adapters
-Every active storage adapter SHALL encode namespace ownership in authoritative keys, relationships, queries, projections, and immutable payload locations rather than applying an in-memory result filter after a cross-namespace read.
+Every active storage adapter SHALL encode namespace ownership in authoritative keys, relationships, queries, projections, and immutable payload locations rather than applying an in-memory result filter after a cross-namespace resource read. Storage-facing workflow information SHALL carry its owning namespace. `list_workflow_info` SHALL accept an optional namespace, with a missing namespace reserved for startup recovery; every other storage operation SHALL require an explicit namespace.
+
+#### Scenario: Namespace-scoped workflow information listing
+- **WHEN** a normal service calls `list_workflow_info` with a namespace
+- **THEN** storage returns only workflow information owned by that namespace
+- **AND** the public workflow-list response omits the storage-facing namespace field
+
+#### Scenario: Recovery workflow information listing
+- **WHEN** startup recovery calls `list_workflow_info` without a namespace
+- **THEN** storage returns matching workflow information across all namespaces
+- **AND** every returned item identifies its owning namespace
+- **AND** pagination distinguishes otherwise identical workflow IDs across namespaces
 
 #### Scenario: Memory storage isolation
 - **WHEN** memory storage contains identical resource IDs in two namespaces
@@ -101,4 +113,3 @@ RunHelm SHALL define namespace ownership in a reset SQL initial schema and SHALL
 #### Scenario: Existing pre-namespace database
 - **WHEN** an operator upgrades to this change with an existing pre-namespace SQL database
 - **THEN** the documented deployment procedure requires recreating the database rather than applying an ownership migration
-
