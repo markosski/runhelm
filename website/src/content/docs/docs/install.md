@@ -29,6 +29,18 @@ runhelm status
 
 The generated config is written to `~/.runhelm/config.env`, and the generated Compose file is written to `~/.runhelm/docker-compose.yml`.
 
+## Default namespace
+
+Public resource endpoints require a namespace. Configure a canonical UUID string for local and single-tenant deployments:
+
+```text
+RUNHELM_DEFAULT_NAMESPACE=550e8400-e29b-41d4-a716-446655440000
+```
+
+The namespace resolver checks and validates this value when resolving each public resource request. The configured default is authoritative, so public requests do not need an authorization header. If it is absent or empty, public resource requests require a bearer API key; API-key-to-namespace resolution is not implemented yet. Health checks remain available without namespace configuration or authorization.
+
+The repository's local-development `docker-compose.yml` supplies this example namespace to the orchestrator service by default.
+
 ## Image overrides
 
 Override image references in `~/.runhelm/config.env` when using an internal registry:

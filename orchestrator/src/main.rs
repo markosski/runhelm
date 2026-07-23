@@ -9,7 +9,6 @@ use tokio::time::{self, Duration};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use crate::adapters::aws_storage::{AwsStorage, AwsStorageConfig};
 use crate::adapters::memory_storage::MemoryStorage;
 use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
 use crate::adapters::sql_storage::SqlStorage;
@@ -17,6 +16,7 @@ use crate::adapters::task_dispatcher::{self, TaskDispatcher};
 use crate::adapters::worker_registry::WorkerRegistry;
 use crate::api::router;
 use crate::core::function::function_service::FunctionService;
+use crate::core::namespace::NamespaceResolver;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
 use crate::ports::storage::StoragePort;
@@ -41,8 +41,7 @@ async fn main() -> anyhow::Result<()> {
         workflow_queue,
     ));
 
-    let workflow_service = Arc::new(WorkflowService::new(storage.clone()));
-    let function_service = Arc::new(FunctionService::new(storage.clone()));
+    let namespace_resolver = Arc::new(NamespaceResolver::new(storage.clone()));
 
     let recovered = orchestrator.synchronize_startup_tasks().await?;
     info!(recovered, "Startup task synchronization complete");
@@ -59,18 +58,12 @@ async fn main() -> anyhow::Result<()> {
     // Setup API (Interface Layer)
     let public_app = router::create_public_router(
         orchestrator.clone(),
-        workflow_service.clone(),
-        function_service.clone(),
+        Arc::new(WorkflowService::new(storage.clone())),
+        Arc::new(FunctionService::new(storage)),
         worker_registry.clone(),
-        task_dispatcher.clone(),
+        namespace_resolver,
     );
-    let worker_app = router::create_worker_router(
-        orchestrator.clone(),
-        workflow_service,
-        function_service,
-        worker_registry.clone(),
-        task_dispatcher.clone(),
-    );
+    let worker_app = router::create_worker_router(worker_registry.clone(), task_dispatcher.clone());
 
     let public_addr = resolve_public_http_addr();
     let worker_addr = resolve_worker_http_addr();
@@ -123,9 +116,6 @@ async fn create_storage() -> anyhow::Result<Arc<dyn StoragePort + Send + Sync>> 
             })?;
             Ok(Arc::new(SqlStorage::connect(&database_url).await?))
         }
-        "aws" => Ok(Arc::new(
-            AwsStorage::connect(AwsStorageConfig::from_env()?).await?,
-        )),
         value => anyhow::bail!("unsupported RUNHELM_STORAGE value {value}"),
     }
 }

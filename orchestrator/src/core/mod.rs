@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod function;
+pub mod namespace;
 pub mod orchestrator;
 pub mod task;
 pub mod util;

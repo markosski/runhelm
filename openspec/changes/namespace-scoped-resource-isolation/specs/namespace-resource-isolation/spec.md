@@ -19,7 +19,7 @@ RunHelm SHALL resolve a namespace context before each public resource handler pe
 - **WHEN** `RUNHELM_DEFAULT_NAMESPACE` contains a non-empty valid namespace
 - **AND** a public resource request includes any authorization header or no authorization header
 - **THEN** RunHelm selects the configured default namespace
-- **AND** RunHelm does not inspect or resolve the supplied API key
+- **AND** the namespace resolver does not use the supplied API key
 
 #### Scenario: Empty default is absent
 - **WHEN** `RUNHELM_DEFAULT_NAMESPACE` is absent, empty, or whitespace-only
@@ -40,7 +40,7 @@ RunHelm SHALL resolve a namespace context before each public resource handler pe
 #### Scenario: Presented API key reaches deferred resolver
 - **WHEN** no default namespace is configured
 - **AND** a public resource request supplies a well-formed `Authorization: Bearer <api-key>` credential
-- **THEN** RunHelm passes the API key to the namespace resolver boundary
+- **THEN** RunHelm passes the API key to a namespace resolver that owns the active storage port
 - **AND** the resolver deliberately panics as not implemented in this story
 - **AND** RunHelm does not select a fallback namespace
 
@@ -92,12 +92,6 @@ Every active storage adapter SHALL encode namespace ownership in authoritative k
 - **WHEN** SQL storage persists definitions, workflow instances, tasks, verifier state, and events
 - **THEN** their primary keys and relationships include namespace
 - **AND** joins, filters, pagination, uniqueness checks, and indexes constrain namespace
-
-#### Scenario: AWS storage isolation
-- **WHEN** AWS storage persists or queries a namespaced resource
-- **THEN** DynamoDB keys and list projections include the namespace component
-- **AND** S3 object paths include the namespace component
-- **AND** the adapter does not scan or fetch records from other namespaces and filter them client-side
 
 #### Scenario: Version conflict is namespace-local
 - **WHEN** two workflow instances share an ID in different namespaces and one instance commits a transition

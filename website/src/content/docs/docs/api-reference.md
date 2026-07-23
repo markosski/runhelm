@@ -11,6 +11,8 @@ Examples use:
 export RUNHELM_URL=http://localhost:3000
 ```
 
+The orchestrator must have `RUNHELM_DEFAULT_NAMESPACE` set to a canonical UUID string for the currently supported single-tenant request path. When configured, it takes precedence over any `Authorization` header. `/health` does not require a namespace.
+
 ## Public endpoints
 
 | Method | Path | Purpose |

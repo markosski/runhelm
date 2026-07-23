@@ -6,6 +6,7 @@ services:
     ports:
       - "0.0.0.0:3000:3000"
     environment:
+      RUNHELM_DEFAULT_NAMESPACE: 550e8400-e29b-41d4-a716-446655440000
       RUNHELM_WORKER_HTTP_ADDR: 0.0.0.0:3001
       RUNHELM_STORAGE: sql
       RUNHELM_DATABASE_URL: sqlite:///data/runhelm.db

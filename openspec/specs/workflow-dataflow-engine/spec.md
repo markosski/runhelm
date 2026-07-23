@@ -430,46 +430,6 @@ Storage adapters SHALL be responsible for persistence mechanics and SHALL NOT ow
 - **WHEN** SQL storage persists a task attempt whose status carries additional data such as an input request
 - **THEN** the persisted task row stores enough task status detail to reconstruct the full task attempt
 
-#### Scenario: AWS storage uses workload-specific tables
-- **WHEN** AWS storage persists durable RunHelm state
-- **THEN** it uses separate DynamoDB tables for definitions, workflow instances, workflow instance events, and tasks
-- **THEN** each table uses keys and projections aligned with its current RunHelm access patterns
-
-#### Scenario: AWS storage separates payloads from query records
-- **WHEN** AWS storage persists workflow definitions, function definitions, workflow snapshots, task state, or workflow events
-- **THEN** full JSON payloads are stored consistently in S3 regardless of payload size
-- **THEN** DynamoDB stores metadata, current-state projections, payload pointers, and concurrency controls
-
-#### Scenario: AWS workflow listing uses bounded sharded queries
-- **WHEN** AWS storage lists workflow summaries with any supported combination of status and workflow-definition filters
-- **THEN** it queries stable workflow-list shards using DynamoDB key ordering, page limits, and the workflow cursor
-- **THEN** it merges the bounded shard pages by modification time descending and workflow instance ID descending
-- **THEN** it does not read a complete logical list partition before applying the requested page limit
-
-#### Scenario: AWS storage persists event-identified tasks
-- **WHEN** AWS storage commits a workflow transition whose events identify changed tasks
-- **THEN** it writes the final task records for only those IDs in the tasks table
-- **THEN** unchanged task records and payloads are not rewritten
-
-#### Scenario: AWS storage reconstructs aggregate state
-- **WHEN** AWS storage loads a workflow instance by ID
-- **THEN** it returns the same `WorkflowInstance` aggregate shape used by core workflow code, including tasks, verifier state, trigger input, version, and pinned worker host
-
-#### Scenario: AWS storage rejects a stale snapshot transition
-- **WHEN** AWS storage commits a workflow transition whose expected version is stale
-- **THEN** the current snapshot pointer, ordered event indexes, and workflow summary projections remain unchanged
-- **THEN** storage returns the standard workflow version conflict error
-
-#### Scenario: AWS storage commits across workload tables
-- **WHEN** AWS storage commits an accepted workflow transition
-- **THEN** workflow metadata, summary projections, event indexes, and changed task records become visible through one cross-table DynamoDB transaction
-- **THEN** S3 payload keys contain a content fingerprint so competing writers cannot overwrite one another's payload objects
-- **THEN** immutable S3 payloads are written before the transaction makes their pointers visible
-
-#### Scenario: AWS transition exceeds the transaction limit
-- **WHEN** one workflow transition would require more than DynamoDB's supported transaction item count
-- **THEN** storage rejects the transition without exposing a partial DynamoDB commit
-
 ### Requirement: Atomic Transition Batches
 The orchestrator SHALL treat an ordered event batch from one workflow decision as a single transition.
 

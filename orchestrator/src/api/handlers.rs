@@ -20,7 +20,10 @@ use crate::ports::task_dispatch::{ExecutionResult, WorkerExecutionResult, Worker
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use super::router::AppState;
+use super::{
+    namespace::RequestNamespace,
+    router::{PublicAppState, WorkerAppState},
+};
 
 pub async fn health_check() -> &'static str {
     "OK"
@@ -31,7 +34,8 @@ pub async fn not_found() -> StatusCode {
 }
 
 pub async fn create_workflow_def(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -66,7 +70,10 @@ pub async fn create_workflow_def(
     })))
 }
 
-pub async fn list_workflow_defs(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+pub async fn list_workflow_defs(
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
+) -> Result<Json<Value>, StatusCode> {
     let workflow_defs = state
         .workflow_service
         .list_workflow_defs()
@@ -82,7 +89,8 @@ pub async fn list_workflow_defs(State(state): State<AppState>) -> Result<Json<Va
 }
 
 pub async fn get_workflow_def(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(workflow_def_id): Path<String>,
     Query(query): Query<WorkflowDefFormatQuery>,
 ) -> Result<Response, StatusCode> {
@@ -152,7 +160,8 @@ fn format_workflow_def(
 }
 
 pub async fn create_function_def(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -181,7 +190,8 @@ pub async fn create_function_def(
 }
 
 pub async fn delete_function_def(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(function_def_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     match state
@@ -196,7 +206,8 @@ pub async fn delete_function_def(
 }
 
 pub async fn trigger_workflow_instance(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(workflow_def_id): Path<String>,
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -244,7 +255,8 @@ fn trigger_payload_input(payload: Value) -> Option<Value> {
 }
 
 pub async fn invoke_workflow_task_isolated(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path((workflow_def_id, task_id)): Path<(String, String)>,
     Json(payload): Json<InvokeTaskRequest>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -263,7 +275,8 @@ pub async fn invoke_workflow_task_isolated(
 }
 
 pub async fn get_workflow_instance(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     match state.orchestrator.get_workflow_status(&id).await {
@@ -274,7 +287,8 @@ pub async fn get_workflow_instance(
 }
 
 pub async fn get_workflow_events(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(id): Path<String>,
     Query(query): Query<WorkflowEventListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -297,7 +311,8 @@ pub async fn get_workflow_events(
 }
 
 pub async fn pause_workflow(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(workflow_instance_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
@@ -319,7 +334,8 @@ pub async fn pause_workflow(
 }
 
 pub async fn resume_workflow(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(workflow_instance_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
@@ -342,7 +358,8 @@ pub async fn resume_workflow(
 }
 
 pub async fn pause_active_workflows(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
 ) -> Result<Json<Value>, StatusCode> {
     match state.orchestrator.pause_active_workflow_instances().await {
         Ok(workflow_instance_ids) => Ok(Json(json!({
@@ -358,7 +375,8 @@ pub async fn pause_active_workflows(
 }
 
 pub async fn resume_paused_workflows(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
 ) -> Result<Json<Value>, StatusCode> {
     match state.orchestrator.resume_paused_workflow_instances().await {
         Ok(workflow_instance_ids) => Ok(Json(json!({
@@ -374,7 +392,8 @@ pub async fn resume_paused_workflows(
 }
 
 pub async fn submit_human_input(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path((workflow_instance_id, task_id)): Path<(String, String)>,
     Json(payload): Json<SubmitHumanInputRequest>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -419,7 +438,8 @@ pub async fn submit_human_input(
 }
 
 pub async fn retry_task(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path((workflow_instance_id, task_id)): Path<(String, String)>,
     Query(query): Query<RetryTaskQuery>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -456,7 +476,8 @@ pub async fn retry_task(
 }
 
 pub async fn list_workflows(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Query(query): Query<WorkflowListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let status = query
@@ -484,7 +505,10 @@ pub async fn list_workflows(
     }
 }
 
-pub async fn get_queue(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+pub async fn get_queue(
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
+) -> Result<Json<Value>, StatusCode> {
     match state.orchestrator.get_queue_status().await {
         Ok(pending) => Ok(Json(
             serde_json::to_value(WorkflowQueueStatus { pending }).unwrap(),
@@ -494,7 +518,8 @@ pub async fn get_queue(State(state): State<AppState>) -> Result<Json<Value>, Sta
 }
 
 pub async fn delete_queue_item(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     match state
@@ -508,7 +533,10 @@ pub async fn delete_queue_item(
     }
 }
 
-pub async fn purge_queue(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+pub async fn purge_queue(
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
+) -> Result<Json<Value>, StatusCode> {
     match state.orchestrator.purge_queued_workflow_instances().await {
         Ok(purged) => Ok(Json(json!({
             "status": "purged",
@@ -519,7 +547,8 @@ pub async fn purge_queue(State(state): State<AppState>) -> Result<Json<Value>, S
 }
 
 pub async fn get_task_result(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path((workflow_instance_id, task_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
@@ -534,7 +563,8 @@ pub async fn get_task_result(
 }
 
 pub async fn list_task_results(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path(workflow_instance_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
@@ -552,7 +582,8 @@ pub async fn list_task_results(
 }
 
 pub async fn get_task_result_generation(
-    State(state): State<AppState>,
+    State(state): State<PublicAppState>,
+    _namespace: RequestNamespace,
     Path((workflow_instance_id, task_id, generation)): Path<(String, String, u32)>,
 ) -> Result<Json<Value>, StatusCode> {
     match state
@@ -570,7 +601,7 @@ pub async fn get_task_result_generation(
 }
 
 pub async fn register_worker(
-    State(state): State<AppState>,
+    State(state): State<WorkerAppState>,
     Json(registration): Json<WorkerRegistrationRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
@@ -590,7 +621,7 @@ pub async fn register_worker(
 }
 
 pub async fn heartbeat_worker(
-    State(state): State<AppState>,
+    State(state): State<WorkerAppState>,
     Json(registration): Json<WorkerRegistrationRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker_id = registration.worker_id.clone();
@@ -606,7 +637,7 @@ pub async fn heartbeat_worker(
 }
 
 pub async fn claim_worker_task(
-    State(state): State<AppState>,
+    State(state): State<WorkerAppState>,
     Json(payload): Json<WorkerClaimRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let worker = state
@@ -641,7 +672,7 @@ pub async fn claim_worker_task(
 }
 
 pub async fn complete_worker_task(
-    State(state): State<AppState>,
+    State(state): State<WorkerAppState>,
     Path(task_id): Path<String>,
     Json(result): Json<WorkerExecutionResult>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -701,10 +732,10 @@ mod tests {
     use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
-    use crate::adapters::task_dispatcher::TaskDispatcher;
     use crate::adapters::worker_registry::WorkerRegistry;
-    use crate::api::router::AppState;
+    use crate::api::router::PublicAppState;
     use crate::core::function::function_service::FunctionService;
+    use crate::core::namespace::{Namespace, NamespaceResolver};
     use crate::core::orchestrator::Orchestrator;
     use crate::core::task::{TaskInstance, TaskSatisfactionStatus, TaskStatus, TaskTypeDef};
     use crate::core::worker::WorkerHostId;
@@ -727,6 +758,12 @@ tasks:
     required_credentials: []
 data_bindings: []
 "#;
+
+    fn request_namespace() -> RequestNamespace {
+        Namespace::new("550e8400-e29b-41d4-a716-446655440000")
+            .unwrap()
+            .into()
+    }
 
     fn failed_task() -> TaskInstance {
         TaskInstance {
@@ -776,17 +813,17 @@ data_bindings: []
         }
     }
 
-    fn app_state(storage: Arc<MemoryStorage>, worker_registry: WorkerRegistry) -> AppState {
-        AppState {
+    fn app_state(storage: Arc<MemoryStorage>, worker_registry: WorkerRegistry) -> PublicAppState {
+        PublicAppState {
             orchestrator: Arc::new(Orchestrator::new(
                 storage.clone(),
                 Arc::new(FakeTaskDispatcher::new()),
                 Arc::new(MemoryWorkflowQueue::new(10)),
             )),
             workflow_service: Arc::new(WorkflowService::new(storage.clone())),
-            function_service: Arc::new(FunctionService::new(storage)),
+            function_service: Arc::new(FunctionService::new(storage.clone())),
             worker_registry,
-            task_dispatcher: Arc::new(TaskDispatcher::new()),
+            namespace_resolver: Arc::new(NamespaceResolver::new(storage)),
         }
     }
 
@@ -833,6 +870,7 @@ data_bindings: []
 
         let Json(response) = get_workflow_events(
             State(state),
+            request_namespace(),
             Path("event-workflow".to_string()),
             Query(WorkflowEventListQuery {
                 limit: Some(2),
@@ -881,9 +919,10 @@ data_bindings: []
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
         let body = Bytes::from(serde_json::to_vec(&workflow_def).unwrap());
-        let (status, Json(response)) = create_workflow_def(State(state), headers, body)
-            .await
-            .unwrap_err();
+        let (status, Json(response)) =
+            create_workflow_def(State(state), request_namespace(), headers, body)
+                .await
+                .unwrap_err();
 
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(
@@ -907,7 +946,9 @@ data_bindings: []
             .await
             .unwrap();
 
-        let Json(response) = list_workflow_defs(State(state)).await.unwrap();
+        let Json(response) = list_workflow_defs(State(state), request_namespace())
+            .await
+            .unwrap();
 
         assert_eq!(response["workflow_defs"][0]["id"], "workflow-1");
         assert_eq!(
@@ -955,6 +996,7 @@ data_bindings: []
 
         let response = get_workflow_def(
             State(state),
+            request_namespace(),
             Path("workflow-1".to_string()),
             Query(WorkflowDefFormatQuery::default()),
         )
@@ -986,6 +1028,7 @@ data_bindings: []
 
         let status = get_workflow_def(
             State(state),
+            request_namespace(),
             Path("missing".to_string()),
             Query(WorkflowDefFormatQuery::default()),
         )
@@ -1053,6 +1096,7 @@ code: "export default async function run() { return {}; }"
 
         let response = get_workflow_def(
             State(state),
+            request_namespace(),
             Path("yaml-workflow".to_string()),
             Query(WorkflowDefFormatQuery {
                 format: DefinitionFormat::Yaml,
@@ -1086,6 +1130,7 @@ code: "export default async function run() { return {}; }"
 
         let Json(response) = retry_task(
             State(state.clone()),
+            request_namespace(),
             Path(("failed-workflow".to_string(), "taska".to_string())),
             Query(RetryTaskQuery { force: None }),
         )
@@ -1115,6 +1160,7 @@ code: "export default async function run() { return {}; }"
 
         let error = retry_task(
             State(state.clone()),
+            request_namespace(),
             Path(("failed-workflow".to_string(), "taska".to_string())),
             Query(RetryTaskQuery { force: Some(true) }),
         )
@@ -1123,9 +1169,13 @@ code: "export default async function run() { return {}; }"
 
         assert_eq!(error, StatusCode::SERVICE_UNAVAILABLE);
 
-        let Json(status) = get_workflow_instance(State(state), Path("failed-workflow".to_string()))
-            .await
-            .unwrap();
+        let Json(status) = get_workflow_instance(
+            State(state),
+            request_namespace(),
+            Path("failed-workflow".to_string()),
+        )
+        .await
+        .unwrap();
         assert_eq!(status["status"], "Failed");
         assert_eq!(status["tasks"][0]["status"], "Failed");
 
@@ -1161,10 +1211,13 @@ code: "export default async function run() { return {}; }"
             .await
             .unwrap();
 
-        let Json(paused) =
-            pause_workflow(State(state.clone()), Path("active-workflow".to_string()))
-                .await
-                .unwrap();
+        let Json(paused) = pause_workflow(
+            State(state.clone()),
+            request_namespace(),
+            Path("active-workflow".to_string()),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(paused["status"], "paused");
         assert_eq!(paused["workflow_instance_id"], "active-workflow");
@@ -1186,10 +1239,13 @@ code: "export default async function run() { return {}; }"
                 .is_empty()
         );
 
-        let Json(resumed) =
-            resume_workflow(State(state.clone()), Path("active-workflow".to_string()))
-                .await
-                .unwrap();
+        let Json(resumed) = resume_workflow(
+            State(state.clone()),
+            request_namespace(),
+            Path("active-workflow".to_string()),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(resumed["status"], "queued");
         assert_eq!(resumed["workflow_instance_id"], "active-workflow");
@@ -1219,7 +1275,9 @@ code: "export default async function run() { return {}; }"
                 .unwrap();
         }
 
-        let Json(paused) = pause_active_workflows(State(state.clone())).await.unwrap();
+        let Json(paused) = pause_active_workflows(State(state.clone()), request_namespace())
+            .await
+            .unwrap();
         let mut paused_ids: Vec<String> = paused["workflow_instance_ids"]
             .as_array()
             .unwrap()
@@ -1237,7 +1295,9 @@ code: "export default async function run() { return {}; }"
             ]
         );
 
-        let Json(resumed) = resume_paused_workflows(State(state.clone())).await.unwrap();
+        let Json(resumed) = resume_paused_workflows(State(state.clone()), request_namespace())
+            .await
+            .unwrap();
         let mut resumed_ids: Vec<String> = resumed["workflow_instance_ids"]
             .as_array()
             .unwrap()
@@ -1305,6 +1365,7 @@ code: "export default async function run() { return {}; }"
 
         let Json(response) = submit_human_input(
             State(state.clone()),
+            request_namespace(),
             Path(("input-needed-workflow".to_string(), "taska".to_string())),
             Json(SubmitHumanInputRequest {
                 input: json!({"approved": true}),
@@ -1366,6 +1427,7 @@ code: "export default async function run() { return {}; }"
 
         let Json(response) = list_workflows(
             State(state),
+            request_namespace(),
             Query(WorkflowListQuery {
                 status: Some("InputNeeded".to_string()),
                 limit: None,

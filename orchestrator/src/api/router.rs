@@ -9,15 +9,21 @@ use super::handlers;
 use crate::adapters::task_dispatcher::TaskDispatcher;
 use crate::adapters::worker_registry::WorkerRegistry;
 use crate::core::function::function_service::FunctionService;
+use crate::core::namespace::NamespaceResolverPort;
 use crate::core::orchestrator::Orchestrator;
 use crate::core::workflow::workflow_service::WorkflowService;
 
-// AppState holds the injected dependencies
 #[derive(Clone)]
-pub struct AppState {
+pub struct PublicAppState {
     pub orchestrator: Arc<Orchestrator>,
     pub workflow_service: Arc<WorkflowService>,
     pub function_service: Arc<FunctionService>,
+    pub worker_registry: WorkerRegistry,
+    pub namespace_resolver: Arc<dyn NamespaceResolverPort + Send + Sync>,
+}
+
+#[derive(Clone)]
+pub struct WorkerAppState {
     pub worker_registry: WorkerRegistry,
     pub task_dispatcher: Arc<TaskDispatcher>,
 }
@@ -27,14 +33,14 @@ pub fn create_public_router(
     workflow_service: Arc<WorkflowService>,
     function_service: Arc<FunctionService>,
     worker_registry: WorkerRegistry,
-    task_dispatcher: Arc<TaskDispatcher>,
+    namespace_resolver: Arc<dyn NamespaceResolverPort + Send + Sync>,
 ) -> Router {
-    let state = AppState {
+    let state = PublicAppState {
         orchestrator,
         workflow_service,
         function_service,
         worker_registry,
-        task_dispatcher,
+        namespace_resolver,
     };
 
     Router::new()
@@ -93,16 +99,10 @@ pub fn create_public_router(
 }
 
 pub fn create_worker_router(
-    orchestrator: Arc<Orchestrator>,
-    workflow_service: Arc<WorkflowService>,
-    function_service: Arc<FunctionService>,
     worker_registry: WorkerRegistry,
     task_dispatcher: Arc<TaskDispatcher>,
 ) -> Router {
-    let state = AppState {
-        orchestrator,
-        workflow_service,
-        function_service,
+    let state = WorkerAppState {
         worker_registry,
         task_dispatcher,
     };
@@ -126,6 +126,9 @@ mod tests {
     use crate::adapters::fake_task_dispatcher::FakeTaskDispatcher;
     use crate::adapters::memory_storage::MemoryStorage;
     use crate::adapters::memory_workflow_queue::MemoryWorkflowQueue;
+    use crate::core::namespace::NamespaceResolver;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
 
     #[test]
     fn public_router_accepts_task_action_route_shapes() {
@@ -139,9 +142,67 @@ mod tests {
         let _router = create_public_router(
             orchestrator,
             Arc::new(WorkflowService::new(storage.clone())),
-            Arc::new(FunctionService::new(storage)),
+            Arc::new(FunctionService::new(storage.clone())),
             WorkerRegistry::new(),
-            Arc::new(TaskDispatcher::new()),
+            Arc::new(NamespaceResolver::new(storage)),
         );
+    }
+
+    #[tokio::test]
+    async fn public_health_check_does_not_require_namespace_context() {
+        let storage = Arc::new(MemoryStorage::new());
+        let orchestrator = Arc::new(Orchestrator::new(
+            storage.clone(),
+            Arc::new(FakeTaskDispatcher::new()),
+            Arc::new(MemoryWorkflowQueue::new(10)),
+        ));
+        let router = create_public_router(
+            orchestrator,
+            Arc::new(WorkflowService::new(storage.clone())),
+            Arc::new(FunctionService::new(storage.clone())),
+            WorkerRegistry::new(),
+            Arc::new(NamespaceResolver::new(storage)),
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn public_resource_route_rejects_missing_namespace_context() {
+        let storage = Arc::new(MemoryStorage::new());
+        let orchestrator = Arc::new(Orchestrator::new(
+            storage.clone(),
+            Arc::new(FakeTaskDispatcher::new()),
+            Arc::new(MemoryWorkflowQueue::new(10)),
+        ));
+        let router = create_public_router(
+            orchestrator,
+            Arc::new(WorkflowService::new(storage.clone())),
+            Arc::new(FunctionService::new(storage.clone())),
+            WorkerRegistry::new(),
+            Arc::new(NamespaceResolver::new(storage)),
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/workflow-def")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 }
