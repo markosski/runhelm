@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::core::function::models::{FunctionDef, FunctionTaskDef};
+use crate::core::namespace::Namespace;
 use crate::core::task::{TaskDef, TaskTypeDef};
 use crate::ports::storage::StoragePort;
 
@@ -13,25 +14,34 @@ impl FunctionService {
         Self { storage }
     }
 
-    pub async fn create_function_def(&self, def: FunctionDef) -> anyhow::Result<()> {
-        self.storage.save_function_def(def).await?;
+    pub async fn create_function_def(
+        &self,
+        namespace: &Namespace,
+        def: FunctionDef,
+    ) -> anyhow::Result<()> {
+        self.storage.save_function_def(namespace, def).await?;
         Ok(())
     }
 
-    pub async fn delete_function_def(&self, id: &str) -> anyhow::Result<bool> {
-        Ok(self.storage.delete_function_def(id).await?)
+    pub async fn delete_function_def(
+        &self,
+        namespace: &Namespace,
+        id: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(self.storage.delete_function_def(namespace, id).await?)
     }
 }
 
 pub async fn resolve_task_function_ref(
     storage: &(dyn StoragePort + Send + Sync),
+    namespace: &Namespace,
     task: &TaskDef,
 ) -> anyhow::Result<TaskDef> {
     let TaskTypeDef::Function(FunctionTaskDef::Ref { reference }) = &task.kind else {
         return Ok(task.clone());
     };
 
-    let Some(function_def) = storage.get_function_def(reference).await? else {
+    let Some(function_def) = storage.get_function_def(namespace, reference).await? else {
         anyhow::bail!("Function definition not found: {reference}");
     };
 

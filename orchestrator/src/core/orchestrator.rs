@@ -1,6 +1,7 @@
 use crate::adapters::worker_registry::WorkerRegistry;
 use crate::core::engine::WorkflowEngine;
 use crate::core::function::function_service::resolve_task_function_ref;
+use crate::core::namespace::Namespace;
 use crate::core::task::{ExecutionMetadata, TaskDef, TaskStatus};
 use crate::core::worker::{TaskDispatchConstraints, WorkerHostId};
 use crate::core::workflow::events::WorkflowInstanceEvent;
@@ -59,11 +60,16 @@ impl Orchestrator {
     /// Finds a task in a registered workflow definition and executes it directly.
     pub async fn execute_workflow_task_isolated(
         &self,
+        namespace: &Namespace,
         workflow_def_id: &str,
         task_id: &str,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<Option<crate::ports::task_dispatch::ExecutionResult>> {
-        let Some(def) = self.storage.get_workflow_def(workflow_def_id).await? else {
+        let Some(def) = self
+            .storage
+            .get_workflow_def(namespace, workflow_def_id)
+            .await?
+        else {
             return Ok(None);
         };
 
@@ -72,6 +78,7 @@ impl Orchestrator {
         };
 
         self.execute_task_isolated_with_id(
+            namespace,
             isolated_workflow_task_execution_id(workflow_def_id, task_id)?,
             &task,
             inputs,
@@ -81,23 +88,28 @@ impl Orchestrator {
     }
 
     /// Adds a workflow instance to the execution queue.
-    pub async fn enqueue_workflow_instance(&self, instance_id: String) -> anyhow::Result<()> {
-        self.workflow_queue.enqueue(instance_id).await
+    pub async fn enqueue_workflow_instance(
+        &self,
+        namespace: &Namespace,
+        instance_id: String,
+    ) -> anyhow::Result<()> {
+        self.workflow_queue.enqueue(namespace, instance_id).await
     }
 
     pub async fn retry_workflow_task(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<RetryWorkflowTaskResult> {
         let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
         let pinned_worker_host = workflow_service
-            .load_retryable_task_pin(workflow_instance_id, task_id)
+            .load_retryable_task_pin(namespace, workflow_instance_id, task_id)
             .await?;
         let task_attempt_id = workflow_service
-            .retry_task(workflow_instance_id, task_id)
+            .retry_task(namespace, workflow_instance_id, task_id)
             .await?;
-        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+        self.enqueue_workflow_instance(namespace, workflow_instance_id.to_string())
             .await?;
 
         Ok(RetryWorkflowTaskResult {
@@ -109,13 +121,14 @@ impl Orchestrator {
 
     pub async fn force_retry_workflow_task(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         task_id: &str,
         worker_registry: &WorkerRegistry,
     ) -> anyhow::Result<RetryWorkflowTaskResult> {
         let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
         let pinned_worker_host = workflow_service
-            .load_retryable_task_pin(workflow_instance_id, task_id)
+            .load_retryable_task_pin(namespace, workflow_instance_id, task_id)
             .await?;
 
         let Some(target_host_id) = worker_registry
@@ -128,10 +141,15 @@ impl Orchestrator {
         let local_context_may_be_lost = pinned_worker_host.as_ref() != Some(&target_host_id);
 
         let task_attempt_id = workflow_service
-            .force_retry_task(workflow_instance_id, task_id, target_host_id.clone())
+            .force_retry_task(
+                namespace,
+                workflow_instance_id,
+                task_id,
+                target_host_id.clone(),
+            )
             .await?;
 
-        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+        self.enqueue_workflow_instance(namespace, workflow_instance_id.to_string())
             .await?;
 
         Ok(RetryWorkflowTaskResult {
@@ -141,71 +159,99 @@ impl Orchestrator {
         })
     }
 
-    pub async fn pause_workflow_instance(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+    pub async fn pause_workflow_instance(
+        &self,
+        namespace: &Namespace,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<()> {
         let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
         workflow_service
-            .pause_workflow(workflow_instance_id)
+            .pause_workflow(namespace, workflow_instance_id)
             .await?;
-        self.remove_queued_workflow_instance(workflow_instance_id)
+        self.remove_queued_workflow_instance(namespace, workflow_instance_id)
             .await?;
         Ok(())
     }
 
-    pub async fn resume_workflow_instance(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+    pub async fn resume_workflow_instance(
+        &self,
+        namespace: &Namespace,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<()> {
         let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
         workflow_service
-            .resume_workflow(workflow_instance_id)
+            .resume_workflow(namespace, workflow_instance_id)
             .await?;
-        self.enqueue_workflow_instance(workflow_instance_id.to_string())
+        self.enqueue_workflow_instance(namespace, workflow_instance_id.to_string())
             .await
     }
 
-    pub async fn pause_active_workflow_instances(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn pause_active_workflow_instances(
+        &self,
+        namespace: &Namespace,
+    ) -> anyhow::Result<Vec<String>> {
         let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
-        let paused = workflow_service.pause_active_workflows().await?;
+        let paused = workflow_service.pause_active_workflows(namespace).await?;
         for workflow_instance_id in &paused {
-            self.remove_queued_workflow_instance(workflow_instance_id)
+            self.remove_queued_workflow_instance(namespace, workflow_instance_id)
                 .await?;
         }
         Ok(paused)
     }
 
-    pub async fn resume_paused_workflow_instances(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn resume_paused_workflow_instances(
+        &self,
+        namespace: &Namespace,
+    ) -> anyhow::Result<Vec<String>> {
         let workflow_service = WorkflowService::new(Arc::clone(&self.storage));
-        let resumed = workflow_service.resume_paused_workflows().await?;
+        let resumed = workflow_service.resume_paused_workflows(namespace).await?;
         for workflow_instance_id in &resumed {
-            self.enqueue_workflow_instance(workflow_instance_id.clone())
+            self.enqueue_workflow_instance(namespace, workflow_instance_id.clone())
                 .await?;
         }
         Ok(resumed)
     }
 
     /// Returns queued and currently running workflow instance IDs.
-    pub async fn get_queue_status(&self) -> anyhow::Result<Vec<String>> {
-        self.workflow_queue.pending_ids().await
+    pub async fn get_queue_status(&self, namespace: &Namespace) -> anyhow::Result<Vec<String>> {
+        self.workflow_queue.pending_ids(namespace).await
     }
 
     /// Removes a pending workflow instance from the queue.
-    pub async fn remove_queued_workflow_instance(&self, instance_id: &str) -> anyhow::Result<bool> {
-        self.workflow_queue.remove(instance_id).await
+    pub async fn remove_queued_workflow_instance(
+        &self,
+        namespace: &Namespace,
+        instance_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.workflow_queue.remove(namespace, instance_id).await
     }
 
     /// Removes all pending workflow instances from the queue.
-    pub async fn purge_queued_workflow_instances(&self) -> anyhow::Result<Vec<String>> {
-        self.workflow_queue.purge().await
+    pub async fn purge_queued_workflow_instances(
+        &self,
+        namespace: &Namespace,
+    ) -> anyhow::Result<Vec<String>> {
+        self.workflow_queue.purge(namespace).await
     }
 
     /// Returns a status report for a workflow instance.
     pub async fn get_workflow_status(
         &self,
+        namespace: &Namespace,
         id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
-        self.engine.get_workflow_status(id).await
+        self.engine.get_workflow_status(namespace, id).await
     }
 
     /// Starts or resumes execution of a workflow instance.
-    pub async fn run_workflow(&self, instance_id: String) -> anyhow::Result<()> {
-        self.engine.run_workflow_instance(instance_id).await
+    pub async fn run_workflow(
+        &self,
+        namespace: &Namespace,
+        instance_id: String,
+    ) -> anyhow::Result<()> {
+        self.engine
+            .run_workflow_instance(namespace, instance_id)
+            .await
     }
 
     /// Continuously consumes queued workflow instances and runs up to `max_concurrent_workflows`.
@@ -223,8 +269,8 @@ impl Orchestrator {
                 }
             };
 
-            let instance_id = match self.workflow_queue.dequeue().await {
-                Ok(instance_id) => instance_id,
+            let item = match self.workflow_queue.dequeue().await {
+                Ok(item) => item,
                 Err(error) => {
                     error!(%error, "workflow scheduler failed to dequeue workflow instance");
                     drop(permit);
@@ -234,8 +280,12 @@ impl Orchestrator {
 
             let orchestrator = Arc::clone(&self);
             tokio::spawn(async move {
-                let workflow_instance_id = instance_id.clone();
-                if let Err(error) = orchestrator.run_workflow(instance_id).await {
+                let namespace = item.namespace;
+                let workflow_instance_id = item.workflow_instance_id;
+                if let Err(error) = orchestrator
+                    .run_workflow(&namespace, workflow_instance_id.clone())
+                    .await
+                {
                     error!(
                         %workflow_instance_id,
                         error = ?error,
@@ -244,7 +294,7 @@ impl Orchestrator {
                 }
                 if let Err(error) = orchestrator
                     .workflow_queue
-                    .complete(&workflow_instance_id)
+                    .complete(&namespace, &workflow_instance_id)
                     .await
                 {
                     error!(
@@ -268,7 +318,11 @@ impl Orchestrator {
         let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
 
         for info in self.list_active_workflow_info().await?.runnable {
-            let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
+            let Some(instance) = self
+                .storage
+                .get_workflow_instance(&info.namespace, &info.id)
+                .await?
+            else {
                 continue;
             };
 
@@ -287,6 +341,7 @@ impl Orchestrator {
             if needs_recovery {
                 state_manager
                     .commit_events(
+                        &info.namespace,
                         &info.id,
                         vec![WorkflowInstanceEvent::StartupRecoveryApplied { task_attempt_ids }],
                     )
@@ -304,7 +359,8 @@ impl Orchestrator {
         let count = infos.len();
 
         for info in infos {
-            self.enqueue_workflow_instance(info.id).await?;
+            self.enqueue_workflow_instance(&info.namespace, info.id)
+                .await?;
         }
 
         Ok(count)
@@ -327,7 +383,11 @@ impl Orchestrator {
         let mut failed = 0;
 
         for info in active.runnable.into_iter().chain(active.blocked) {
-            let Some(instance) = self.storage.get_workflow_instance(&info.id).await? else {
+            let Some(instance) = self
+                .storage
+                .get_workflow_instance(&info.namespace, &info.id)
+                .await?
+            else {
                 continue;
             };
             let Some(pinned_host) = &instance.pinned_worker_host else {
@@ -340,6 +400,7 @@ impl Orchestrator {
 
             state_manager
                 .commit_events_for_instance(
+                    &info.namespace,
                     instance,
                     vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                         status: WorkflowStatus::Failed,
@@ -359,13 +420,15 @@ impl Orchestrator {
 
     async fn execute_task_isolated_with_id(
         &self,
+        namespace: &Namespace,
         isolated_execution_id: String,
         task: &TaskDef,
         inputs: &[serde_json::Value],
     ) -> anyhow::Result<crate::ports::task_dispatch::ExecutionResult> {
-        let task = self.resolve_task_function_ref(task).await?;
+        let task = self.resolve_task_function_ref(namespace, task).await?;
         self.task_dispatcher
             .dispatch_task(
+                namespace,
                 &isolated_execution_id,
                 &task,
                 inputs,
@@ -375,8 +438,12 @@ impl Orchestrator {
             .await
     }
 
-    async fn resolve_task_function_ref(&self, task: &TaskDef) -> anyhow::Result<TaskDef> {
-        resolve_task_function_ref(self.storage.as_ref(), task).await
+    async fn resolve_task_function_ref(
+        &self,
+        namespace: &Namespace,
+        task: &TaskDef,
+    ) -> anyhow::Result<TaskDef> {
+        resolve_task_function_ref(self.storage.as_ref(), namespace, task).await
     }
 
     async fn list_active_workflow_info(&self) -> anyhow::Result<StartupWorkflowDiscovery> {
@@ -388,6 +455,7 @@ impl Orchestrator {
             let page = self
                 .storage
                 .list_workflow_info(
+                    None,
                     WorkflowInfoPageRequest { limit: 100, cursor },
                     all_nonterminal_workflow_filter(),
                 )

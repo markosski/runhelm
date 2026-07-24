@@ -7,11 +7,11 @@
 
 ## 2. Namespace-Scoped Storage Contract and Core Services
 
-- [ ] 2.1 Add explicit namespace parameters to every definition and workflow operation in `StoragePort`, including point reads, lists, deletes, events, and atomic workflow commits; make `list_workflow_info` alone accept `Option<&Namespace>`, with `None` reserved for startup recovery.
-- [ ] 2.2 Add namespace ownership to storage-facing `WorkflowInfo` and cross-namespace pagination identity while keeping namespace out of public workflow-list response bodies.
-- [ ] 2.3 Propagate namespace through `FunctionService`, `WorkflowService`, definition-reference resolution, and workflow immutability checks.
-- [ ] 2.4 Propagate namespace through `WorkflowStateManager` and `WorkflowEngine` reads, transitions, status queries, and task dispatch calls.
-- [ ] 2.5 Propagate namespace through orchestrator resource actions, isolated task invocation, pause/resume, retries, human input, and queue APIs.
+- [x] 2.1 Add explicit namespace parameters to every definition and workflow operation in `StoragePort`, including point reads, lists, deletes, events, and atomic workflow commits; make `list_workflow_info` alone accept `Option<&Namespace>`, with `None` reserved for startup recovery.
+- [x] 2.2 Add namespace ownership to storage-facing `WorkflowInfo` and cross-namespace pagination identity while keeping namespace out of public workflow-list response bodies.
+- [x] 2.3 Propagate namespace through `FunctionService`, `WorkflowService`, definition-reference resolution, and workflow immutability checks.
+- [x] 2.4 Propagate namespace through `WorkflowStateManager` and `WorkflowEngine` reads, transitions, status queries, and task dispatch calls.
+- [x] 2.5 Propagate namespace through orchestrator resource actions, isolated task invocation, pause/resume, retries, human input, and queue APIs.
 
 ## 3. Memory Storage Isolation
 

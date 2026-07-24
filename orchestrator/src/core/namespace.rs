@@ -69,6 +69,11 @@ impl fmt::Display for NamespaceError {
 
 impl std::error::Error for NamespaceError {}
 
+#[cfg(test)]
+pub fn test_namespace() -> Namespace {
+    Namespace::new("550e8400-e29b-41d4-a716-446655440000").unwrap()
+}
+
 #[derive(Clone)]
 pub struct NamespaceResolver {
     storage: Arc<dyn StoragePort + Send + Sync>,

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::core::function::models::FunctionDef;
+use crate::core::namespace::Namespace;
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::WorkflowEventRecord;
 use crate::core::workflow::models::{
@@ -45,7 +46,11 @@ impl MemoryStorage {
 /// and should not be used in production environments.
 #[async_trait]
 impl StoragePort for MemoryStorage {
-    async fn save_workflow_def(&self, def: WorkflowDef) -> StorageResult<()> {
+    async fn save_workflow_def(
+        &self,
+        _namespace: &Namespace,
+        def: WorkflowDef,
+    ) -> StorageResult<()> {
         let mut map = self.workflow_defs.write().await;
         let created_at_epoch_ms = map
             .get(&def.id)
@@ -61,12 +66,19 @@ impl StoragePort for MemoryStorage {
         Ok(())
     }
 
-    async fn get_workflow_def(&self, id: &str) -> StorageResult<Option<WorkflowDef>> {
+    async fn get_workflow_def(
+        &self,
+        _namespace: &Namespace,
+        id: &str,
+    ) -> StorageResult<Option<WorkflowDef>> {
         let map = self.workflow_defs.read().await;
         Ok(map.get(id).map(|stored| stored.definition.clone()))
     }
 
-    async fn list_workflow_def(&self) -> StorageResult<Vec<WorkflowDefSummary>> {
+    async fn list_workflow_def(
+        &self,
+        _namespace: &Namespace,
+    ) -> StorageResult<Vec<WorkflowDefSummary>> {
         let _commit_guard = self.commit_lock.lock().await;
         let definitions = self.workflow_defs.read().await;
         let infos = self.workflow_infos.read().await;
@@ -92,23 +104,35 @@ impl StoragePort for MemoryStorage {
         Ok(summaries)
     }
 
-    async fn save_function_def(&self, def: FunctionDef) -> StorageResult<()> {
+    async fn save_function_def(
+        &self,
+        _namespace: &Namespace,
+        def: FunctionDef,
+    ) -> StorageResult<()> {
         let mut map = self.function_defs.write().await;
         map.insert(def.id.clone(), def);
         Ok(())
     }
 
-    async fn get_function_def(&self, id: &str) -> StorageResult<Option<FunctionDef>> {
+    async fn get_function_def(
+        &self,
+        _namespace: &Namespace,
+        id: &str,
+    ) -> StorageResult<Option<FunctionDef>> {
         let map = self.function_defs.read().await;
         Ok(map.get(id).cloned())
     }
 
-    async fn delete_function_def(&self, id: &str) -> StorageResult<bool> {
+    async fn delete_function_def(&self, _namespace: &Namespace, id: &str) -> StorageResult<bool> {
         let mut map = self.function_defs.write().await;
         Ok(map.remove(id).is_some())
     }
 
-    async fn get_workflow_instance(&self, id: &str) -> StorageResult<Option<WorkflowInstance>> {
+    async fn get_workflow_instance(
+        &self,
+        _namespace: &Namespace,
+        id: &str,
+    ) -> StorageResult<Option<WorkflowInstance>> {
         let _commit_guard = self.commit_lock.lock().await;
         let map = self.workflow_instances.read().await;
         Ok(map.get(id).cloned())
@@ -116,6 +140,7 @@ impl StoragePort for MemoryStorage {
 
     async fn list_workflow_instance_events(
         &self,
+        _namespace: &Namespace,
         workflow_instance_id: &str,
         page: WorkflowEventPageRequest,
     ) -> StorageResult<WorkflowEventPage> {
@@ -149,6 +174,7 @@ impl StoragePort for MemoryStorage {
 
     async fn list_workflow_info(
         &self,
+        namespace: Option<&Namespace>,
         page: WorkflowInfoPageRequest,
         filters: Vec<WorkflowInstanceFilter>,
     ) -> StorageResult<WorkflowInfoPage> {
@@ -156,6 +182,7 @@ impl StoragePort for MemoryStorage {
         let map = self.workflow_infos.read().await;
         let mut workflows: Vec<WorkflowInfo> = map
             .values()
+            .filter(|info| namespace.is_none_or(|namespace| &info.namespace == namespace))
             .filter(|info| {
                 filters
                     .iter()
@@ -169,6 +196,7 @@ impl StoragePort for MemoryStorage {
                 .modified_at_epoch_ms
                 .cmp(&left.modified_at_epoch_ms)
                 .then_with(|| right.id.cmp(&left.id))
+                .then_with(|| right.namespace.cmp(&left.namespace))
         });
 
         if let Some(cursor) = &page.cursor {
@@ -190,6 +218,7 @@ impl StoragePort for MemoryStorage {
 
     async fn save_workflow_instance(
         &self,
+        namespace: &Namespace,
         expected_version: u64,
         events: Vec<WorkflowEventRecord>,
         instance: WorkflowInstance,
@@ -231,6 +260,7 @@ impl StoragePort for MemoryStorage {
             .and_then(|info| info.completed_at_epoch_ms)
             .or_else(|| workflow_completed_at(&instance, modified_at_epoch_ms));
         let info = WorkflowInfo::from_instance_with_timestamps(
+            namespace.clone(),
             &instance,
             created_at_epoch_ms,
             modified_at_epoch_ms,
@@ -264,11 +294,14 @@ fn workflow_info_matches(info: &WorkflowInfo, filter: &WorkflowInstanceFilter) -
 fn is_after_cursor(info: &WorkflowInfo, cursor: &WorkflowInfoCursor) -> bool {
     info.modified_at_epoch_ms < cursor.modified_at_epoch_ms
         || (info.modified_at_epoch_ms == cursor.modified_at_epoch_ms
-            && info.id.as_str() < cursor.workflow_instance_id.as_str())
+            && (info.id.as_str() < cursor.workflow_instance_id.as_str()
+                || (info.id.as_str() == cursor.workflow_instance_id.as_str()
+                    && info.namespace < cursor.namespace)))
 }
 
 fn workflow_info_cursor(info: &WorkflowInfo) -> WorkflowInfoCursor {
     WorkflowInfoCursor {
+        namespace: info.namespace.clone(),
         modified_at_epoch_ms: info.modified_at_epoch_ms,
         workflow_instance_id: info.id.clone(),
     }
@@ -336,13 +369,19 @@ mod tests {
         let storage = MemoryStorage::new();
         let mut instance = instance("wf-1", WorkflowStatus::Pending);
         storage
-            .save_workflow_instance(0, vec![], instance.clone())
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                instance.clone(),
+            )
             .await
             .unwrap();
 
         instance.status = WorkflowStatus::Completed;
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![WorkflowEventRecord {
                     created_time: 42,
@@ -356,13 +395,14 @@ mod tests {
             .unwrap();
 
         let saved = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(saved.status, WorkflowStatus::Completed);
         let records = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 WorkflowEventPageRequest {
                     limit: 100,
@@ -376,6 +416,7 @@ mod tests {
         assert_eq!(records[0].created_time, 42);
         let infos = storage
             .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
                 list_page(),
                 vec![WorkflowInstanceFilter::Statuses(vec![
                     WorkflowStatus::Completed,
@@ -397,14 +438,24 @@ mod tests {
         let mut instance = instance("wf-1", WorkflowStatus::Pending);
         instance.version = 1;
         storage
-            .save_workflow_instance(0, vec![event_record(1000)], instance.clone())
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![event_record(1000)],
+                instance.clone(),
+            )
             .await
             .unwrap();
 
         instance.status = WorkflowStatus::Completed;
         instance.version = 2;
         let error = storage
-            .save_workflow_instance(0, vec![event_record(2000)], instance)
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![event_record(2000)],
+                instance,
+            )
             .await
             .unwrap_err();
 
@@ -416,7 +467,7 @@ mod tests {
         assert_eq!(conflict.actual_version, 1);
 
         let saved = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
@@ -425,6 +476,7 @@ mod tests {
         assert_eq!(
             storage
                 .list_workflow_instance_events(
+                    &crate::core::namespace::test_namespace(),
                     "wf-1",
                     WorkflowEventPageRequest {
                         limit: 100,
@@ -473,12 +525,21 @@ mod tests {
         );
 
         storage
-            .save_workflow_instance(0, vec![], instance.clone())
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                instance.clone(),
+            )
             .await
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_page(), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_page(),
+                vec![],
+            )
             .await
             .unwrap()
             .items;
@@ -492,18 +553,32 @@ mod tests {
         let storage = MemoryStorage::new();
         let mut instance = instance("wf-1", WorkflowStatus::Running);
         storage
-            .save_workflow_instance(0, vec![event_record(1000)], instance.clone())
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![event_record(1000)],
+                instance.clone(),
+            )
             .await
             .unwrap();
 
         instance.status = WorkflowStatus::Completed;
         storage
-            .save_workflow_instance(0, vec![event_record(2000)], instance)
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![event_record(2000)],
+                instance,
+            )
             .await
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_page(), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_page(),
+                vec![],
+            )
             .await
             .unwrap()
             .items;
@@ -517,6 +592,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(1000), event_record(1500)],
                 instance("wf-1", WorkflowStatus::Running),
@@ -525,7 +601,11 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_page(), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_page(),
+                vec![],
+            )
             .await
             .unwrap()
             .items;
@@ -538,6 +618,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(1000)],
                 instance("older", WorkflowStatus::Pending),
@@ -546,6 +627,7 @@ mod tests {
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(2000)],
                 instance("same-a", WorkflowStatus::Pending),
@@ -554,6 +636,7 @@ mod tests {
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(2000)],
                 instance("same-b", WorkflowStatus::Pending),
@@ -562,7 +645,11 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_page(), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_page(),
+                vec![],
+            )
             .await
             .unwrap()
             .items;
@@ -576,6 +663,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(3000)],
                 instance("newest", WorkflowStatus::Pending),
@@ -584,6 +672,7 @@ mod tests {
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(2000)],
                 instance("middle", WorkflowStatus::Pending),
@@ -592,6 +681,7 @@ mod tests {
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(1000)],
                 instance("oldest", WorkflowStatus::Pending),
@@ -600,7 +690,11 @@ mod tests {
             .unwrap();
 
         let first_page = storage
-            .list_workflow_info(page_request(1, None), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                page_request(1, None),
+                vec![],
+            )
             .await
             .unwrap();
         assert_eq!(first_page.items.len(), 1);
@@ -608,13 +702,18 @@ mod tests {
         assert_eq!(
             first_page.next_cursor,
             Some(WorkflowInfoCursor {
+                namespace: crate::core::namespace::test_namespace(),
                 modified_at_epoch_ms: 3000,
                 workflow_instance_id: "newest".to_string(),
             })
         );
 
         let second_page = storage
-            .list_workflow_info(page_request(2, first_page.next_cursor), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                page_request(2, first_page.next_cursor),
+                vec![],
+            )
             .await
             .unwrap();
         let ids: Vec<&str> = second_page
@@ -631,17 +730,28 @@ mod tests {
         let storage = MemoryStorage::new();
         let pending = instance("pending", WorkflowStatus::Pending);
         storage
-            .save_workflow_instance(0, vec![], pending.clone())
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                pending.clone(),
+            )
             .await
             .unwrap();
         let completed = instance("completed", WorkflowStatus::Completed);
         storage
-            .save_workflow_instance(0, vec![], completed.clone())
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                completed.clone(),
+            )
             .await
             .unwrap();
 
         let active = storage
             .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
                 list_page(),
                 vec![WorkflowInstanceFilter::Statuses(vec![
                     WorkflowStatus::Pending,
@@ -656,6 +766,7 @@ mod tests {
 
         let completed = storage
             .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
                 list_page(),
                 vec![WorkflowInstanceFilter::Statuses(vec![
                     WorkflowStatus::Completed,
@@ -673,6 +784,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 instance_for_def("workflow-1-instance", "workflow-1", WorkflowStatus::Pending),
@@ -681,6 +793,7 @@ mod tests {
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 instance_for_def(
@@ -694,6 +807,7 @@ mod tests {
 
         let infos = storage
             .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
                 list_page(),
                 vec![WorkflowInstanceFilter::WorkflowDefId(
                     "workflow-2".to_string(),
@@ -712,6 +826,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 instance_for_def("workflow-1-pending", "workflow-1", WorkflowStatus::Pending),
@@ -720,6 +835,7 @@ mod tests {
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 instance_for_def(
@@ -732,6 +848,7 @@ mod tests {
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 instance_for_def("workflow-2-pending", "workflow-2", WorkflowStatus::Pending),
@@ -741,6 +858,7 @@ mod tests {
 
         let infos = storage
             .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
                 list_page(),
                 vec![
                     WorkflowInstanceFilter::WorkflowDefId("workflow-1".to_string()),
@@ -760,6 +878,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 instance_for_def("workflow-1-pending", "workflow-1", WorkflowStatus::Pending),
@@ -768,7 +887,11 @@ mod tests {
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_page(), vec![WorkflowInstanceFilter::Statuses(vec![])])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_page(),
+                vec![WorkflowInstanceFilter::Statuses(vec![])],
+            )
             .await
             .unwrap()
             .items;
@@ -796,12 +919,21 @@ mod tests {
         );
 
         storage
-            .save_workflow_instance(0, vec![], instance.clone())
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                instance.clone(),
+            )
             .await
             .unwrap();
 
         let infos = storage
-            .list_workflow_info(list_page(), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_page(),
+                vec![],
+            )
             .await
             .unwrap()
             .items;
@@ -817,6 +949,7 @@ mod tests {
         workflow.version = 3;
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![event_record(100), event_record(200), event_record(300)],
                 workflow,
@@ -826,6 +959,7 @@ mod tests {
 
         let first = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 WorkflowEventPageRequest {
                     limit: 2,
@@ -846,6 +980,7 @@ mod tests {
 
         let second = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 WorkflowEventPageRequest {
                     limit: 2,

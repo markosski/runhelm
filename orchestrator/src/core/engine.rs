@@ -1,4 +1,5 @@
 use crate::core::function::function_service::resolve_task_function_ref;
+use crate::core::namespace::Namespace;
 use crate::core::task::{
     ExecutionMetadata, TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus,
 };
@@ -58,9 +59,14 @@ impl WorkflowEngine {
     /// including while `run_workflow_instance` is executing.
     pub async fn get_workflow_status(
         &self,
+        namespace: &Namespace,
         instance_id: &str,
     ) -> anyhow::Result<Option<WorkflowStatusReport>> {
-        let Some(instance) = self.storage.get_workflow_instance(instance_id).await? else {
+        let Some(instance) = self
+            .storage
+            .get_workflow_instance(namespace, instance_id)
+            .await?
+        else {
             return Ok(None);
         };
 
@@ -104,10 +110,14 @@ impl WorkflowEngine {
         }))
     }
 
-    pub async fn run_workflow_instance(&self, workflow_inst_id: String) -> anyhow::Result<()> {
+    pub async fn run_workflow_instance(
+        &self,
+        namespace: &Namespace,
+        workflow_inst_id: String,
+    ) -> anyhow::Result<()> {
         let mut workflow_instance = match self
             .storage
-            .get_workflow_instance(&workflow_inst_id)
+            .get_workflow_instance(namespace, &workflow_inst_id)
             .await?
         {
             Some(i) => i,
@@ -126,7 +136,7 @@ impl WorkflowEngine {
 
         let workflow_def = match self
             .storage
-            .get_workflow_def(&workflow_instance.workflow_def_id)
+            .get_workflow_def(namespace, &workflow_instance.workflow_def_id)
             .await?
         {
             Some(d) => d,
@@ -136,6 +146,7 @@ impl WorkflowEngine {
         let state_manager = WorkflowStateManager::new(Arc::clone(&self.storage));
         workflow_instance = state_manager
             .commit_events_for_instance(
+                namespace,
                 workflow_instance,
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Running,
@@ -169,7 +180,7 @@ impl WorkflowEngine {
             }
             if !events.is_empty() {
                 workflow_instance = state_manager
-                    .commit_events_for_instance(workflow_instance, events)
+                    .commit_events_for_instance(namespace, workflow_instance, events)
                     .await?;
             }
         }
@@ -186,7 +197,7 @@ impl WorkflowEngine {
             );
             if !generation_events.is_empty() {
                 workflow_instance = state_manager
-                    .commit_events_for_instance(workflow_instance, generation_events)
+                    .commit_events_for_instance(namespace, workflow_instance, generation_events)
                     .await?;
                 progress_made = true;
             }
@@ -222,12 +233,16 @@ impl WorkflowEngine {
                 // A pause may have been committed while this engine pass was
                 // resolving runnable work. Stop cleanly instead of turning the
                 // next task attempt Running and relying on a version conflict.
-                if self.is_workflow_paused(&workflow_inst_id).await? {
+                if self
+                    .is_workflow_paused(namespace, &workflow_inst_id)
+                    .await?
+                {
                     return Ok(());
                 }
 
                 workflow_instance = state_manager
                     .commit_events_for_instance(
+                        namespace,
                         workflow_instance,
                         vec![WorkflowInstanceEvent::TaskStatusChanged {
                             task_attempt_id: task_attempt_id.clone(),
@@ -264,6 +279,7 @@ impl WorkflowEngine {
                 if let Err(error) = validate_inputs(task_def, &inputs) {
                     state_manager
                         .commit_events_for_instance(
+                            namespace,
                             workflow_instance,
                             vec![
                                 WorkflowInstanceEvent::TaskInputDataSet {
@@ -298,10 +314,13 @@ impl WorkflowEngine {
                 };
 
                 let execution_result =
-                    match resolve_task_function_ref(self.storage.as_ref(), task_def).await {
+                    match resolve_task_function_ref(self.storage.as_ref(), namespace, task_def)
+                        .await
+                    {
                         Ok(resolved_task_def) => {
                             self.task_dispatcher
                                 .dispatch_task(
+                                    namespace,
                                     &workflow_inst_id,
                                     &resolved_task_def,
                                     &inputs,
@@ -321,6 +340,7 @@ impl WorkflowEngine {
                             // i.e. InputNeeded should issue TaskReturnedInputNeeded this should perform all needed internal mutations to task and workflow, statuses etc.
                             ExecutionResult::InputNeeded(input_request) => {
                                 self.commit_task_result_events_preserving_pause(
+                                    namespace,
                                     &state_manager,
                                     &workflow_inst_id,
                                     workflow_instance,
@@ -347,6 +367,7 @@ impl WorkflowEngine {
                             }
                             ExecutionResult::Failure(reason) => {
                                 self.commit_task_result_events_preserving_pause(
+                                    namespace,
                                     &state_manager,
                                     &workflow_inst_id,
                                     workflow_instance,
@@ -445,6 +466,7 @@ impl WorkflowEngine {
                                             },
                                         ]);
                                         self.commit_task_result_events_preserving_pause(
+                                            namespace,
                                             &state_manager,
                                             &workflow_inst_id,
                                             workflow_instance,
@@ -465,6 +487,7 @@ impl WorkflowEngine {
                                 events.extend(verifier_transition.events);
                                 workflow_instance = self
                                     .commit_task_result_events_preserving_pause(
+                                        namespace,
                                         &state_manager,
                                         &workflow_inst_id,
                                         workflow_instance,
@@ -473,6 +496,7 @@ impl WorkflowEngine {
                                     .await?;
                                 if self
                                     .pause_boundary_reached(
+                                        namespace,
                                         &state_manager,
                                         &workflow_instance,
                                         &workflow_def,
@@ -487,6 +511,7 @@ impl WorkflowEngine {
                             } else {
                                 workflow_instance = self
                                     .commit_task_result_events_preserving_pause(
+                                        namespace,
                                         &state_manager,
                                         &workflow_inst_id,
                                         workflow_instance,
@@ -495,6 +520,7 @@ impl WorkflowEngine {
                                     .await?;
                                 if self
                                     .pause_boundary_reached(
+                                        namespace,
                                         &state_manager,
                                         &workflow_instance,
                                         &workflow_def,
@@ -506,6 +532,7 @@ impl WorkflowEngine {
                             }
                         } else {
                             self.commit_task_result_events_preserving_pause(
+                                namespace,
                                 &state_manager,
                                 &workflow_inst_id,
                                 workflow_instance,
@@ -537,6 +564,7 @@ impl WorkflowEngine {
                     }
                     Err(e) => {
                         self.commit_task_result_events_preserving_pause(
+                            namespace,
                             &state_manager,
                             &workflow_inst_id,
                             workflow_instance,
@@ -568,6 +596,7 @@ impl WorkflowEngine {
         if self.workflow_all_completed(&workflow_instance, &workflow_def) {
             state_manager
                 .commit_events_for_instance(
+                    namespace,
                     workflow_instance,
                     vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                         status: WorkflowStatus::Completed,
@@ -579,10 +608,14 @@ impl WorkflowEngine {
         Ok(())
     }
 
-    async fn is_workflow_paused(&self, workflow_inst_id: &str) -> anyhow::Result<bool> {
+    async fn is_workflow_paused(
+        &self,
+        namespace: &Namespace,
+        workflow_inst_id: &str,
+    ) -> anyhow::Result<bool> {
         Ok(self
             .storage
-            .get_workflow_instance(workflow_inst_id)
+            .get_workflow_instance(namespace, workflow_inst_id)
             .await?
             .is_some_and(|instance| instance.status == WorkflowStatus::Paused))
     }
@@ -592,24 +625,29 @@ impl WorkflowEngine {
     // locking still rejects any other stale base snapshot.
     async fn commit_task_result_events_preserving_pause(
         &self,
+        namespace: &Namespace,
         state_manager: &WorkflowStateManager,
         workflow_inst_id: &str,
         workflow_instance: WorkflowInstance,
         events: Vec<WorkflowInstanceEvent>,
     ) -> anyhow::Result<WorkflowInstance> {
-        let current = self.storage.get_workflow_instance(workflow_inst_id).await?;
+        let current = self
+            .storage
+            .get_workflow_instance(namespace, workflow_inst_id)
+            .await?;
         let commit_base = match current {
             Some(current) if current.status == WorkflowStatus::Paused => current,
             _ => workflow_instance,
         };
 
         state_manager
-            .commit_events_for_instance(commit_base, events)
+            .commit_events_for_instance(namespace, commit_base, events)
             .await
     }
 
     async fn pause_boundary_reached(
         &self,
+        namespace: &Namespace,
         state_manager: &WorkflowStateManager,
         workflow_instance: &WorkflowInstance,
         workflow_def: &WorkflowDef,
@@ -621,6 +659,7 @@ impl WorkflowEngine {
         if self.workflow_all_completed(workflow_instance, workflow_def) {
             state_manager
                 .commit_events_for_instance(
+                    namespace,
                     workflow_instance.clone(),
                     vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                         status: WorkflowStatus::Completed,

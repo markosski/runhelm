@@ -1,3 +1,4 @@
+use crate::core::namespace::Namespace;
 use crate::core::util::unix_timestamp_ms;
 use crate::core::workflow::events::{
     WorkflowEventRecord, WorkflowInstanceEvent, reduce_workflow_instance_events,
@@ -20,26 +21,31 @@ impl WorkflowStateManager {
 
     pub async fn commit_events(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         events: Vec<WorkflowInstanceEvent>,
     ) -> anyhow::Result<WorkflowInstance> {
         let current = self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?;
-        self.commit_events_for_current(current, events).await
+        self.commit_events_for_current(namespace, current, events)
+            .await
     }
 
     pub async fn commit_events_for_instance(
         &self,
+        namespace: &Namespace,
         current: WorkflowInstance,
         events: Vec<WorkflowInstanceEvent>,
     ) -> anyhow::Result<WorkflowInstance> {
-        self.commit_events_for_current(Some(current), events).await
+        self.commit_events_for_current(namespace, Some(current), events)
+            .await
     }
 
     async fn commit_events_for_current(
         &self,
+        namespace: &Namespace,
         current: Option<WorkflowInstance>,
         events: Vec<WorkflowInstanceEvent>,
     ) -> anyhow::Result<WorkflowInstance> {
@@ -67,7 +73,7 @@ impl WorkflowStateManager {
             .collect();
 
         self.storage
-            .save_workflow_instance(expected_version, records, updated.clone())
+            .save_workflow_instance(namespace, expected_version, records, updated.clone())
             .await?;
 
         Ok(updated)
@@ -153,7 +159,9 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let manager = WorkflowStateManager::new(storage);
 
-        let result = manager.commit_events("wf-1", vec![]).await;
+        let result = manager
+            .commit_events(&crate::core::namespace::test_namespace(), "wf-1", vec![])
+            .await;
 
         assert!(result.is_err());
     }
@@ -166,6 +174,7 @@ mod tests {
 
         manager
             .commit_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 vec![WorkflowInstanceEvent::WorkflowCreated {
                     instance: instance.clone(),
@@ -175,7 +184,7 @@ mod tests {
             .unwrap();
 
         let saved = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
@@ -183,6 +192,7 @@ mod tests {
         assert_eq!(saved.version, 1);
         let events = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 WorkflowEventPageRequest {
                     limit: 100,
@@ -195,7 +205,11 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(events[0].created_time > 0);
         let summaries = storage
-            .list_workflow_info(list_all_page(), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_all_page(),
+                vec![],
+            )
             .await
             .unwrap()
             .items;
@@ -211,6 +225,7 @@ mod tests {
 
         manager
             .commit_events_for_instance(
+                &crate::core::namespace::test_namespace(),
                 instance,
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Running,
@@ -220,7 +235,7 @@ mod tests {
             .unwrap();
 
         let saved = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
@@ -228,6 +243,7 @@ mod tests {
         assert_eq!(saved.version, 1);
         let events = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 WorkflowEventPageRequest {
                     limit: 100,
@@ -239,7 +255,11 @@ mod tests {
             .items;
         assert_eq!(events.len(), 1);
         let summaries = storage
-            .list_workflow_info(list_all_page(), vec![])
+            .list_workflow_info(
+                Some(&crate::core::namespace::test_namespace()),
+                list_all_page(),
+                vec![],
+            )
             .await
             .unwrap()
             .items;
@@ -252,6 +272,7 @@ mod tests {
         let manager = WorkflowStateManager::new(storage.clone());
         manager
             .commit_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 vec![WorkflowInstanceEvent::WorkflowCreated {
                     instance: input_needed_instance("wf-1"),
@@ -260,13 +281,14 @@ mod tests {
             .await
             .unwrap();
         let stale_engine_snapshot = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
 
         manager
             .commit_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 vec![WorkflowInstanceEvent::HumanInputSubmitted {
                     task_attempt_id: "ask[1]".to_string(),
@@ -279,6 +301,7 @@ mod tests {
 
         let result = manager
             .commit_events_for_instance(
+                &crate::core::namespace::test_namespace(),
                 stale_engine_snapshot,
                 vec![WorkflowInstanceEvent::TaskStatusChanged {
                     task_attempt_id: "independent[1]".to_string(),
@@ -293,7 +316,7 @@ mod tests {
         assert_eq!(conflict.actual_version, 2);
 
         let saved = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
@@ -304,6 +327,7 @@ mod tests {
         assert_eq!(
             storage
                 .list_workflow_instance_events(
+                    &crate::core::namespace::test_namespace(),
                     "wf-1",
                     WorkflowEventPageRequest {
                         limit: 100,
@@ -324,6 +348,7 @@ mod tests {
         let manager = WorkflowStateManager::new(storage.clone());
         manager
             .commit_events(
+                &crate::core::namespace::test_namespace(),
                 "wf-1",
                 vec![WorkflowInstanceEvent::WorkflowCreated {
                     instance: workflow_instance("wf-1", WorkflowStatus::Pending),
@@ -332,13 +357,14 @@ mod tests {
             .await
             .unwrap();
         let stale_api_snapshot = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
 
         manager
             .commit_events_for_instance(
+                &crate::core::namespace::test_namespace(),
                 stale_api_snapshot.clone(),
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Running,
@@ -349,6 +375,7 @@ mod tests {
 
         let stale_result = manager
             .commit_events_for_instance(
+                &crate::core::namespace::test_namespace(),
                 stale_api_snapshot,
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Paused,
@@ -359,12 +386,13 @@ mod tests {
         workflow_version_conflict(&stale_error);
 
         let latest = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();
         let retried = manager
             .commit_events_for_instance(
+                &crate::core::namespace::test_namespace(),
                 latest,
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Paused,
@@ -376,7 +404,7 @@ mod tests {
         assert_eq!(retried.status, WorkflowStatus::Paused);
         assert_eq!(retried.version, 3);
         let saved = storage
-            .get_workflow_instance("wf-1")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "wf-1")
             .await
             .unwrap()
             .unwrap();

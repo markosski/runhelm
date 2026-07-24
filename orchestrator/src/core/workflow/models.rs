@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::namespace::Namespace;
 use crate::core::task::{
     TaskDef, TaskInputMapping, TaskInstance, TaskSatisfactionStatus, TaskStatus,
 };
@@ -76,6 +77,8 @@ pub struct WorkflowInstance {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowInfo {
+    #[serde(skip_serializing)]
+    pub namespace: Namespace,
     pub id: String,
     pub workflow_def_id: String,
     pub created_at_epoch_ms: Option<u64>,
@@ -94,12 +97,14 @@ pub struct WorkflowListPage {
 
 impl WorkflowInfo {
     pub fn from_instance_with_timestamps(
+        namespace: Namespace,
         instance: &WorkflowInstance,
         created_at_epoch_ms: Option<u64>,
         modified_at_epoch_ms: u64,
         completed_at_epoch_ms: Option<u64>,
     ) -> Self {
         Self {
+            namespace,
             id: instance.id.clone(),
             workflow_def_id: instance.workflow_def_id.clone(),
             created_at_epoch_ms,
@@ -176,4 +181,28 @@ pub struct StartupWorkflowDiscovery {
     pub runnable: Vec<WorkflowInfo>,
     #[allow(dead_code)]
     pub blocked: Vec<WorkflowInfo>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workflow_info_omits_storage_namespace_from_public_serialization() {
+        let info = WorkflowInfo {
+            namespace: crate::core::namespace::test_namespace(),
+            id: "workflow-1".to_string(),
+            workflow_def_id: "workflow".to_string(),
+            created_at_epoch_ms: Some(1),
+            modified_at_epoch_ms: 2,
+            completed_at_epoch_ms: None,
+            status: WorkflowStatus::Running,
+            total_task_count: 1,
+            completed_task_count: 0,
+        };
+
+        let value = serde_json::to_value(info).unwrap();
+
+        assert!(value.get("namespace").is_none());
+    }
 }

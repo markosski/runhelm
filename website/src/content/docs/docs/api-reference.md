@@ -13,6 +13,12 @@ export RUNHELM_URL=http://localhost:3000
 
 The orchestrator must have `RUNHELM_DEFAULT_NAMESPACE` set to a canonical UUID string for the currently supported single-tenant request path. When configured, it takes precedence over any `Authorization` header. `/health` does not require a namespace.
 
+The selected namespace scopes every public definition, workflow, task, event, and
+queue operation. Resource IDs therefore identify a resource only within that
+namespace. Public definition and workflow-list bodies do not include a
+`namespace` field, and an ID that exists only in another namespace is reported
+the same way as an unknown ID.
+
 ## Public endpoints
 
 | Method | Path | Purpose |
@@ -312,6 +318,9 @@ Query parameters:
 - `status`: `pending`, `running`, `paused`, `input_needed`, `completed`, or `failed`.
 - `limit`: maximum number of workflows to return.
 - `cursor`: pagination cursor returned by the previous response.
+
+Workflow cursors are opaque and namespace-scoped. Reuse a cursor only with the
+same namespace context that produced it.
 
 Response:
 

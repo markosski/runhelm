@@ -1,3 +1,4 @@
+use crate::core::namespace::Namespace;
 use crate::core::task::{ExecutionMetadata, TaskDef, TaskInstance, WorkspaceKey};
 use crate::core::worker::{DispatchLease, TaskDispatchConstraints, WorkerHostId, WorkerIdentity};
 use crate::ports::task_dispatch::{
@@ -312,6 +313,7 @@ impl TaskDispatcher {
 impl TaskDispatchPort for TaskDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &Namespace,
         workflow_inst_id: &str,
         task: &TaskDef,
         inputs: &[serde_json::Value],
@@ -435,6 +437,7 @@ mod tests {
             async move {
                 dispatcher
                     .dispatch_task(
+                        &crate::core::namespace::test_namespace(),
                         "workflow-1",
                         &task,
                         &[],
@@ -461,6 +464,7 @@ mod tests {
             async move {
                 dispatcher
                     .dispatch_task(
+                        &crate::core::namespace::test_namespace(),
                         "workflow-1",
                         &task,
                         &[],

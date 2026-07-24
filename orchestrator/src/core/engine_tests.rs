@@ -36,6 +36,7 @@ struct ContinueThenCompleteDispatcher;
 impl TaskDispatchPort for ContinueThenCompleteDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &crate::core::namespace::Namespace,
         _workflow_inst_id: &str,
         task: &TaskDef,
         _inputs: &[serde_json::Value],
@@ -67,6 +68,7 @@ struct CompleteVerifierDispatcher;
 impl TaskDispatchPort for CompleteVerifierDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &crate::core::namespace::Namespace,
         _workflow_inst_id: &str,
         task: &TaskDef,
         _inputs: &[serde_json::Value],
@@ -87,6 +89,7 @@ struct AlwaysContinueVerifierDispatcher;
 impl TaskDispatchPort for AlwaysContinueVerifierDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &crate::core::namespace::Namespace,
         _workflow_inst_id: &str,
         task: &TaskDef,
         _inputs: &[serde_json::Value],
@@ -135,6 +138,7 @@ impl RecordingContinueDispatcher {
 impl TaskDispatchPort for RecordingContinueDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &crate::core::namespace::Namespace,
         workflow_inst_id: &str,
         task: &TaskDef,
         _inputs: &[serde_json::Value],
@@ -179,6 +183,7 @@ struct InputNeededDispatcher;
 impl TaskDispatchPort for InputNeededDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &crate::core::namespace::Namespace,
         _workflow_inst_id: &str,
         _task: &TaskDef,
         _inputs: &[serde_json::Value],
@@ -213,6 +218,7 @@ impl InputNeededForTaskDispatcher {
 impl TaskDispatchPort for InputNeededForTaskDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &crate::core::namespace::Namespace,
         _workflow_inst_id: &str,
         task: &TaskDef,
         _inputs: &[serde_json::Value],
@@ -254,6 +260,7 @@ impl PauseDuringTaskDispatcher {
 impl TaskDispatchPort for PauseDuringTaskDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &crate::core::namespace::Namespace,
         _workflow_inst_id: &str,
         task: &TaskDef,
         _inputs: &[serde_json::Value],
@@ -263,6 +270,7 @@ impl TaskDispatchPort for PauseDuringTaskDispatcher {
         self.calls.lock().unwrap().push(task.id.clone());
         WorkflowStateManager::new(self.storage.clone())
             .commit_events(
+                &crate::core::namespace::test_namespace(),
                 &self.workflow_instance_id,
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Paused,
@@ -354,10 +362,19 @@ async fn setup_with_pin(
         tasks: HashMap::new(),
         verifier_states: HashMap::new(),
     };
-    engine.storage.save_workflow_def(def).await.unwrap();
     engine
         .storage
-        .save_workflow_instance(0, vec![], instance)
+        .save_workflow_def(&crate::core::namespace::test_namespace(), def)
+        .await
+        .unwrap();
+    engine
+        .storage
+        .save_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            0,
+            vec![],
+            instance,
+        )
         .await
         .unwrap();
     instance_id
@@ -583,13 +600,16 @@ async fn test_input_needed_workflow_retains_pinned_host() {
     let instance_id = setup_with_pin(&engine, def, Some(pinned_host.clone())).await;
 
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -618,13 +638,16 @@ async fn test_input_needed_stops_current_engine_pass() {
     let instance_id = setup(&engine, def).await;
 
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -835,13 +858,16 @@ async fn test_single_task_workflow_completes() {
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
     let result = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -871,9 +897,13 @@ async fn paused_workflow_records_in_flight_nonfinal_task_and_stops() {
             target_task_id: "task-b".to_string(),
         }],
     };
-    storage.save_workflow_def(def.clone()).await.unwrap();
+    storage
+        .save_workflow_def(&crate::core::namespace::test_namespace(), def.clone())
+        .await
+        .unwrap();
     storage
         .save_workflow_instance(
+            &crate::core::namespace::test_namespace(),
             0,
             vec![],
             WorkflowInstance {
@@ -891,12 +921,15 @@ async fn paused_workflow_records_in_flight_nonfinal_task_and_stops() {
         .unwrap();
 
     engine
-        .run_workflow_instance("inst-paused".to_string())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            "inst-paused".to_string(),
+        )
         .await
         .unwrap();
 
     let saved = storage
-        .get_workflow_instance("inst-paused")
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), "inst-paused")
         .await
         .unwrap()
         .unwrap();
@@ -920,9 +953,13 @@ async fn paused_workflow_records_in_flight_final_task_and_completes() {
         tasks: vec![task_def("task-a", json!({ "type": "object" }))],
         data_bindings: vec![],
     };
-    storage.save_workflow_def(def.clone()).await.unwrap();
+    storage
+        .save_workflow_def(&crate::core::namespace::test_namespace(), def.clone())
+        .await
+        .unwrap();
     storage
         .save_workflow_instance(
+            &crate::core::namespace::test_namespace(),
             0,
             vec![],
             WorkflowInstance {
@@ -940,12 +977,15 @@ async fn paused_workflow_records_in_flight_final_task_and_completes() {
         .unwrap();
 
     engine
-        .run_workflow_instance("inst-paused".to_string())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            "inst-paused".to_string(),
+        )
         .await
         .unwrap();
 
     let saved = storage
-        .get_workflow_instance("inst-paused")
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), "inst-paused")
         .await
         .unwrap()
         .unwrap();
@@ -997,13 +1037,16 @@ async fn test_fan_in_workflow_completes_with_propagation() {
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
     let result = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1055,18 +1098,22 @@ async fn test_verifier_continue_marks_rejected_slice_unsatisfied() {
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
     let events = engine
         .storage
         .list_workflow_instance_events(
+            &crate::core::namespace::test_namespace(),
             &instance_id,
             WorkflowEventPageRequest {
                 limit: 100,
@@ -1138,7 +1185,10 @@ async fn test_verifier_rerun_dispatches_same_logical_agent_identity() {
     let pinned_host = WorkerHostId::new("host-a");
     let instance_id = setup_with_pin(&engine, def, Some(pinned_host.clone())).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
@@ -1228,15 +1278,27 @@ async fn test_human_input_continuation_dispatches_same_logical_agent_identity() 
         ]),
         verifier_states: HashMap::new(),
     };
-    engine.storage.save_workflow_def(def).await.unwrap();
     engine
         .storage
-        .save_workflow_instance(0, vec![], instance)
+        .save_workflow_def(&crate::core::namespace::test_namespace(), def)
+        .await
+        .unwrap();
+    engine
+        .storage
+        .save_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            0,
+            vec![],
+            instance,
+        )
         .await
         .unwrap();
 
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
@@ -1255,7 +1317,7 @@ async fn test_human_input_continuation_dispatches_same_logical_agent_identity() 
 
     let saved = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1498,12 +1560,15 @@ async fn test_verifier_complete_accepts_first_generation() {
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1548,12 +1613,15 @@ async fn test_function_verifier_can_drive_bounded_rerun() {
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1591,14 +1659,17 @@ async fn test_exhausted_verifier_fails_when_continue_policy_is_false() {
 
     let instance_id = setup(&engine, def).await;
     let error = engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap_err();
     assert!(error.to_string().contains("exhausted iteration budget"));
 
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1640,13 +1711,16 @@ async fn test_exhausted_verifier_accepts_latest_generation_when_continue_policy_
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1808,12 +1882,15 @@ async fn test_downstream_uses_latest_satisfied_generation_after_verifier() {
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1856,12 +1933,17 @@ async fn test_schema_validation_failure_marks_workflow_failed() {
     };
 
     let instance_id = setup(&engine, def).await;
-    let run_result = engine.run_workflow_instance(instance_id.clone()).await;
+    let run_result = engine
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
+        .await;
     assert!(run_result.is_err());
 
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1885,7 +1967,12 @@ async fn test_input_schema_failure_marks_workflow_failed() {
     };
 
     let instance_id = setup(&engine, def).await;
-    let run_result = engine.run_workflow_instance(instance_id.clone()).await;
+    let run_result = engine
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
+        .await;
     assert!(run_result.is_err());
     assert!(
         run_result
@@ -1896,7 +1983,7 @@ async fn test_input_schema_failure_marks_workflow_failed() {
 
     let instance = engine
         .storage
-        .get_workflow_instance(&instance_id)
+        .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .unwrap();
@@ -1922,12 +2009,15 @@ async fn test_get_workflow_status_after_completion() {
 
     let instance_id = setup(&engine, def).await;
     engine
-        .run_workflow_instance(instance_id.clone())
+        .run_workflow_instance(
+            &crate::core::namespace::test_namespace(),
+            instance_id.clone(),
+        )
         .await
         .unwrap();
 
     let report = engine
-        .get_workflow_status(&instance_id)
+        .get_workflow_status(&crate::core::namespace::test_namespace(), &instance_id)
         .await
         .unwrap()
         .expect("report should be present");
@@ -1950,6 +2040,9 @@ async fn test_get_workflow_status_after_completion() {
 #[tokio::test]
 async fn test_get_workflow_status_unknown_instance() {
     let engine = make_engine();
-    let report = engine.get_workflow_status("does-not-exist").await.unwrap();
+    let report = engine
+        .get_workflow_status(&crate::core::namespace::test_namespace(), "does-not-exist")
+        .await
+        .unwrap();
     assert!(report.is_none());
 }

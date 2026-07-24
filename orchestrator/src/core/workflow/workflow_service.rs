@@ -1,3 +1,4 @@
+use crate::core::namespace::Namespace;
 use crate::core::task::{TaskDef, TaskInstance, TaskStatus, TaskTypeDef};
 use crate::core::verifier::{VerifierControlConfig, verifier_decision_schema};
 use crate::core::worker::WorkerHostId;
@@ -32,12 +33,22 @@ impl WorkflowService {
         }
     }
 
-    pub async fn create_workflow_def(&self, def: WorkflowDef) -> anyhow::Result<()> {
+    pub async fn create_workflow_def(
+        &self,
+        namespace: &Namespace,
+        def: WorkflowDef,
+    ) -> anyhow::Result<()> {
         let def = validate_and_normalize_workflow_def(def)?;
-        if self.storage.get_workflow_def(&def.id).await?.is_some() {
+        if self
+            .storage
+            .get_workflow_def(namespace, &def.id)
+            .await?
+            .is_some()
+        {
             let existing_instances = self
                 .storage
                 .list_workflow_info(
+                    Some(namespace),
                     WorkflowInfoPageRequest {
                         limit: 1,
                         cursor: None,
@@ -54,25 +65,37 @@ impl WorkflowService {
                 );
             }
         }
-        self.storage.save_workflow_def(def).await?;
+        self.storage.save_workflow_def(namespace, def).await?;
         Ok(())
     }
 
-    pub async fn list_workflow_defs(&self) -> anyhow::Result<Vec<WorkflowDefSummary>> {
-        Ok(self.storage.list_workflow_def().await?)
+    pub async fn list_workflow_defs(
+        &self,
+        namespace: &Namespace,
+    ) -> anyhow::Result<Vec<WorkflowDefSummary>> {
+        Ok(self.storage.list_workflow_def(namespace).await?)
     }
 
-    pub async fn get_workflow_def(&self, id: &str) -> anyhow::Result<Option<WorkflowDef>> {
-        Ok(self.storage.get_workflow_def(id).await?)
+    pub async fn get_workflow_def(
+        &self,
+        namespace: &Namespace,
+        id: &str,
+    ) -> anyhow::Result<Option<WorkflowDef>> {
+        Ok(self.storage.get_workflow_def(namespace, id).await?)
     }
 
     pub async fn create_workflow_instance_for_def(
         &self,
+        namespace: &Namespace,
         workflow_def_id: &str,
         pinned_worker_host: WorkerHostId,
         input: Option<serde_json::Value>,
     ) -> anyhow::Result<String> {
-        let Some(_) = self.storage.get_workflow_def(workflow_def_id).await? else {
+        let Some(_) = self
+            .storage
+            .get_workflow_def(namespace, workflow_def_id)
+            .await?
+        else {
             anyhow::bail!("workflow definition {workflow_def_id} not found");
         };
 
@@ -90,6 +113,7 @@ impl WorkflowService {
 
         self.state_manager
             .commit_events(
+                namespace,
                 &instance_id,
                 vec![WorkflowInstanceEvent::WorkflowCreated { instance }],
             )
@@ -100,14 +124,18 @@ impl WorkflowService {
 
     pub async fn list_workflows(
         &self,
+        namespace: &Namespace,
         status: Option<WorkflowStatus>,
         limit: Option<usize>,
         cursor: Option<&str>,
     ) -> anyhow::Result<WorkflowListPage> {
-        let cursor = cursor.map(decode_workflow_info_cursor).transpose()?;
+        let cursor = cursor
+            .map(|cursor| decode_workflow_info_cursor(namespace, cursor))
+            .transpose()?;
         let page = self
             .storage
             .list_workflow_info(
+                Some(namespace),
                 WorkflowInfoPageRequest {
                     limit: clamp_workflow_list_limit(limit),
                     cursor,
@@ -126,13 +154,14 @@ impl WorkflowService {
 
     pub async fn list_workflow_events(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         limit: Option<usize>,
         after_sequence: Option<u64>,
     ) -> anyhow::Result<Option<WorkflowEventPage>> {
         if self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?
             .is_none()
         {
@@ -142,6 +171,7 @@ impl WorkflowService {
         let events = self
             .storage
             .list_workflow_instance_events(
+                namespace,
                 workflow_instance_id,
                 WorkflowEventPageRequest {
                     limit: limit
@@ -155,10 +185,14 @@ impl WorkflowService {
         Ok(Some(events))
     }
 
-    pub async fn pause_workflow(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+    pub async fn pause_workflow(
+        &self,
+        namespace: &Namespace,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<()> {
         let instance = self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
 
@@ -166,6 +200,7 @@ impl WorkflowService {
             WorkflowStatus::Pending | WorkflowStatus::Running => {
                 self.state_manager
                     .commit_events_for_instance(
+                        namespace,
                         instance,
                         vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                             status: WorkflowStatus::Paused,
@@ -181,10 +216,14 @@ impl WorkflowService {
         }
     }
 
-    pub async fn resume_workflow(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+    pub async fn resume_workflow(
+        &self,
+        namespace: &Namespace,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<()> {
         let instance = self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
 
@@ -194,6 +233,7 @@ impl WorkflowService {
 
         self.state_manager
             .commit_events_for_instance(
+                namespace,
                 instance,
                 vec![WorkflowInstanceEvent::WorkflowStatusChanged {
                     status: WorkflowStatus::Pending,
@@ -204,7 +244,10 @@ impl WorkflowService {
         Ok(())
     }
 
-    pub async fn pause_active_workflows(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn pause_active_workflows(
+        &self,
+        namespace: &Namespace,
+    ) -> anyhow::Result<Vec<String>> {
         let mut cursor: Option<WorkflowInfoCursor> = None;
         let mut paused = Vec::new();
 
@@ -212,6 +255,7 @@ impl WorkflowService {
             let page = self
                 .storage
                 .list_workflow_info(
+                    Some(namespace),
                     WorkflowInfoPageRequest { limit: 100, cursor },
                     vec![WorkflowInstanceFilter::Statuses(vec![
                         WorkflowStatus::Pending,
@@ -221,7 +265,7 @@ impl WorkflowService {
                 .await?;
 
             for info in &page.items {
-                self.pause_workflow(&info.id).await?;
+                self.pause_workflow(namespace, &info.id).await?;
                 paused.push(info.id.clone());
             }
 
@@ -234,7 +278,10 @@ impl WorkflowService {
         Ok(paused)
     }
 
-    pub async fn resume_paused_workflows(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn resume_paused_workflows(
+        &self,
+        namespace: &Namespace,
+    ) -> anyhow::Result<Vec<String>> {
         let mut cursor: Option<WorkflowInfoCursor> = None;
         let mut resumed = Vec::new();
 
@@ -242,6 +289,7 @@ impl WorkflowService {
             let page = self
                 .storage
                 .list_workflow_info(
+                    Some(namespace),
                     WorkflowInfoPageRequest { limit: 100, cursor },
                     vec![WorkflowInstanceFilter::Statuses(vec![
                         WorkflowStatus::Paused,
@@ -250,7 +298,7 @@ impl WorkflowService {
                 .await?;
 
             for info in &page.items {
-                self.resume_workflow(&info.id).await?;
+                self.resume_workflow(namespace, &info.id).await?;
                 resumed.push(info.id.clone());
             }
 
@@ -265,13 +313,14 @@ impl WorkflowService {
 
     pub async fn submit_human_input(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         task_id: &str,
         submitted_input: serde_json::Value,
     ) -> anyhow::Result<String> {
         let instance = self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
 
@@ -294,7 +343,7 @@ impl WorkflowService {
 
         let Some(workflow_def) = self
             .storage
-            .get_workflow_def(&instance.workflow_def_id)
+            .get_workflow_def(namespace, &instance.workflow_def_id)
             .await?
         else {
             anyhow::bail!("workflow definition {} not found", instance.workflow_def_id);
@@ -319,6 +368,7 @@ impl WorkflowService {
 
         self.state_manager
             .commit_events_for_instance(
+                namespace,
                 instance,
                 vec![WorkflowInstanceEvent::HumanInputSubmitted {
                     task_attempt_id: task_attempt_id.clone(),
@@ -333,15 +383,17 @@ impl WorkflowService {
 
     pub async fn retry_task(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<String> {
         let (instance, task_attempt_id) = self
-            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .load_retryable_task_instance(namespace, workflow_instance_id, task_id)
             .await?;
 
         self.state_manager
             .commit_events_for_instance(
+                namespace,
                 instance,
                 vec![WorkflowInstanceEvent::TaskRetryRequested {
                     task_attempt_id: task_attempt_id.clone(),
@@ -354,29 +406,32 @@ impl WorkflowService {
 
     pub async fn load_retryable_task_pin(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<Option<WorkerHostId>> {
         let (instance, _) = self
-            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .load_retryable_task_instance(namespace, workflow_instance_id, task_id)
             .await?;
         Ok(instance.pinned_worker_host)
     }
 
     pub async fn force_retry_task(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         task_id: &str,
         target_host_id: WorkerHostId,
     ) -> anyhow::Result<String> {
         let (instance, task_attempt_id) = self
-            .load_retryable_task_instance(workflow_instance_id, task_id)
+            .load_retryable_task_instance(namespace, workflow_instance_id, task_id)
             .await?;
         let previous_host_id = instance.pinned_worker_host.clone();
         let local_context_may_be_lost = previous_host_id.as_ref() != Some(&target_host_id);
 
         self.state_manager
             .commit_events_for_instance(
+                namespace,
                 instance,
                 vec![WorkflowInstanceEvent::TaskForceRetryRequested {
                     task_attempt_id: task_attempt_id.clone(),
@@ -392,20 +447,27 @@ impl WorkflowService {
 
     pub async fn get_task_result(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         requested_task_id: &str,
     ) -> anyhow::Result<TaskResult> {
-        self.get_task_result_for_generation(workflow_instance_id, requested_task_id, None)
-            .await
+        self.get_task_result_for_generation(
+            namespace,
+            workflow_instance_id,
+            requested_task_id,
+            None,
+        )
+        .await
     }
 
     pub async fn list_task_results(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
     ) -> anyhow::Result<Vec<WorkflowTaskResult>> {
         let instance = self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
 
@@ -433,13 +495,14 @@ impl WorkflowService {
 
     pub async fn get_task_result_for_generation(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         requested_task_id: &str,
         generation: Option<u32>,
     ) -> anyhow::Result<TaskResult> {
         let instance = self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
 
@@ -464,12 +527,13 @@ impl WorkflowService {
 
     async fn load_retryable_task_instance(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         task_id: &str,
     ) -> anyhow::Result<(WorkflowInstance, String)> {
         let instance = self
             .storage
-            .get_workflow_instance(workflow_instance_id)
+            .get_workflow_instance(namespace, workflow_instance_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("workflow instance {workflow_instance_id} not found"))?;
 
@@ -594,20 +658,27 @@ fn clamp_workflow_list_limit(limit: Option<usize>) -> usize {
 
 fn encode_workflow_info_cursor(cursor: WorkflowInfoCursor) -> String {
     format!(
-        "{}:{}",
-        cursor.modified_at_epoch_ms, cursor.workflow_instance_id
+        "{}:{}:{}",
+        cursor.namespace, cursor.modified_at_epoch_ms, cursor.workflow_instance_id
     )
 }
 
-fn decode_workflow_info_cursor(cursor: &str) -> anyhow::Result<WorkflowInfoCursor> {
-    let Some((modified_at_epoch_ms, workflow_instance_id)) = cursor.split_once(':') else {
+fn decode_workflow_info_cursor(
+    namespace: &Namespace,
+    cursor: &str,
+) -> anyhow::Result<WorkflowInfoCursor> {
+    let mut parts = cursor.splitn(3, ':');
+    let (Some(cursor_namespace), Some(modified_at_epoch_ms), Some(workflow_instance_id)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
         anyhow::bail!("invalid workflow list cursor");
     };
-    if workflow_instance_id.is_empty() {
+    if cursor_namespace != namespace.as_str() || workflow_instance_id.is_empty() {
         anyhow::bail!("invalid workflow list cursor");
     }
 
     Ok(WorkflowInfoCursor {
+        namespace: namespace.clone(),
         modified_at_epoch_ms: modified_at_epoch_ms
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid workflow list cursor"))?,
@@ -899,6 +970,19 @@ mod tests {
     use crate::core::task::{TaskSatisfactionStatus, TaskTypeDef};
     use serde_json::json;
 
+    #[test]
+    fn workflow_cursor_rejects_a_different_namespace() {
+        let namespace = crate::core::namespace::test_namespace();
+        let other_namespace = Namespace::new("123e4567-e89b-12d3-a456-426614174000").unwrap();
+        let cursor = encode_workflow_info_cursor(WorkflowInfoCursor {
+            namespace: other_namespace,
+            modified_at_epoch_ms: 123,
+            workflow_instance_id: "workflow-1".to_string(),
+        });
+
+        assert!(decode_workflow_info_cursor(&namespace, &cursor).is_err());
+    }
+
     fn workflow_def(id: &str) -> WorkflowDef {
         workflow_def_with_task(id, "taska")
     }
@@ -952,16 +1036,22 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
 
         service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taska"))
+            .create_workflow_def(
+                &crate::core::namespace::test_namespace(),
+                workflow_def_with_task("workflow1", "taska"),
+            )
             .await
             .unwrap();
         service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+            .create_workflow_def(
+                &crate::core::namespace::test_namespace(),
+                workflow_def_with_task("workflow1", "taskb"),
+            )
             .await
             .unwrap();
 
         let stored = storage
-            .get_workflow_def("workflow1")
+            .get_workflow_def(&crate::core::namespace::test_namespace(), "workflow1")
             .await
             .unwrap()
             .unwrap();
@@ -974,16 +1064,27 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
 
         service
-            .create_workflow_def(workflow_def("workflow1"))
+            .create_workflow_def(
+                &crate::core::namespace::test_namespace(),
+                workflow_def("workflow1"),
+            )
             .await
             .unwrap();
         service
-            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"), None)
+            .create_workflow_instance_for_def(
+                &crate::core::namespace::test_namespace(),
+                "workflow1",
+                WorkerHostId::new("test-host"),
+                None,
+            )
             .await
             .unwrap();
 
         let error = service
-            .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+            .create_workflow_def(
+                &crate::core::namespace::test_namespace(),
+                workflow_def_with_task("workflow1", "taskb"),
+            )
             .await
             .unwrap_err();
 
@@ -992,7 +1093,7 @@ mod tests {
             "workflow definition workflow1 already has workflow instances and cannot be overwritten; register under a new ID, for example workflow1_v2"
         );
         let stored = storage
-            .get_workflow_def("workflow1")
+            .get_workflow_def(&crate::core::namespace::test_namespace(), "workflow1")
             .await
             .unwrap()
             .unwrap();
@@ -1016,11 +1117,15 @@ mod tests {
             let service = WorkflowService::new(storage.clone());
 
             service
-                .create_workflow_def(workflow_def("workflow1"))
+                .create_workflow_def(
+                    &crate::core::namespace::test_namespace(),
+                    workflow_def("workflow1"),
+                )
                 .await
                 .unwrap();
             storage
                 .save_workflow_instance(
+                    &crate::core::namespace::test_namespace(),
                     0,
                     vec![],
                     WorkflowInstance {
@@ -1038,13 +1143,16 @@ mod tests {
                 .unwrap();
 
             let error = service
-                .create_workflow_def(workflow_def_with_task("workflow1", "taskb"))
+                .create_workflow_def(
+                    &crate::core::namespace::test_namespace(),
+                    workflow_def_with_task("workflow1", "taskb"),
+                )
                 .await
                 .unwrap_err();
 
             assert!(error.to_string().contains("cannot be overwritten"));
             let stored = storage
-                .get_workflow_def("workflow1")
+                .get_workflow_def(&crate::core::namespace::test_namespace(), "workflow1")
                 .await
                 .unwrap()
                 .unwrap();
@@ -1058,6 +1166,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 WorkflowInstance {
@@ -1074,9 +1183,12 @@ mod tests {
             .await
             .unwrap();
 
-        service.pause_workflow("active-workflow").await.unwrap();
+        service
+            .pause_workflow(&crate::core::namespace::test_namespace(), "active-workflow")
+            .await
+            .unwrap();
         let paused = storage
-            .get_workflow_instance("active-workflow")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "active-workflow")
             .await
             .unwrap()
             .unwrap();
@@ -1086,9 +1198,12 @@ mod tests {
             Some(WorkerHostId::new("test-host"))
         );
 
-        service.resume_workflow("active-workflow").await.unwrap();
+        service
+            .resume_workflow(&crate::core::namespace::test_namespace(), "active-workflow")
+            .await
+            .unwrap();
         let resumed = storage
-            .get_workflow_instance("active-workflow")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "active-workflow")
             .await
             .unwrap()
             .unwrap();
@@ -1096,6 +1211,7 @@ mod tests {
 
         let events = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "active-workflow",
                 WorkflowEventPageRequest {
                     limit: 100,
@@ -1134,6 +1250,7 @@ mod tests {
         ] {
             storage
                 .save_workflow_instance(
+                    &crate::core::namespace::test_namespace(),
                     0,
                     vec![],
                     WorkflowInstance {
@@ -1151,7 +1268,10 @@ mod tests {
                 .unwrap();
         }
 
-        let mut paused = service.pause_active_workflows().await.unwrap();
+        let mut paused = service
+            .pause_active_workflows(&crate::core::namespace::test_namespace())
+            .await
+            .unwrap();
         paused.sort();
         assert_eq!(
             paused,
@@ -1161,7 +1281,10 @@ mod tests {
             ]
         );
 
-        let mut resumed = service.resume_paused_workflows().await.unwrap();
+        let mut resumed = service
+            .resume_paused_workflows(&crate::core::namespace::test_namespace())
+            .await
+            .unwrap();
         resumed.sort();
         assert_eq!(
             resumed,
@@ -1178,17 +1301,25 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         service
-            .create_workflow_def(workflow_def("workflow1"))
+            .create_workflow_def(
+                &crate::core::namespace::test_namespace(),
+                workflow_def("workflow1"),
+            )
             .await
             .unwrap();
 
         let instance_id = service
-            .create_workflow_instance_for_def("workflow1", WorkerHostId::new("test-host"), None)
+            .create_workflow_instance_for_def(
+                &crate::core::namespace::test_namespace(),
+                "workflow1",
+                WorkerHostId::new("test-host"),
+                None,
+            )
             .await
             .unwrap();
 
         let instance = storage
-            .get_workflow_instance(&instance_id)
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
             .await
             .unwrap()
             .unwrap();
@@ -1202,7 +1333,12 @@ mod tests {
         assert!(instance.verifier_states.is_empty());
 
         let events = service
-            .list_workflow_events(&instance_id, None, None)
+            .list_workflow_events(
+                &crate::core::namespace::test_namespace(),
+                &instance_id,
+                None,
+                None,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -1222,11 +1358,15 @@ mod tests {
                 "repository": { "type": "string" }
             }
         })];
-        service.create_workflow_def(def).await.unwrap();
+        service
+            .create_workflow_def(&crate::core::namespace::test_namespace(), def)
+            .await
+            .unwrap();
 
         let input = json!({ "repository": "markosski/runhelm" });
         let instance_id = service
             .create_workflow_instance_for_def(
+                &crate::core::namespace::test_namespace(),
                 "workflow1",
                 WorkerHostId::new("test-host"),
                 Some(input.clone()),
@@ -1235,7 +1375,7 @@ mod tests {
             .unwrap();
 
         let instance = storage
-            .get_workflow_instance(&instance_id)
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), &instance_id)
             .await
             .unwrap()
             .unwrap();
@@ -1248,7 +1388,12 @@ mod tests {
         let service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
         let error = service
-            .create_workflow_instance_for_def("missing", WorkerHostId::new("test-host"), None)
+            .create_workflow_instance_for_def(
+                &crate::core::namespace::test_namespace(),
+                "missing",
+                WorkerHostId::new("test-host"),
+                None,
+            )
             .await
             .unwrap_err();
 
@@ -1278,16 +1423,31 @@ mod tests {
         running.status = WorkflowStatus::Running;
 
         storage
-            .save_workflow_instance(0, vec![], completed)
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                completed,
+            )
             .await
             .unwrap();
         storage
-            .save_workflow_instance(0, vec![], running)
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                running,
+            )
             .await
             .unwrap();
 
         let page = service
-            .list_workflows(Some(WorkflowStatus::Running), None, None)
+            .list_workflows(
+                &crate::core::namespace::test_namespace(),
+                Some(WorkflowStatus::Running),
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -1308,11 +1468,18 @@ mod tests {
         invoked.description = "Has been run".to_string();
         let mut never_invoked = workflow_def("neverinvoked");
         never_invoked.description = "Ready to run".to_string();
-        service.create_workflow_def(invoked).await.unwrap();
-        service.create_workflow_def(never_invoked).await.unwrap();
+        service
+            .create_workflow_def(&crate::core::namespace::test_namespace(), invoked)
+            .await
+            .unwrap();
+        service
+            .create_workflow_def(&crate::core::namespace::test_namespace(), never_invoked)
+            .await
+            .unwrap();
 
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 WorkflowInstance {
@@ -1329,7 +1496,10 @@ mod tests {
             .await
             .unwrap();
 
-        let result = service.list_workflow_defs().await.unwrap();
+        let result = service
+            .list_workflow_defs(&crate::core::namespace::test_namespace())
+            .await
+            .unwrap();
         assert_eq!(result.len(), 2);
 
         let invoked = result
@@ -1354,7 +1524,12 @@ mod tests {
         let service = WorkflowService::new(Arc::new(MemoryStorage::new()));
 
         let events = service
-            .list_workflow_events("missing", None, None)
+            .list_workflow_events(
+                &crate::core::namespace::test_namespace(),
+                "missing",
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -1366,16 +1541,20 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         service
-            .create_workflow_def(WorkflowDef {
-                id: "workflow1".to_string(),
-                description: String::new(),
-                tasks: vec![agent_task_def("taska")],
-                data_bindings: vec![],
-            })
+            .create_workflow_def(
+                &crate::core::namespace::test_namespace(),
+                WorkflowDef {
+                    id: "workflow1".to_string(),
+                    description: String::new(),
+                    tasks: vec![agent_task_def("taska")],
+                    data_bindings: vec![],
+                },
+            )
             .await
             .unwrap();
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 WorkflowInstance {
@@ -1408,7 +1587,11 @@ mod tests {
             .unwrap();
 
         let result = service
-            .get_task_result("input-workflow", "taska")
+            .get_task_result(
+                &crate::core::namespace::test_namespace(),
+                "input-workflow",
+                "taska",
+            )
             .await
             .unwrap();
         match result {
@@ -1425,7 +1608,10 @@ mod tests {
             result => panic!("expected input-needed result, got {result:?}"),
         }
 
-        let tasks = service.list_task_results("input-workflow").await.unwrap();
+        let tasks = service
+            .list_task_results(&crate::core::namespace::test_namespace(), "input-workflow")
+            .await
+            .unwrap();
         let serialized = serde_json::to_value(&tasks[0]).unwrap();
         assert_eq!(serialized["result"]["status"], "input_needed");
         assert_eq!(
@@ -1440,12 +1626,15 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let service = WorkflowService::new(storage.clone());
         service
-            .create_workflow_def(WorkflowDef {
-                id: "workflow1".to_string(),
-                description: String::new(),
-                tasks: vec![agent_task_def("taska")],
-                data_bindings: vec![],
-            })
+            .create_workflow_def(
+                &crate::core::namespace::test_namespace(),
+                WorkflowDef {
+                    id: "workflow1".to_string(),
+                    description: String::new(),
+                    tasks: vec![agent_task_def("taska")],
+                    data_bindings: vec![],
+                },
+            )
             .await
             .unwrap();
         let instance = WorkflowInstance {
@@ -1474,18 +1663,28 @@ mod tests {
             verifier_states: HashMap::new(),
         };
         storage
-            .save_workflow_instance(0, vec![], instance)
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                instance,
+            )
             .await
             .unwrap();
 
         let task_attempt_id = service
-            .submit_human_input("input-workflow", "taska", json!({"answer": "continue"}))
+            .submit_human_input(
+                &crate::core::namespace::test_namespace(),
+                "input-workflow",
+                "taska",
+                json!({"answer": "continue"}),
+            )
             .await
             .unwrap();
 
         assert_eq!(task_attempt_id, "taska[2]");
         let saved = storage
-            .get_workflow_instance("input-workflow")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "input-workflow")
             .await
             .unwrap()
             .unwrap();
@@ -1508,6 +1707,7 @@ mod tests {
 
         let events = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "input-workflow",
                 WorkflowEventPageRequest {
                     limit: 100,
@@ -1536,6 +1736,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 WorkflowInstance {
@@ -1553,7 +1754,12 @@ mod tests {
             .unwrap();
 
         let error = service
-            .submit_human_input("running-workflow", "taska", json!({"answer": "continue"}))
+            .submit_human_input(
+                &crate::core::namespace::test_namespace(),
+                "running-workflow",
+                "taska",
+                json!({"answer": "continue"}),
+            )
             .await
             .unwrap_err();
 
@@ -1604,18 +1810,27 @@ mod tests {
             verifier_states: HashMap::new(),
         };
         storage
-            .save_workflow_instance(0, vec![], instance)
+            .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
+                0,
+                vec![],
+                instance,
+            )
             .await
             .unwrap();
 
         let task_attempt_id = service
-            .retry_task("failed-workflow", "taska")
+            .retry_task(
+                &crate::core::namespace::test_namespace(),
+                "failed-workflow",
+                "taska",
+            )
             .await
             .unwrap();
 
         assert_eq!(task_attempt_id, "taska[1]");
         let saved = storage
-            .get_workflow_instance("failed-workflow")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "failed-workflow")
             .await
             .unwrap()
             .unwrap();
@@ -1634,6 +1849,7 @@ mod tests {
 
         let events = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "failed-workflow",
                 WorkflowEventPageRequest {
                     limit: 100,
@@ -1657,6 +1873,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 WorkflowInstance {
@@ -1674,7 +1891,11 @@ mod tests {
             .unwrap();
 
         let error = service
-            .retry_task("pending-workflow", "taska")
+            .retry_task(
+                &crate::core::namespace::test_namespace(),
+                "pending-workflow",
+                "taska",
+            )
             .await
             .unwrap_err();
 
@@ -1687,6 +1908,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 WorkflowInstance {
@@ -1717,13 +1939,18 @@ mod tests {
             .unwrap();
 
         let task_attempt_id = service
-            .force_retry_task("failed-workflow", "taska", WorkerHostId::new("host-b"))
+            .force_retry_task(
+                &crate::core::namespace::test_namespace(),
+                "failed-workflow",
+                "taska",
+                WorkerHostId::new("host-b"),
+            )
             .await
             .unwrap();
 
         assert_eq!(task_attempt_id, "taska[1]");
         let saved = storage
-            .get_workflow_instance("failed-workflow")
+            .get_workflow_instance(&crate::core::namespace::test_namespace(), "failed-workflow")
             .await
             .unwrap()
             .unwrap();
@@ -1734,6 +1961,7 @@ mod tests {
 
         let events = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "failed-workflow",
                 WorkflowEventPageRequest {
                     limit: 100,
@@ -1764,6 +1992,7 @@ mod tests {
         let service = WorkflowService::new(storage.clone());
         storage
             .save_workflow_instance(
+                &crate::core::namespace::test_namespace(),
                 0,
                 vec![],
                 WorkflowInstance {
@@ -1794,12 +2023,18 @@ mod tests {
             .unwrap();
 
         service
-            .force_retry_task("failed-workflow", "taska", WorkerHostId::new("host-a"))
+            .force_retry_task(
+                &crate::core::namespace::test_namespace(),
+                "failed-workflow",
+                "taska",
+                WorkerHostId::new("host-a"),
+            )
             .await
             .unwrap();
 
         let events = storage
             .list_workflow_instance_events(
+                &crate::core::namespace::test_namespace(),
                 "failed-workflow",
                 WorkflowEventPageRequest {
                     limit: 100,

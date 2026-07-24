@@ -1,4 +1,5 @@
 use crate::core::{
+    namespace::Namespace,
     task::{ExecutionMetadata, TaskDef},
     worker::TaskDispatchConstraints,
 };
@@ -69,6 +70,7 @@ impl From<WorkerExecutionResult> for ExecutionResult {
 pub trait TaskDispatchPort {
     async fn dispatch_task(
         &self,
+        namespace: &Namespace,
         workflow_inst_id: &str,
         task: &TaskDef,
         inputs: &[serde_json::Value],

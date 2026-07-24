@@ -1,3 +1,4 @@
+use crate::core::namespace::Namespace;
 use crate::core::task::{ExecutionMetadata, TaskDef};
 use crate::core::worker::TaskDispatchConstraints;
 use crate::ports::task_dispatch::{ExecutionResult, TaskDispatchPort};
@@ -85,6 +86,7 @@ fn schema_default(schema: &Value) -> Value {
 impl TaskDispatchPort for FakeTaskDispatcher {
     async fn dispatch_task(
         &self,
+        _namespace: &Namespace,
         _workflow_inst_id: &str,
         task: &TaskDef,
         _inputs: &[Value],
@@ -128,6 +130,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "object"}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -154,6 +157,7 @@ mod tests {
         }));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -175,6 +179,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "string"}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -194,6 +199,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "integer"}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -213,6 +219,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "number"}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -232,6 +239,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "boolean"}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -251,6 +259,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "array"}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -270,6 +279,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "null"}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -289,6 +299,7 @@ mod tests {
         let task = task_with_schema(json!({}));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -310,6 +321,7 @@ mod tests {
         }));
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -329,6 +341,7 @@ mod tests {
         let task = task_with_schema(json!({"type": "string"}));
         let res1 = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],
@@ -339,6 +352,7 @@ mod tests {
             .unwrap();
         let res2 = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[json!("anything"), json!(42)],
@@ -367,6 +381,7 @@ mod tests {
         let task = task_with_schema(schema.clone());
         let result = fake()
             .dispatch_task(
+                &crate::core::namespace::test_namespace(),
                 "123",
                 &task,
                 &[],

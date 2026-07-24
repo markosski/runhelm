@@ -1,4 +1,5 @@
 use crate::core::function::models::FunctionDef;
+use crate::core::namespace::Namespace;
 use crate::core::task::{TaskInputMapping, TaskSatisfactionStatus};
 use crate::core::verifier::VerifierAttemptMetadata;
 use crate::core::workflow::events::WorkflowEventRecord;
@@ -94,6 +95,7 @@ pub struct PageRequest<C> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowInfoCursor {
+    pub namespace: Namespace,
     pub modified_at_epoch_ms: u64,
     pub workflow_instance_id: String,
 }
@@ -249,13 +251,19 @@ impl Serialize for TaskResult {
 /// Point reads return authoritative committed state. Collection and history reads may be backed by
 /// asynchronous projections, so callers must tolerate recently committed changes being absent or
 /// stale and must re-read an entity by ID before making a state transition. List pagination is not
-/// a snapshot: concurrent writes may move entries between pages.
+/// a snapshot: concurrent writes may move entries between pages. Except for recovery-only
+/// [`StoragePort::list_workflow_info`] calls with `None`, every operation requires the namespace
+/// that owns the resource.
 pub trait StoragePort {
     /// Returns the authoritative committed workflow definition for `id`, or `None` when it does not
     /// exist.
     ///
     /// A successful save completed before this call must be visible to this point read.
-    async fn get_workflow_def(&self, id: &str) -> StorageResult<Option<WorkflowDef>>;
+    async fn get_workflow_def(
+        &self,
+        namespace: &Namespace,
+        id: &str,
+    ) -> StorageResult<Option<WorkflowDef>>;
 
     /// Returns lightweight summaries of all workflow definitions, ordered by creation time
     /// descending and then definition ID descending.
@@ -263,22 +271,37 @@ pub trait StoragePort {
     /// This discovery read may lag recent definition saves and workflow invocations. In particular,
     /// `last_invoked_at_epoch_ms` is projection data and is not an authoritative workflow-instance
     /// existence check.
-    async fn list_workflow_def(&self) -> StorageResult<Vec<WorkflowDefSummary>>;
+    async fn list_workflow_def(
+        &self,
+        namespace: &Namespace,
+    ) -> StorageResult<Vec<WorkflowDefSummary>>;
 
     /// Returns the authoritative committed function definition for `id`, or `None` when it does not
     /// exist.
     ///
     /// A successful save completed before this call must be visible to this point read.
-    async fn get_function_def(&self, id: &str) -> StorageResult<Option<FunctionDef>>;
+    async fn get_function_def(
+        &self,
+        namespace: &Namespace,
+        id: &str,
+    ) -> StorageResult<Option<FunctionDef>>;
 
     /// Returns the latest committed workflow-instance snapshot for `id`, or `None` when it does not
     /// exist.
     ///
     /// This is the authoritative read for workflow state and must provide read-after-write
     /// visibility. Callers must use the returned version when attempting a subsequent transition.
-    async fn get_workflow_instance(&self, id: &str) -> StorageResult<Option<WorkflowInstance>>;
+    async fn get_workflow_instance(
+        &self,
+        namespace: &Namespace,
+        id: &str,
+    ) -> StorageResult<Option<WorkflowInstance>>;
 
     /// Returns a bounded page of lightweight workflow-instance summaries.
+    ///
+    /// `Some(namespace)` is required for normal service and resource operations. `None` is
+    /// reserved for startup recovery across namespaces; in that mode every returned
+    /// [`WorkflowInfo`] and pagination cursor retains its owning namespace.
     ///
     /// Filters of different kinds are combined with logical AND. Status filters match any supplied
     /// status. Results are ordered by modification time descending and then workflow-instance ID
@@ -290,6 +313,7 @@ pub trait StoragePort {
     /// [`StoragePort::get_workflow_instance`] before committing the transition.
     async fn list_workflow_info(
         &self,
+        namespace: Option<&Namespace>,
         page: WorkflowInfoPageRequest,
         filters: Vec<WorkflowInstanceFilter>,
     ) -> StorageResult<WorkflowInfoPage>;
@@ -302,6 +326,7 @@ pub trait StoragePort {
     /// events must retain their committed order and contents.
     async fn list_workflow_instance_events(
         &self,
+        namespace: &Namespace,
         workflow_instance_id: &str,
         page: WorkflowEventPageRequest,
     ) -> StorageResult<WorkflowEventPage>;
@@ -311,18 +336,20 @@ pub trait StoragePort {
     ///
     /// This storage operation does not enforce the business rule that definitions with existing
     /// workflow instances cannot be replaced; callers are currently responsible for that rule.
-    async fn save_workflow_def(&self, def: WorkflowDef) -> StorageResult<()>;
+    async fn save_workflow_def(&self, namespace: &Namespace, def: WorkflowDef)
+    -> StorageResult<()>;
 
     /// Creates or replaces a function definition and makes it available to authoritative point
     /// reads before returning.
-    async fn save_function_def(&self, def: FunctionDef) -> StorageResult<()>;
+    async fn save_function_def(&self, namespace: &Namespace, def: FunctionDef)
+    -> StorageResult<()>;
 
     /// Removes the function definition identified by `id` from authoritative reads.
     ///
     /// Returns `true` when a stored definition was removed and `false` when it did not exist.
     /// Backends may retain unreachable immutable payload data after removing its authoritative
     /// metadata.
-    async fn delete_function_def(&self, id: &str) -> StorageResult<bool>;
+    async fn delete_function_def(&self, namespace: &Namespace, id: &str) -> StorageResult<bool>;
 
     /// Atomically commits an ordered event batch and its already-reduced workflow-instance snapshot.
     ///
@@ -338,6 +365,7 @@ pub trait StoragePort {
     /// collection and history reads may observe it later.
     async fn save_workflow_instance(
         &self,
+        namespace: &Namespace,
         expected_version: u64,
         events: Vec<WorkflowEventRecord>,
         instance: WorkflowInstance,
